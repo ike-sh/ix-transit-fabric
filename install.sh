@@ -1,0 +1,10311 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+SCRIPT_VERSION="1.0.0"
+APP_NAME="ix-transit-fabric"
+
+CONFIG_DIR="/etc/ix-transit-fabric"
+ENV_FILE="${CONFIG_DIR}/ix-transit.env"
+PROFILES_DIR="${CONFIG_DIR}/profiles"
+CODES_DIR="${CONFIG_DIR}/codes"
+STATE_DIR="${CONFIG_DIR}/state"
+SWITCH_HISTORY_FILE="${STATE_DIR}/switch-history.tsv"
+HEALTH_HISTORY_FILE="${STATE_DIR}/health-history.tsv"
+LAST_NOTIFY_FILE="${STATE_DIR}/last-notify.tsv"
+LAST_HEALTH_STATUS_FILE="${STATE_DIR}/last-health-status.tsv"
+NOTIFY_ENV_FILE="${CONFIG_DIR}/notify.env"
+MONITOR_SERVICE_NAME="ix-transit-monitor.service"
+MONITOR_TIMER_NAME="ix-transit-monitor.timer"
+MONITOR_SERVICE_FILE="/etc/systemd/system/${MONITOR_SERVICE_NAME}"
+MONITOR_TIMER_FILE="/etc/systemd/system/${MONITOR_TIMER_NAME}"
+MONITOR_INTERVAL_FILE="${STATE_DIR}/monitor-interval"
+MONITOR_LAST_RUN_FILE="${STATE_DIR}/monitor-last-run"
+BACKUP_DIR="/var/backups/ix-transit-fabric"
+SERVICE_NAME="ix-transit-easytier.service"
+SYSTEMD_SERVICE="/etc/systemd/system/${SERVICE_NAME}"
+PROFILE_SERVICE_TEMPLATE="/etc/systemd/system/ix-transit-easytier@.service"
+SYSCTL_FILE="/etc/sysctl.d/99-ix-transit-fabric.conf"
+NFT_DIR="/etc/nftables.d"
+NFT_FILE="${NFT_DIR}/ix-transit-fabric.nft"
+NFT_TABLE="ix_transit_fabric"
+LIBEXEC_DIR="/usr/local/libexec/ix-transit-fabric"
+WRAPPER_FILE="${LIBEXEC_DIR}/easytier-start"
+EASYTIER_TARGET="/usr/local/bin/easytier-core"
+LANDING_CODE_FILE="${CONFIG_DIR}/landing-code.txt"
+
+DEFAULT_GITHUB_MIRRORS="https://gh.ddlc.top/,https://gh-proxy.com/,https://ghproxy.net/,https://gh.llkk.cc/"
+GITHUB_REPO="EasyTier/EasyTier"
+AUTO_INSTALL_EASYTIER="false"
+INSTALL_ENV_FILE_PATH=""
+CODE_ARG=""
+CODE_FILE_ARG=""
+
+IXTF_COLOR_ENABLED="false"
+IXTF_C_RED=""
+IXTF_C_GREEN=""
+IXTF_C_YELLOW=""
+IXTF_C_BLUE=""
+IXTF_C_CYAN=""
+IXTF_C_BOLD=""
+IXTF_C_DIM=""
+IXTF_C_RESET=""
+
+color_init() {
+    local mode="${IXTF_COLOR:-auto}"
+    if [[ -n "${NO_COLOR:-}" ]]; then
+        mode="never"
+    fi
+    case "$mode" in
+        always) IXTF_COLOR_ENABLED="true" ;;
+        never) IXTF_COLOR_ENABLED="false" ;;
+        auto|*) [[ -t 1 && -t 2 && -n "${TERM:-}" && "${TERM:-dumb}" != "dumb" ]] && IXTF_COLOR_ENABLED="true" || IXTF_COLOR_ENABLED="false" ;;
+    esac
+    if [[ "$IXTF_COLOR_ENABLED" == "true" ]]; then
+        IXTF_C_RED=$'\033[31m'
+        IXTF_C_GREEN=$'\033[32m'
+        IXTF_C_YELLOW=$'\033[33m'
+        IXTF_C_BLUE=$'\033[34m'
+        IXTF_C_CYAN=$'\033[36m'
+        IXTF_C_BOLD=$'\033[1m'
+        IXTF_C_DIM=$'\033[2m'
+        IXTF_C_RESET=$'\033[0m'
+    fi
+}
+
+c_red() { printf '%s%s%s' "$IXTF_C_RED" "$*" "$IXTF_C_RESET"; }
+c_green() { printf '%s%s%s' "$IXTF_C_GREEN" "$*" "$IXTF_C_RESET"; }
+c_yellow() { printf '%s%s%s' "$IXTF_C_YELLOW" "$*" "$IXTF_C_RESET"; }
+c_blue() { printf '%s%s%s' "$IXTF_C_BLUE" "$*" "$IXTF_C_RESET"; }
+c_cyan() { printf '%s%s%s' "$IXTF_C_CYAN" "$*" "$IXTF_C_RESET"; }
+c_bold() { printf '%s%s%s' "$IXTF_C_BOLD" "$*" "$IXTF_C_RESET"; }
+c_dim() { printf '%s%s%s' "$IXTF_C_DIM" "$*" "$IXTF_C_RESET"; }
+c_reset() { printf '%s' "$IXTF_C_RESET"; }
+
+print_ok() { printf '%s %s\n' "$(c_green '[OK]')" "$*" >&2; }
+print_warn() { printf '%s %s\n' "$(c_yellow '[WARN]')" "$*" >&2; }
+print_error() { printf '%s %s\n' "$(c_red '[ERROR]')" "$*" >&2; }
+print_info() { printf '%s %s\n' "$(c_cyan '[INFO]')" "$*" >&2; }
+print_step() { printf '\n%s %s\n' "$(c_bold "$(c_blue '==>')")" "$(c_bold "$*")" >&2; }
+print_box() {
+    local title="$1"
+    shift || true
+    printf '\n%s\n' "$(c_bold "$title")"
+    printf '%s\n' "$@"
+}
+print_next_steps() {
+    local title="${1:-下一步：}" i=1 step
+    shift || true
+    printf '\n%s\n' "$(c_green "$title")"
+    for step in "$@"; do
+        printf '  %s. %s\n' "$i" "$step"
+        i=$((i + 1))
+    done
+}
+
+print_port_map_compact() {
+    local profile_id="${PROFILE_ID:-default}"
+    local listener_port="${LISTENER_PORT:-${ET_LISTENER_PORT:-${CODE_LISTENER_PORT:-LISTENER_PORT}}}"
+    local remote_port="${REMOTE_PORT:-${SERVICE_PORT:-REMOTE_PORT}}"
+    local local_port="${LOCAL_PORT:-LOCAL_PORT}"
+    local cnix_port="${CNIX_ENTRY_PORT:-CNIX_ENTRY_PORT}"
+    local cnix_host="${CNIX_ENTRY_HOST:-CNIX_ENTRY_HOST}"
+    local landing_ip="${LANDING_ET_IP:-LANDING_ET_IP}"
+    local landing_public="${LANDING_PUBLIC_HOST:-${CODE_LANDING_PUBLIC_HINT:-落地 VPS 公网 IP}}"
+
+    printf '线路：%s\n\n' "$profile_id"
+    case "${ROLE:-}" in
+        panel-landing)
+            printf 'CNIX 面板：\n'
+            printf '  出口：%s:%s\n\n' "$landing_public" "$(c_cyan "$listener_port")"
+            printf '端口含义：\n'
+            printf '  %s = LISTENER_PORT，填到 CNIX 面板出口\n' "$listener_port"
+            printf '  %s = REMOTE_PORT，落地业务端口\n' "$remote_port"
+            ;;
+        panel-ingress)
+            printf '客户端连接：\n'
+            printf '  入口 VPS 公网 IP:%s\n\n' "$(c_cyan "$local_port")"
+            printf 'CNIX 面板：\n'
+            printf '  入口：%s:%s\n' "$cnix_host" "$(c_cyan "$cnix_port")"
+            printf '  出口：%s:%s\n\n' "$landing_public" "$(c_cyan "$listener_port")"
+            printf '内部转发：\n'
+            printf '  %s -> %s:%s\n\n' "$local_port" "$landing_ip" "$remote_port"
+            printf '端口含义：\n'
+            printf '  %s = LOCAL_PORT，客户端连接入口机\n' "$local_port"
+            printf '  %s = CNIX_ENTRY_PORT，商家入口端口\n' "$cnix_port"
+            printf '  %s = LISTENER_PORT，填到 CNIX 面板出口\n' "$listener_port"
+            printf '  %s = REMOTE_PORT，落地业务端口\n' "$remote_port"
+            ;;
+        *)
+            printf '[WARN] 当前角色未知：%s\n' "${ROLE:-未设置}"
+            ;;
+    esac
+}
+
+color_init
+
+log_info() { print_info "$*"; }
+log_warn() { print_warn "$*"; }
+log_error() { print_error "$*"; }
+log_ok() { print_ok "$*"; }
+
+on_error() {
+    local exit_code=$?
+    local line="${1:-unknown}"
+    log_error "脚本在第 ${line} 行异常退出（退出码 ${exit_code}）。"
+}
+if [[ "${IXTF_TEST_SOURCE:-}" != "1" ]]; then
+    trap 'on_error $LINENO' ERR
+fi
+
+die_user() {
+    log_error "$*"
+    exit 1
+}
+
+return_or_exit() {
+    local rc="${1:-1}"
+    if [[ "${IXTF_TEST_SOURCE:-}" == "1" ]]; then
+        return "$rc"
+    fi
+    exit "$rc"
+}
+
+usage() {
+    cat <<'USAGE'
+ix-transit-fabric - CNIX/IX 转发面板 + EasyTier + nftables 一键脚本
+
+基础：
+  bash install.sh --help
+  bash install.sh --version
+  bash install.sh --menu
+
+安装 / 更新：
+  bash install.sh install-easytier
+  bash install.sh update-easytier
+  bash install.sh install-netcat
+  bash install.sh install-diagnostics-tools
+  bash install.sh preflight [landing|ingress|all]
+
+单线路：
+  bash install.sh add-landing-profile
+  bash install.sh add-ingress-profile-from-code [--code IXTF1:...] [--code-file PATH]
+  bash install.sh show-code [PROFILE_ID]
+  bash install.sh import-code [--code IXTF1:...] [--code-file PATH]
+  bash install.sh show-port-map [PROFILE_ID] [--compact]
+  bash install.sh show-port-map --all [--compact]
+  bash install.sh show-port-map-compact [PROFILE_ID]
+  bash install.sh panel-guide [--all|PROFILE_ID]
+  bash install.sh check-port [--all|PROFILE_ID]
+  bash install.sh check-business [--all|PROFILE_ID]
+
+多线路：
+  bash install.sh list-profiles
+  bash install.sh show-profile PROFILE_ID
+  bash install.sh enable-profile PROFILE_ID
+  bash install.sh disable-profile PROFILE_ID
+  bash install.sh delete-profile PROFILE_ID
+  bash install.sh status-all
+  bash install.sh doctor-all
+
+更换：
+  bash install.sh change-landing [PROFILE_ID]
+  bash install.sh change-ingress [PROFILE_ID]
+  bash install.sh change-cnix-entry [PROFILE_ID]
+  bash install.sh update-from-code [--code IXTF1:...] [--code-file PATH]
+  bash install.sh refresh-code [PROFILE_ID]
+
+主备：
+  bash install.sh health-all
+  bash install.sh health-report [--group GROUP]
+  bash install.sh primary-backup-check GROUP
+  bash install.sh switch-dry-run GROUP TARGET_PROFILE_ID
+  bash install.sh switch-line GROUP TARGET_PROFILE_ID
+  bash install.sh switch-history [GROUP] [--limit N]
+  bash install.sh switch-rollback-last
+  bash install.sh verify-nft-profiles
+
+监控 / 通知 / 流量：
+  bash install.sh monitor-run-once [--force-notify]
+  bash install.sh monitor-enable
+  bash install.sh monitor-disable
+  bash install.sh monitor-status
+  bash install.sh notify-config
+  bash install.sh notify-test
+  bash install.sh notify-status
+  bash install.sh health-history [PROFILE_ID|--group GROUP] [--limit N]
+  bash install.sh traffic-report [--group GROUP]
+
+维护：
+  bash install.sh logs
+  bash install.sh show-nft
+  bash install.sh self-check
+  bash install.sh export-diagnostic
+  bash install.sh cleanup-history [--keep-health N] [--keep-switch N]
+  bash install.sh cleanup-state
+  bash install.sh uninstall
+  bash install.sh purge
+
+说明：
+  - 无参数且当前是交互式 TTY 时进入菜单。
+  - monitor / notify 只做检查和提醒，不会自动切换。
+  - purge 会删除配置、Profile、codes、state、notify.env、history 和备份，执行前必须确认。
+USAGE
+}
+
+is_tty() {
+    [[ -t 0 && -t 1 ]]
+}
+
+is_interactive_input() {
+    [[ "${IXTF_FORCE_NON_TTY:-}" == "1" ]] && return 1
+    [[ -n "${IXTF_IN_MENU:-}" || -n "${IXTF_ALLOW_INTERACTIVE:-}" ]] && return 0
+    [[ -t 0 ]] && return 0
+    [[ "${IXTF_USE_DEV_TTY:-}" == "1" && -r /dev/tty && -w /dev/tty ]] && return 0
+    return 1
+}
+
+fail_need_tty() {
+    local cmd="${1:-install-panel-landing}"
+    local example="bash install.sh install-panel-landing --env-file examples/panel-landing.env"
+    case "$cmd" in
+        install-panel-ingress)
+            example="bash install.sh install-panel-ingress --env-file examples/panel-ingress.env"
+            ;;
+        install-panel-ingress-from-code)
+            example="bash install.sh install-panel-ingress-from-code --code-file /root/landing.code"
+            ;;
+        --menu|menu)
+            example="ssh -tt root@SERVER 'cd /root/ix-transit-fabric && bash install.sh --menu'"
+            ;;
+    esac
+    log_error "当前命令需要交互式终端 TTY。"
+    log_info "请先进入交互式 SSH："
+    printf '       ssh -tt root@SERVER\n' >&2
+    log_info "或使用非交互 env 文件方式："
+    printf '       %s\n' "$example" >&2
+    exit 1
+}
+
+require_tty() {
+    is_interactive_input || fail_need_tty "${1:-install-panel-landing}"
+}
+
+require_root() {
+    [[ "${EUID}" -eq 0 ]] || die_user "请使用 root 权限运行，例如：sudo bash install.sh $*"
+}
+
+command_exists() {
+    command -v "$1" >/dev/null 2>&1
+}
+
+detect_nc_cmd() {
+    if command_exists nc; then
+        printf 'nc\n'
+        return 0
+    fi
+    if command_exists ncat; then
+        printf 'ncat\n'
+        return 0
+    fi
+    return 1
+}
+
+assume_yes_enabled() {
+    case "${IXTF_ASSUME_YES:-false}" in
+        true|TRUE|1|yes|YES|y|Y) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+auto_install_easytier_enabled() {
+    [[ "$AUTO_INSTALL_EASYTIER" == "true" ]] && return 0
+    case "${IXTF_AUTO_INSTALL_EASYTIER:-false}" in
+        true|TRUE|1|yes|YES|y|Y) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+suggest_install_nc() {
+    cat <<'EOF'
+nc/ncat 不可用，已跳过 TCP 业务端口探测。
+Debian/Ubuntu 可安装：apt install -y netcat-openbsd
+可选替代：apt install -y ncat
+EOF
+}
+
+install_nc_tool() {
+    require_root "$@"
+    if detect_nc_cmd >/dev/null 2>&1; then
+        log_ok "netcat 诊断工具已存在：$(detect_nc_cmd)"
+        return 0
+    fi
+    if ! command_exists apt-get; then
+        log_warn "未检测到 apt，请手动安装 nc 或 ncat。"
+        return 1
+    fi
+    log_info "正在安装 netcat 诊断工具。"
+    apt-get update || return 1
+    if DEBIAN_FRONTEND=noninteractive apt-get install -y netcat-openbsd; then
+        :
+    elif DEBIAN_FRONTEND=noninteractive apt-get install -y ncat; then
+        :
+    elif DEBIAN_FRONTEND=noninteractive apt-get install -y openbsd-netcat; then
+        :
+    else
+        log_warn "netcat 安装失败；netcat 仅用于诊断，EasyTier 线路仍可继续安装。"
+        return 1
+    fi
+    if detect_nc_cmd >/dev/null 2>&1; then
+        log_ok "netcat 诊断工具安装完成：$(detect_nc_cmd)"
+        return 0
+    fi
+    log_warn "netcat 安装后仍未找到 nc/ncat；netcat 仅用于诊断，EasyTier 线路仍可继续安装。"
+    return 1
+}
+
+ensure_nc_tool() {
+    if detect_nc_cmd >/dev/null 2>&1; then
+        return 0
+    fi
+    log_warn "未找到 nc/ncat。建议安装 netcat 以便健康检查和端口诊断。"
+    if assume_yes_enabled; then
+        install_nc_tool || true
+        return 0
+    fi
+    if is_tty; then
+        if [[ "$(prompt_yes_no "是否现在安装 netcat 诊断工具" "true")" == "true" ]]; then
+            install_nc_tool || true
+        else
+            log_warn "已跳过 netcat 安装；netcat 仅用于诊断，EasyTier 线路仍可继续安装。"
+        fi
+        return 0
+    fi
+    log_warn "非交互模式未自动安装 netcat；可稍后运行：bash install.sh install-netcat"
+    return 0
+}
+
+ensure_systemctl() {
+    command_exists systemctl || die_user "当前系统没有 systemctl。本脚本需要 systemd。"
+}
+
+ensure_config_dir() {
+    install -d -m 700 "$CONFIG_DIR"
+    install -d -m 700 "$BACKUP_DIR"
+}
+
+ensure_profile_dirs() {
+    ensure_config_dir
+    install -d -m 700 "$PROFILES_DIR" "$CODES_DIR" "$STATE_DIR"
+}
+
+make_tmp_file() {
+    local prefix="$1" tmp_dir="${IXTF_TMPDIR:-/tmp}"
+    [[ "$tmp_dir" == "/tmp" ]] || install -d -m 700 "$tmp_dir"
+    mktemp "${tmp_dir%/}/${prefix}.XXXXXX"
+}
+
+make_tmp_dir() {
+    local prefix="$1" tmp_dir="${IXTF_TMPDIR:-/tmp}"
+    [[ "$tmp_dir" == "/tmp" ]] || install -d -m 700 "$tmp_dir"
+    mktemp -d "${tmp_dir%/}/${prefix}.XXXXXX"
+}
+
+backup_file() {
+    local path="$1"
+    [[ -e "$path" ]] || return 0
+
+    ensure_config_dir
+    local stamp safe_name target
+    stamp="$(date +%Y%m%d-%H%M%S)"
+    safe_name="${path#/}"
+    safe_name="${safe_name//\//__}"
+    target="${BACKUP_DIR}/${safe_name}.${stamp}.bak"
+    cp -a -- "$path" "$target"
+    chmod go-rwx "$target" 2>/dev/null || true
+    log_info "已备份旧文件：${path} -> ${target}"
+}
+
+install_if_changed() {
+    local tmp="$1" target="$2" mode="$3" label="$4"
+    if [[ -f "$target" ]] && cmp -s "$tmp" "$target"; then
+        rm -f -- "$tmp"
+        log_ok "${label}已是最新。"
+        return 0
+    fi
+    backup_file "$target"
+    install -m "$mode" "$tmp" "$target"
+    rm -f -- "$tmp"
+    log_ok "已写入 ${label}：${target}"
+    return 0
+}
+
+backup_binary() {
+    local path="$1"
+    [[ -e "$path" ]] || return 0
+
+    ensure_config_dir
+    local stamp target
+    stamp="$(date +%Y%m%d-%H%M%S)"
+    target="${BACKUP_DIR}/easytier-core.${stamp}"
+    cp -a -- "$path" "$target"
+    chmod 700 "$target" 2>/dev/null || true
+    log_info "已备份旧版本：${target}"
+}
+
+backup_and_remove_file() {
+    local path="$1"
+    [[ -e "$path" ]] || return 0
+    backup_file "$path"
+    rm -f -- "$path"
+    log_ok "已删除：${path}"
+}
+
+trim_space() {
+    local value="$1"
+    value="${value#"${value%%[![:space:]]*}"}"
+    value="${value%"${value##*[![:space:]]}"}"
+    printf '%s\n' "$value"
+}
+
+split_mirrors() {
+    local mirrors item old_ifs
+    if [[ -v IXTF_GITHUB_MIRRORS ]]; then
+        mirrors="${IXTF_GITHUB_MIRRORS}"
+    else
+        mirrors="${DEFAULT_GITHUB_MIRRORS}"
+    fi
+
+    [[ -z "$mirrors" ]] && return 0
+    old_ifs="$IFS"
+    IFS=','
+    for item in $mirrors; do
+        item="$(trim_space "$item")"
+        [[ -n "$item" ]] && printf '%s\n' "$item"
+    done
+    IFS="$old_ifs"
+}
+
+mirror_url() {
+    local mirror="$1"
+    local original="$2"
+    [[ "${mirror: -1}" == "/" ]] || mirror="${mirror}/"
+    printf '%s%s\n' "$mirror" "$original"
+}
+
+download_file() {
+    local url="$1"
+    local dest="$2"
+
+    rm -f -- "$dest"
+    if command_exists curl; then
+        curl -fL -sS --connect-timeout 6 --max-time 20 --retry 1 -o "$dest" "$url"
+    elif command_exists wget; then
+        wget -q -O "$dest" -T 20 "$url"
+    else
+        die_user "未找到 curl 或 wget。请先安装其中一个下载工具。"
+    fi
+}
+
+verify_download() {
+    local url="$1"
+    local path="$2"
+    local clean_url="${url%%\?*}"
+
+    [[ -s "$path" ]] || return 1
+
+    case "$clean_url" in
+        *.tar.gz|*.tgz)
+            tar -tzf "$path" >/dev/null
+            ;;
+        *.zip)
+            if command_exists unzip; then
+                unzip -tq "$path" >/dev/null
+            else
+                log_warn "未安装 unzip，跳过 zip 完整性测试。"
+            fi
+            ;;
+    esac
+}
+
+download_with_mirrors() {
+    local original_url="$1"
+    local dest="$2"
+    local attempt_url part mirror direct_first
+
+    part="${dest}.part.$$"
+    direct_first="${IXTF_GITHUB_DIRECT_FIRST:-false}"
+
+    try_download_source() {
+        local label="$1"
+        local url="$2"
+        log_info "正在尝试下载源：${label}"
+        log_info "下载地址：${url}"
+        if download_file "$url" "$part" && verify_download "$original_url" "$part"; then
+            mv -f -- "$part" "$dest"
+            log_ok "下载完成，已通过基本校验：${label}"
+            return 0
+        fi
+        rm -f -- "$part"
+        log_warn "下载源失败：${label}"
+        return 1
+    }
+
+    if [[ "$direct_first" == "true" ]]; then
+        try_download_source "原始 GitHub" "$original_url" && return 0
+    fi
+
+    while IFS= read -r mirror; do
+        attempt_url="$(mirror_url "$mirror" "$original_url")"
+        try_download_source "镜像 ${mirror}" "$attempt_url" && return 0
+    done < <(split_mirrors)
+
+    if [[ "$direct_first" != "true" ]]; then
+        try_download_source "原始 GitHub（最后兜底）" "$original_url" && return 0
+    fi
+
+    log_error "所有下载源均失败。"
+    log_error "可设置 IXTF_GITHUB_MIRRORS 指定镜像，或设置 IXTF_EASYTIER_DOWNLOAD_URL 指定 release archive。"
+    log_error "也可设置 IXTF_EASYTIER_VERSION 指定版本，或设置 IXTF_GITHUB_DIRECT_FIRST=true 先走原始 GitHub。"
+    log_error "手工方案：在另一台机器安装后复制 /usr/local/bin/easytier-core 到本机同路径，并 chmod +x。"
+    return 1
+}
+
+detect_os() {
+    local os
+    os="$(uname -s 2>/dev/null || true)"
+    case "${os,,}" in
+        linux) printf 'linux\n' ;;
+        *) die_user "不支持的系统：${os:-unknown}。当前自动安装仅支持 Linux。" ;;
+    esac
+}
+
+detect_arch() {
+    local arch
+    log_info "正在检测系统架构。"
+    arch="$(uname -m 2>/dev/null || true)"
+    case "$arch" in
+        x86_64|amd64) printf 'amd64\n' ;;
+        aarch64|arm64) printf 'arm64\n' ;;
+        *) die_user "不支持的系统架构：${arch:-unknown}。当前支持 amd64 / arm64。" ;;
+    esac
+}
+
+easytier_asset_arch() {
+    case "$1" in
+        amd64) printf 'x86_64\n' ;;
+        arm64) printf 'aarch64\n' ;;
+        *) return 1 ;;
+    esac
+}
+
+normalize_easytier_version() {
+    local version="$1"
+    [[ -n "$version" ]] || return 1
+    if [[ "$version" == v* ]]; then
+        printf '%s\n' "$version"
+    else
+        printf 'v%s\n' "$version"
+    fi
+}
+
+latest_easytier_version() {
+    local tmp tag
+    tmp="$(make_tmp_file "ix-transit-fabric.github-api")"
+    if ! download_with_mirrors "https://api.github.com/repos/${GITHUB_REPO}/releases/latest" "$tmp"; then
+        rm -f -- "$tmp"
+        return 1
+    fi
+
+    tag="$(grep -m1 '"tag_name"' "$tmp" | sed -E 's/.*"tag_name"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/' || true)"
+    rm -f -- "$tmp"
+    [[ -n "$tag" && "$tag" != *"tag_name"* ]] || return 1
+    printf '%s\n' "$tag"
+}
+
+resolve_easytier_download_url() {
+    local os arch asset_arch version asset
+    os="$(detect_os)"
+    arch="$(detect_arch)"
+    asset_arch="$(easytier_asset_arch "$arch")"
+
+    if [[ -n "${IXTF_EASYTIER_DOWNLOAD_URL:-}" ]]; then
+        printf '%s\n' "$IXTF_EASYTIER_DOWNLOAD_URL"
+        return 0
+    fi
+
+    if [[ -n "${IXTF_EASYTIER_VERSION:-}" ]]; then
+        version="$(normalize_easytier_version "$IXTF_EASYTIER_VERSION")"
+    else
+        log_info "正在解析 EasyTier 最新版本。"
+        if ! version="$(latest_easytier_version)"; then
+            die_user "无法解析 EasyTier 最新版本。请设置 IXTF_EASYTIER_VERSION 或 IXTF_EASYTIER_DOWNLOAD_URL。"
+        fi
+    fi
+
+    asset="easytier-${os}-${asset_arch}-${version}.zip"
+    printf 'https://github.com/%s/releases/download/%s/%s\n' "$GITHUB_REPO" "$version" "$asset"
+}
+
+detect_easytier_binary() {
+    if [[ -x "$EASYTIER_TARGET" ]]; then
+        printf '%s\n' "$EASYTIER_TARGET"
+        return 0
+    fi
+
+    if command_exists easytier-core; then
+        command -v easytier-core
+        return 0
+    fi
+
+    return 1
+}
+
+get_easytier_version() {
+    local bin="${1:-}"
+    local output rc
+    [[ -n "$bin" && -x "$bin" ]] || {
+        printf '未知\n'
+        return 0
+    }
+
+    set +e
+    output="$("$bin" --version 2>&1 | sed -n '1p')"
+    rc=$?
+    set -e
+
+    if [[ "$rc" -ne 0 || -z "$output" ]]; then
+        log_warn "无法读取 EasyTier 版本。"
+        printf '未知\n'
+    else
+        printf '%s\n' "$output"
+    fi
+}
+
+extract_easytier_archive() {
+    local archive="$1"
+    local url="$2"
+    local workdir="$3"
+    local clean_url="${url%%\?*}"
+
+    case "$clean_url" in
+        *.tar.gz|*.tgz)
+            tar -xzf "$archive" -C "$workdir"
+            ;;
+        *.zip)
+            command_exists unzip || die_user "下载的是 zip 包，但系统没有 unzip。请安装 unzip，或用 IXTF_EASYTIER_DOWNLOAD_URL 指定 tar.gz 包。"
+            unzip -q "$archive" -d "$workdir"
+            ;;
+        *)
+            die_user "不支持的 EasyTier 压缩包格式：${url}"
+            ;;
+    esac
+}
+
+install_easytier() {
+    require_root "$@"
+
+    local url archive workdir binary new_target installed_version
+    ensure_config_dir
+    url="$(resolve_easytier_download_url)"
+    archive="$(make_tmp_file "ix-transit-fabric.easytier")"
+    workdir="$(make_tmp_dir "ix-transit-fabric.extract")"
+
+    log_info "EasyTier 下载地址：${url}"
+    if ! download_with_mirrors "$url" "$archive"; then
+        rm -rf -- "$archive" "$workdir"
+        die_user "EasyTier 下载失败，已有 easytier-core 不会被改动。可设置 IXTF_EASYTIER_VERSION / IXTF_EASYTIER_DOWNLOAD_URL 后重试，或手动复制 easytier-core 到 ${EASYTIER_TARGET} 并 chmod +x。"
+    fi
+
+    log_info "下载完成，正在解压和校验。"
+    extract_easytier_archive "$archive" "$url" "$workdir"
+    binary="$(find "$workdir" -type f -name easytier-core 2>/dev/null | head -n 1 || true)"
+    [[ -n "$binary" ]] || {
+        rm -rf -- "$archive" "$workdir"
+        die_user "压缩包内没有找到 easytier-core，已有版本不会被改动。"
+    }
+
+    backup_binary "$EASYTIER_TARGET"
+    new_target="${EASYTIER_TARGET}.new.$$"
+    log_info "正在安装 easytier-core。"
+    install -m 0755 "$binary" "$new_target"
+    mv -f -- "$new_target" "$EASYTIER_TARGET"
+
+    rm -rf -- "$archive" "$workdir"
+    installed_version="$(get_easytier_version "$EASYTIER_TARGET")"
+    log_ok "EasyTier 安装完成：${EASYTIER_TARGET}（${installed_version}）"
+}
+
+update_easytier() {
+    install_easytier "$@"
+}
+
+ensure_easytier() {
+    if detect_easytier_binary >/dev/null 2>&1; then
+        return 0
+    fi
+
+    log_warn "未找到 easytier-core，这是本项目必需组件。"
+    if auto_install_easytier_enabled || assume_yes_enabled; then
+        install_easytier
+        return 0
+    fi
+
+    if is_tty; then
+        if [[ "$(prompt_yes_no "是否现在自动下载并安装 EasyTier" "true")" == "true" ]]; then
+            install_easytier
+            return 0
+        fi
+        log_warn "未安装 EasyTier，当前线路无法启动。稍后可运行："
+        printf '  bash install.sh install-easytier\n' >&2
+        return 1
+    fi
+
+    die_user "easytier-core 不存在。非交互模式请先运行：bash install.sh install-easytier，或设置 IXTF_ASSUME_YES=true / IXTF_AUTO_INSTALL_EASYTIER=true。"
+}
+
+install_nftables() {
+    if command_exists nft; then
+        return 0
+    fi
+
+    command_exists apt-get || die_user "未找到 nft 命令，且系统没有 apt-get。请手动安装 nftables。"
+    log_info "正在安装 nftables。"
+    apt-get update
+    DEBIAN_FRONTEND=noninteractive apt-get install -y nftables
+    command_exists nft || die_user "nftables 安装后仍未找到 nft 命令。"
+}
+
+preflight_check() {
+    require_root "$@"
+    local mode="${1:-all}" missing_core=0 cmd
+    printf 'ix-transit-fabric preflight\n'
+    printf 'mode: %s\n' "$mode"
+    printf 'read-only: no Profile changes, no nftables changes\n'
+
+    preflight_line() {
+        local status="$1" item="$2" detail="${3:-}"
+        if [[ -n "$detail" ]]; then
+            printf '[%s] %s: %s\n' "$status" "$item" "$detail"
+        else
+            printf '[%s] %s\n' "$status" "$item"
+        fi
+    }
+
+    for cmd in systemctl ip ss; do
+        if command_exists "$cmd"; then
+            preflight_line OK "$cmd" "$(command -v "$cmd" 2>/dev/null || true)"
+        else
+            preflight_line FAIL "$cmd" "missing"
+            missing_core=$((missing_core + 1))
+        fi
+    done
+    if [[ "$mode" == "ingress" || "$mode" == "all" ]]; then
+        if command_exists nft; then
+            preflight_line OK "nft" "$(command -v nft 2>/dev/null || true)"
+        else
+            preflight_line FAIL "nft" "入口转发需要 nftables"
+            missing_core=$((missing_core + 1))
+        fi
+    else
+        command_exists nft && preflight_line OK "nft" "$(command -v nft 2>/dev/null || true)" || preflight_line INFO "nft" "landing-only 可稍后安装"
+    fi
+    if command_exists curl || command_exists wget; then
+        preflight_line OK "curl/wget" "available"
+    else
+        preflight_line FAIL "curl/wget" "missing"
+        missing_core=$((missing_core + 1))
+    fi
+    if command_exists tar; then
+        preflight_line OK "tar" "$(command -v tar 2>/dev/null || true)"
+    else
+        preflight_line FAIL "tar" "missing"
+        missing_core=$((missing_core + 1))
+    fi
+    command_exists unzip && preflight_line OK "unzip" "$(command -v unzip 2>/dev/null || true)" || preflight_line WARN "unzip" "zip release 包需要 unzip"
+    if detect_easytier_binary >/dev/null 2>&1; then
+        preflight_line OK "easytier-core" "$(detect_easytier_binary)"
+    else
+        preflight_line WARN "easytier-core" "missing; run bash install.sh install-easytier"
+    fi
+    if detect_nc_cmd >/dev/null 2>&1; then
+        preflight_line OK "nc/ncat" "$(detect_nc_cmd)"
+    else
+        preflight_line WARN "nc/ncat" "missing; run bash install.sh install-netcat"
+    fi
+    if [[ "$missing_core" -gt 0 ]]; then
+        printf 'preflight result: core dependency issue(s)=%s\n' "$missing_core"
+        return 1
+    fi
+    printf 'preflight result: OK\n'
+}
+
+run_profile_install_preflight() {
+    local mode="${1:-all}"
+    preflight_check "$mode" || true
+    ensure_easytier
+    ensure_nc_tool
+}
+
+validate_port() {
+    local value="$1"
+    [[ "$value" =~ ^[0-9]{1,5}$ ]] || return 1
+    local port=$((10#$value))
+    (( port >= 1 && port <= 65535 ))
+}
+
+ports_equal() {
+    validate_port "${1:-}" || return 1
+    validate_port "${2:-}" || return 1
+    (( 10#$1 == 10#$2 ))
+}
+
+validate_network_name() {
+    local value="$1"
+    [[ "$value" =~ ^[A-Za-z0-9._-]{1,64}$ ]]
+}
+
+validate_secret() {
+    local value="$1"
+    [[ ${#value} -ge 12 && ${#value} -le 256 ]] || return 1
+    [[ "$value" =~ ^[A-Za-z0-9._~:@%+=,/-]+$ ]]
+}
+
+validate_hostname_value() {
+    local value="$1"
+    [[ "$value" =~ ^[A-Za-z0-9._-]{1,64}$ ]]
+}
+
+validate_ipv4() {
+    local value="$1"
+    local a b c d part
+    IFS=. read -r a b c d <<<"$value"
+    [[ -n "${a:-}" && -n "${b:-}" && -n "${c:-}" && -n "${d:-}" ]] || return 1
+    for part in "$a" "$b" "$c" "$d"; do
+        [[ "$part" =~ ^[0-9]{1,3}$ ]] || return 1
+        (( 10#$part >= 0 && 10#$part <= 255 )) || return 1
+    done
+}
+
+validate_ipv4_cidr() {
+    local value="$1"
+    [[ "$value" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}/[0-9]{1,2}$ ]] || return 1
+    local ip="${value%/*}"
+    local prefix="${value##*/}"
+    validate_ipv4 "$ip" || return 1
+    (( 10#$prefix >= 0 && 10#$prefix <= 32 ))
+}
+
+ipv4_to_int() {
+    local ip="$1" a b c d
+    validate_ipv4 "$ip" || return 1
+    IFS=. read -r a b c d <<<"$ip"
+    printf '%s\n' $(( (10#$a << 24) + (10#$b << 16) + (10#$c << 8) + 10#$d ))
+}
+
+cidr_network24() {
+    local cidr="$1" ip a b c d
+    validate_ipv4_cidr "$cidr" || return 1
+    ip="${cidr%/*}"
+    IFS=. read -r a b c d <<<"$ip"
+    printf '%s.%s.%s.0/24\n' "$((10#$a))" "$((10#$b))" "$((10#$c))"
+}
+
+cidr_prefix() {
+    local cidr="$1"
+    validate_ipv4_cidr "$cidr" || return 1
+    printf '%s\n' "${cidr##*/}"
+}
+
+ip_from_cidr_host() {
+    local cidr="$1" host="$2" ip a b c d
+    validate_ipv4_cidr "$cidr" || return 1
+    [[ "$host" =~ ^[0-9]{1,3}$ ]] || return 1
+    (( 10#$host >= 1 && 10#$host <= 254 )) || return 1
+    ip="${cidr%/*}"
+    IFS=. read -r a b c d <<<"$ip"
+    printf '%s.%s.%s.%s\n' "$((10#$a))" "$((10#$b))" "$((10#$c))" "$((10#$host))"
+}
+
+cidr_from_subnet_host() {
+    local subnet="$1" host="$2" prefix ip
+    prefix="$(cidr_prefix "$subnet")" || return 1
+    ip="$(ip_from_cidr_host "$subnet" "$host")" || return 1
+    printf '%s/%s\n' "$ip" "$prefix"
+}
+
+same_ipv4_subnet24() {
+    local a="$1" b="$2" an bn
+    an="$(cidr_network24 "$a")" || return 1
+    bn="$(cidr_network24 "$b")" || return 1
+    [[ "$an" == "$bn" ]]
+}
+
+is_reserved_private_subnet() {
+    local subnet="$1"
+    case "$subnet" in
+        10.0.0.0/24|10.8.0.0/24|10.10.10.0/24|10.144.144.0/24|192.168.*|172.16.*|172.17.*|172.18.*|172.19.*|172.20.*|172.21.*|172.22.*|172.23.*|172.24.*|172.25.*|172.26.*|172.27.*|172.28.*|172.29.*|172.30.*|172.31.*)
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+subnet_conflicts_local_routes() {
+    local subnet="$1" net
+    command_exists ip || return 1
+    net="${subnet%/24}"
+    ip route 2>/dev/null | grep -Fq "$net"
+}
+
+generate_et_subnet() {
+    local tries=0 b c subnet
+    while (( tries < 60 )); do
+        b=$((64 + (0x$(random_hex 1) % 64)))
+        c=$((0x$(random_hex 1)))
+        subnet="10.${b}.${c}.0/24"
+        if ! is_reserved_private_subnet "$subnet" && ! subnet_conflicts_local_routes "$subnet"; then
+            printf '%s\n' "$subnet"
+            return 0
+        fi
+        tries=$((tries + 1))
+    done
+    printf '10.%s.%s.0/24\n' "$((64 + ($$ % 64)))" "$((($(date +%s) + $$) % 255))"
+}
+
+generate_landing_et_ip() {
+    local subnet="${1:-}"
+    [[ -n "$subnet" ]] || subnet="$(generate_et_subnet)"
+    cidr_from_subnet_host "$subnet" 2
+}
+
+generate_ingress_et_ip() {
+    local subnet="${1:-}"
+    [[ -n "$subnet" ]] || subnet="$(generate_et_subnet)"
+    cidr_from_subnet_host "$subnet" 1
+}
+
+validate_et_cidr_pair() {
+    local landing_cidr="$1" ingress_cidr="$2" landing_ip ingress_ip
+    validate_ipv4_cidr "$landing_cidr" || return 1
+    validate_ipv4_cidr "$ingress_cidr" || return 1
+    same_ipv4_subnet24 "$landing_cidr" "$ingress_cidr" || return 1
+    landing_ip="${landing_cidr%/*}"
+    ingress_ip="${ingress_cidr%/*}"
+    [[ "$landing_ip" != "$ingress_ip" ]]
+}
+
+validate_host() {
+    local value="$1"
+    [[ -n "$value" ]] || return 1
+    [[ "$value" =~ ^[A-Za-z0-9.-]{1,253}$ ]]
+}
+
+random_hex() {
+    local bytes="${1:-2}"
+    if [[ -r /dev/urandom ]]; then
+        od -An -N"$bytes" -tx1 /dev/urandom 2>/dev/null | tr -d ' \n'
+    else
+        printf '%x%x\n' "$$" "$(date +%s)"
+    fi
+}
+
+generate_network_name() {
+    printf 'ix-%s\n' "$(random_hex 2)"
+}
+
+generate_profile_id() {
+    local prefix="${1:-line}"
+    prefix="${prefix,,}"
+    prefix="${prefix//[^a-z0-9-]/}"
+    [[ -n "$prefix" ]] || prefix="line"
+    printf '%s-%s\n' "$prefix" "$(random_hex 2)"
+}
+
+validate_profile_id() {
+    local value="$1"
+    [[ "$value" =~ ^[a-z0-9-]{3,32}$ ]] || return 1
+    [[ "$value" != */* && "$value" != *' '* ]]
+}
+
+profile_env_path() {
+    local profile_id="$1"
+    validate_profile_id "$profile_id" || return 1
+    printf '%s/%s.env\n' "$PROFILES_DIR" "$profile_id"
+}
+
+profile_code_path() {
+    local profile_id="$1"
+    validate_profile_id "$profile_id" || return 1
+    printf '%s/%s.code\n' "$CODES_DIR" "$profile_id"
+}
+
+profile_service_name() {
+    local profile_id="$1"
+    validate_profile_id "$profile_id" || return 1
+    printf 'ix-transit-easytier@%s.service\n' "$profile_id"
+}
+
+profile_ids() {
+    local file base
+    [[ -d "$PROFILES_DIR" ]] || return 0
+    for file in "$PROFILES_DIR"/*.env; do
+        [[ -e "$file" ]] || continue
+        base="$(basename "$file" .env)"
+        validate_profile_id "$base" || continue
+        printf '%s\n' "$base"
+    done | sort
+}
+
+profile_count() {
+    profile_ids | awk 'NF{c++} END{print c+0}'
+}
+
+profile_hint_line() {
+    local id="$1" role role_label
+    if load_profile "$id" >/dev/null 2>&1; then
+        case "${ROLE:-}" in
+            panel-landing) role_label="panel-landing" ;;
+            panel-ingress) role_label="panel-ingress" ;;
+            *) role_label="${ROLE:-unknown}" ;;
+        esac
+    else
+        role_label="unreadable"
+    fi
+    printf '  - %s %s\n' "$id" "$role_label" >&2
+}
+
+print_profile_selection_hint() {
+    local requested="${1:-}" verb="${2:-health}" count id first_id=""
+    count="$(profile_count)"
+    if [[ -n "$requested" ]]; then
+        printf '[ERROR] 未找到 Profile：%s\n' "$requested" >&2
+    fi
+    if [[ "$count" -gt 0 ]]; then
+        printf '当前机器已有 Profile：\n' >&2
+        for id in $(profile_ids); do
+            [[ -n "$first_id" ]] || first_id="$id"
+            profile_hint_line "$id"
+        done
+        printf '你可能想运行：\n' >&2
+        printf '  bash install.sh %s %s\n' "$verb" "$first_id" >&2
+        printf '也可以先运行：bash install.sh list-profiles\n' >&2
+    else
+        printf '当前机器没有任何 Profile。请先创建落地或入口 Profile。\n' >&2
+        printf '可先运行：bash install.sh list-profiles\n' >&2
+    fi
+}
+
+resolve_profile_id_for_cmd() {
+    local requested="${1:-}" verb="${2:-health}" count only path
+    if [[ -n "$requested" ]]; then
+        if ! validate_profile_id "$requested"; then
+            printf '[ERROR] PROFILE_ID 格式不正确：%s\n' "$requested" >&2
+            return 2
+        fi
+        path="$(profile_env_path "$requested")" || return 2
+        if [[ ! -f "$path" ]]; then
+            print_profile_selection_hint "$requested" "$verb"
+            return 2
+        fi
+        printf '%s\n' "$requested"
+        return 0
+    fi
+    count="$(profile_count)"
+    if [[ "$count" == "1" ]]; then
+        only="$(profile_ids | head -n 1)"
+        printf '%s\n' "$only"
+        return 0
+    fi
+    if [[ "$count" == "0" && -f "$ENV_FILE" ]]; then
+        printf 'default\n'
+        return 0
+    fi
+    print_profile_selection_hint "" "$verb"
+    return 2
+}
+
+resolve_profile_id() {
+    local requested="${1:-}" count only
+    if [[ -n "$requested" ]]; then
+        validate_profile_id "$requested" || die_user "PROFILE_ID 格式不正确：${requested}"
+        [[ -f "$(profile_env_path "$requested")" ]] || die_user "未找到 Profile：${requested}"
+        printf '%s\n' "$requested"
+        return 0
+    fi
+    count="$(profile_count)"
+    if [[ "$count" == "1" ]]; then
+        only="$(profile_ids | head -n 1)"
+        printf '%s\n' "$only"
+        return 0
+    fi
+    if [[ "$count" == "0" && -f "$ENV_FILE" ]]; then
+        printf 'default\n'
+        return 0
+    fi
+    printf '已有 Profile：\n' >&2
+    profile_ids | sed 's/^/  - /' >&2
+    die_user "请指定 PROFILE_ID。"
+}
+
+generate_secret() {
+    if command_exists openssl; then
+        openssl rand -hex 24
+    elif [[ -r /dev/urandom ]]; then
+        od -An -N24 -tx1 /dev/urandom 2>/dev/null | tr -d ' \n'
+    else
+        printf 'ixtf%s%s\n' "$(date +%s)" "$$"
+    fi
+}
+
+random_port() {
+    local min="${1:-20000}"
+    local max="${2:-60000}"
+    local span=$((max - min + 1))
+    local n
+    if command_exists shuf; then
+        shuf -i "${min}-${max}" -n 1
+        return 0
+    fi
+    n=$((0x$(random_hex 2) % span + min))
+    printf '%s\n' "$n"
+}
+
+is_port_reserved() {
+    case "$1" in
+        22|25|53|80|110|143|443|465|587|993|995|3306|5432|6379|8080|8443|3389|5900|11211|27017|9200|9300|51820|11010|11011|11012)
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+is_easytier_common_port() {
+    case "$1" in
+        11010|11011|11012) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+is_common_system_port() {
+    case "$1" in
+        22|25|53|80|110|143|443|465|587|993|995|3306|5432|6379|8080|8443|3389|5900|11211|27017|9200|9300|51820)
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+is_port_in_use() {
+    local port="$1"
+    command_exists ss || return 1
+    { ss -lntup 2>/dev/null || true; ss -lnuap 2>/dev/null || true; } | grep -Eq "[:.]${port}[[:space:]]"
+}
+
+is_tcp_port_listening() {
+    local port="$1"
+    command_exists ss || return 1
+    ss -lntup 2>/dev/null | grep -Eq "[:.]${port}[[:space:]]"
+}
+
+is_udp_port_listening() {
+    local port="$1"
+    command_exists ss || return 1
+    ss -lnuap 2>/dev/null | grep -Eq "[:.]${port}[[:space:]]"
+}
+
+show_port_owner() {
+    local port="$1"
+    if ! command_exists ss; then
+        printf '[WARN] 未找到 ss 命令，无法显示端口占用进程。\n'
+        return 0
+    fi
+
+    { ss -lntup 2>/dev/null || true; ss -lnuap 2>/dev/null || true; } | grep -E "[:.]${port}[[:space:]]" || true
+}
+
+validate_listener_port_available() {
+    local proto="$1"
+    local port="$2"
+    local occupied="false" normalized list
+
+    validate_port "$port" || return 1
+    normalized="$(normalize_listener_proto "$proto" "both" 2>/dev/null || printf '%s\n' "$proto")"
+    list="$(normalize_listener_protos "$normalized" "both" 2>/dev/null || printf '%s\n' "$normalized")"
+    case "$normalized" in
+        tcp)
+            is_tcp_port_listening "$port" && occupied="true"
+            ;;
+        udp)
+            is_udp_port_listening "$port" && occupied="true"
+            ;;
+        both|all)
+            if is_tcp_port_listening "$port" || is_udp_port_listening "$port"; then
+                occupied="true"
+            fi
+            ;;
+        ws|wss)
+            is_tcp_port_listening "$port" && occupied="true"
+            ;;
+        quic|wg)
+            is_udp_port_listening "$port" && occupied="true"
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+
+    if [[ "$occupied" == "true" ]]; then
+        printf '[WARN] 当前端口已被占用，不能作为 EasyTier listener：%s/%s\n' "$(proto_list_display "$list")" "$port" >&2
+        show_port_owner "$port" >&2
+        return 1
+    fi
+    return 0
+}
+
+pick_random_port_excluding_listeners() {
+    local proto="${1:-both}"
+    local port tries=0
+    while (( tries < 30 )); do
+        port="$(random_port 20000 60000)"
+        if ! is_port_reserved "$port" && validate_listener_port_available "$proto" "$port" >/dev/null 2>&1; then
+            printf '%s\n' "$port"
+            return 0
+        fi
+        tries=$((tries + 1))
+    done
+    return 1
+}
+
+pick_random_port() {
+    local port tries=0
+    while (( tries < 30 )); do
+        port="$(random_port 20000 60000)"
+        if ! is_port_reserved "$port" && ! is_port_in_use "$port"; then
+            printf '%s\n' "$port"
+            return 0
+        fi
+        tries=$((tries + 1))
+    done
+    return 1
+}
+
+proto_input_normalize() {
+    local value="$1"
+    value="$(trim_space "$value")"
+    value="${value,,}"
+    value="${value//+/ }"
+    value="${value//\// }"
+    value="${value//,/ }"
+    value="$(printf '%s\n' "$value" | tr -s '[:space:]' ' ')"
+    trim_space "$value"
+}
+
+is_supported_tunnel_proto() {
+    case "${1:-}" in
+        tcp|udp|ws|wss|quic|wg) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+normalize_tunnel_proto() {
+    local value="${1:-}"
+    local default="${2:-both}"
+    value="$(proto_input_normalize "$value")"
+    [[ -n "$value" ]] || value="$default"
+
+    case "$value" in
+        tcp|udp|ws|wss|quic|wg) printf '%s\n' "$value" ;;
+        both|"tcp udp"|"udp tcp") printf 'both\n' ;;
+        all|"tcp udp ws wss quic wg"|"udp tcp ws wss quic wg") printf 'all\n' ;;
+        *) return 1 ;;
+    esac
+}
+
+normalize_proto_list() {
+    local value="${1:-}" default="${2:-both}" normalized token seen=" " out=()
+    normalized="$(normalize_tunnel_proto "$value" "$default")" || return 1
+    case "$normalized" in
+        both)
+            printf 'tcp udp\n'
+            ;;
+        all)
+            printf 'tcp udp ws wss quic wg\n'
+            ;;
+        *)
+            for token in $normalized; do
+                is_supported_tunnel_proto "$token" || return 1
+                if [[ "$seen" != *" ${token} "* ]]; then
+                    out+=("$token")
+                    seen="${seen}${token} "
+                fi
+            done
+            (IFS=' '; printf '%s\n' "${out[*]}")
+            ;;
+    esac
+}
+
+proto_list_to_value() {
+    local list="$1"
+    list="$(proto_input_normalize "$list")"
+    case "$list" in
+        "tcp udp"|"udp tcp") printf 'both\n' ;;
+        "tcp udp ws wss quic wg") printf 'all\n' ;;
+        *) printf '%s\n' "$list" ;;
+    esac
+}
+
+normalize_listener_proto() {
+    normalize_tunnel_proto "${1:-}" "${2:-both}"
+}
+
+normalize_listener_protos() {
+    normalize_proto_list "${1:-}" "${2:-both}"
+}
+
+normalize_entry_proto() {
+    normalize_tunnel_proto "${1:-}" "${2:-both}"
+}
+
+normalize_peer_protos() {
+    normalize_proto_list "${1:-}" "${2:-both}"
+}
+
+normalize_forward_proto() {
+    local value="${1:-}"
+    local default="${2:-both}"
+    value="$(proto_input_normalize "$value")"
+    [[ -n "$value" ]] || value="$default"
+
+    case "$value" in
+        tcp|udp) printf '%s\n' "$value" ;;
+        both|all|"tcp udp"|"udp tcp") printf 'both\n' ;;
+        *) return 1 ;;
+    esac
+}
+
+proto_display() {
+    case "${1:-}" in
+        tcp) printf 'TCP\n' ;;
+        udp) printf 'UDP\n' ;;
+        ws) printf 'WS\n' ;;
+        wss) printf 'WSS\n' ;;
+        quic) printf 'QUIC\n' ;;
+        wg) printf 'WG\n' ;;
+        both) printf 'TCP/UDP\n' ;;
+        all) printf 'TCP/UDP/WS/WSS/QUIC/WG\n' ;;
+        *) printf '%s\n' "${1:-未知}" ;;
+    esac
+}
+
+proto_list_display() {
+    local value="${1:-}" list proto labels=()
+    list="$(normalize_proto_list "$value" "both" 2>/dev/null || printf '%s\n' "$value")"
+    for proto in $list; do
+        labels+=("$(proto_display "$proto")")
+    done
+    (IFS='/'; printf '%s\n' "${labels[*]}")
+}
+
+easytier_supports_proto() {
+    local proto="$1"
+    is_supported_tunnel_proto "$proto"
+}
+
+render_listener_args() {
+    local proto="$1" port="$2"
+    easytier_supports_proto "$proto" || return 1
+    printf '%s://0.0.0.0:%s\n' "$proto" "$port"
+}
+
+render_peer_args() {
+    local proto="$1" host="$2" port="$3"
+    easytier_supports_proto "$proto" || return 1
+    printf '%s://%s:%s\n' "$proto" "$host" "$port"
+}
+
+listener_urls_value() {
+    local proto="$1"
+    local port="$2"
+    local list item out=()
+    list="$(normalize_listener_protos "$proto" "both")" || return 1
+    for item in $list; do
+        out+=("$(render_listener_args "$item" "$port")")
+    done
+    (IFS=' '; printf '%s\n' "${out[*]}")
+}
+
+peer_urls_value() {
+    local proto="$1"
+    local host="$2"
+    local port="$3"
+    local list item out=()
+    list="$(normalize_peer_protos "$proto" "both")" || return 1
+    for item in $list; do
+        out+=("$(render_peer_args "$item" "$host" "$port")")
+    done
+    (IFS=' '; printf '%s\n' "${out[*]}")
+}
+
+listener_protos_json() {
+    local list proto first="true"
+    list="$(normalize_listener_protos "${1:-}" "both")" || return 1
+    printf '['
+    for proto in $list; do
+        [[ "$first" == "true" ]] || printf ','
+        printf '"%s"' "$proto"
+        first="false"
+    done
+    printf ']\n'
+}
+
+prompt_required() {
+    local label="$1"
+    local default="${2:-}"
+    local value
+
+    require_tty
+    while true; do
+        if [[ -n "$default" ]]; then
+            printf '%s（默认 %s）：' "$label" "$default" >&2
+        else
+            printf '%s：' "$label" >&2
+        fi
+        IFS= read -r value || return 1
+        value="${value:-$default}"
+        if [[ -n "$value" ]]; then
+            printf '%s\n' "$value"
+            return 0
+        fi
+        log_warn "该项不能为空。"
+    done
+}
+
+prompt_validated() {
+    local label="$1"
+    local default="$2"
+    local validator="$3"
+    local error_message="$4"
+    local value
+
+    while true; do
+        value="$(prompt_required "$label" "$default")" || return 1
+        if "$validator" "$value"; then
+            printf '%s\n' "$value"
+            return 0
+        fi
+        log_warn "$error_message"
+    done
+}
+
+prompt_secret() {
+    local first second
+
+    require_tty
+    while true; do
+        printf '请输入 EasyTier 网络密钥（不会显示）：' >&2
+        IFS= read -r -s first || return 1
+        printf '\n' >&2
+        printf '请再次输入 EasyTier 网络密钥：' >&2
+        IFS= read -r -s second || return 1
+        printf '\n' >&2
+
+        if [[ "$first" != "$second" ]]; then
+            log_warn "两次输入的网络密钥不一致。"
+            continue
+        fi
+        if ! validate_secret "$first"; then
+            log_warn "网络密钥至少 12 位，且只能包含字母、数字和 . _ ~ : @ % + = , / -。"
+            continue
+        fi
+        printf '%s\n' "$first"
+        return 0
+    done
+}
+
+prompt_secret_default() {
+    local generated="$1"
+    local custom first second
+
+    require_tty install-panel-landing
+    custom="$(prompt_yes_no "是否自定义 EasyTier 网络密钥" "false")" || return 1
+    if [[ "$custom" != "true" ]]; then
+        printf '%s\n' "$generated"
+        return 0
+    fi
+
+    while true; do
+        printf '请输入 EasyTier 网络密钥（不会显示）：' >&2
+        IFS= read -r -s first || return 1
+        printf '\n' >&2
+        printf '请再次输入 EasyTier 网络密钥：' >&2
+        IFS= read -r -s second || return 1
+        printf '\n' >&2
+
+        if [[ "$first" != "$second" ]]; then
+            log_warn "两次输入的网络密钥不一致。"
+            continue
+        fi
+        if ! validate_secret "$first"; then
+            log_warn "网络密钥至少 12 位，且只能包含字母、数字和 . _ ~ : @ % + = , / -。"
+            continue
+        fi
+        printf '%s\n' "$first"
+        return 0
+    done
+}
+
+prompt_port() {
+    local label="$1"
+    local default="${2:-}"
+    prompt_validated "$label" "$default" validate_port "端口必须是 1-65535 之间的整数。"
+}
+
+prompt_random_port() {
+    local label="$1"
+    local default_port="${2:-}"
+
+    if [[ -z "$default_port" ]]; then
+        if ! default_port="$(pick_random_port)"; then
+            log_warn "随机端口连续 30 次未找到可用值，请手动输入。"
+            default_port=""
+        fi
+    fi
+
+    if [[ -n "$default_port" ]]; then
+        prompt_port "${label}（直接回车将使用随机未占用高端口）" "$default_port"
+    else
+        prompt_port "${label}（请手动输入 20000-60000 范围内未占用端口）" ""
+    fi
+}
+
+prompt_listener_port() {
+    local label="$1"
+    local proto="$2"
+    local default_port="${3:-}"
+    local value generated_default="false"
+
+    if [[ -z "$default_port" ]]; then
+        if ! default_port="$(pick_random_port_excluding_listeners "$proto")"; then
+            log_warn "随机 listener 端口连续 30 次未找到可用值，请手动输入。"
+            default_port=""
+        fi
+        generated_default="true"
+    fi
+
+    require_tty
+    while true; do
+        if [[ -n "$default_port" ]]; then
+            printf '%s（直接回车将使用随机未占用高端口，默认 %s）：' "$label" "$default_port" >&2
+        else
+            printf '%s（请手动输入 20000-60000 范围内未占用端口）：' "$label" >&2
+        fi
+        IFS= read -r value || return 1
+        if [[ -z "$value" ]]; then
+            if [[ -z "$default_port" ]]; then
+                log_warn "端口不能为空。"
+                continue
+            fi
+            value="$default_port"
+        fi
+        if ! validate_port "$value"; then
+            log_warn "端口必须是 1-65535 之间的整数。"
+            continue
+        fi
+        if validate_listener_port_available "$proto" "$value"; then
+            printf '%s\n' "$value"
+            return 0
+        fi
+        if [[ "$generated_default" == "true" && "$value" == "$default_port" ]]; then
+            if default_port="$(pick_random_port_excluding_listeners "$proto")"; then
+                log_warn "默认 listener 端口刚被占用，已重新选择：${default_port}"
+                continue
+            fi
+        fi
+        log_warn "当前端口已被占用，不能作为 EasyTier listener。请换一个端口。"
+    done
+}
+
+prompt_optional_port() {
+    local label="$1"
+    local value
+
+    require_tty
+    while true; do
+        printf '%s：' "$label" >&2
+        IFS= read -r value || return 1
+        if [[ -z "$value" ]]; then
+            printf '\n'
+            return 0
+        fi
+        if validate_port "$value"; then
+            printf '%s\n' "$value"
+            return 0
+        fi
+        log_warn "端口必须是 1-65535 之间的整数；留空表示跳过。"
+    done
+}
+
+warn_if_remote_port_looks_like_tunnel_port() {
+    local remote_port="$1"
+    local listener_port="${2:-}"
+    local cnix_entry_port="${3:-}"
+    local local_port="${4:-}"
+    local needs_confirm="false"
+
+    if [[ -n "$listener_port" ]] && ports_equal "$remote_port" "$listener_port"; then
+        cat >&2 <<EOF
+[WARN] 你输入的是 EasyTier listener 端口，不是业务端口。
+[WARN] REMOTE_PORT 是香港业务服务端口，例如 Xray/sing-box/Web 监听端口。
+[WARN] 它不是 EasyTier listener 端口，也不是 CNIX 面板入口端口。
+EOF
+        needs_confirm="true"
+    fi
+
+    if [[ -n "$cnix_entry_port" ]] && ports_equal "$remote_port" "$cnix_entry_port"; then
+        cat >&2 <<EOF
+[WARN] 你输入的是 CNIX 商家入口端口，不是落地机业务端口。
+[WARN] REMOTE_PORT 是香港业务服务端口，例如 Xray/sing-box/Web 监听端口。
+[WARN] 它不是 EasyTier listener 端口，也不是 CNIX 面板入口端口。
+EOF
+        needs_confirm="true"
+    fi
+
+    if is_easytier_common_port "$remote_port"; then
+        cat >&2 <<EOF
+[WARN] 这个端口是 EasyTier 常见端口，请确认它确实是落地机业务服务端口。
+EOF
+        needs_confirm="true"
+    fi
+
+    if [[ -n "$local_port" ]] && ports_equal "$remote_port" "$local_port"; then
+        cat >&2 <<EOF
+[WARN] REMOTE_PORT 与入口机 LOCAL_PORT 相同。
+[WARN] 这有时是刻意配置，但请确认 REMOTE_PORT 确实是香港业务服务端口。
+EOF
+    fi
+
+    if is_common_system_port "$remote_port"; then
+        cat >&2 <<EOF
+[WARN] REMOTE_PORT 是常见系统/服务端口，请确认香港业务服务确实监听在该端口。
+EOF
+    fi
+
+    [[ "$needs_confirm" == "true" ]]
+}
+
+print_remote_port_context() {
+    local landing_et_ip="${1:-LANDING_ET_IP}"
+    local listener_port="${2:-LISTENER_PORT}"
+    cat >&2 <<EOF
+REMOTE_PORT 是落地机业务服务端口。
+它只用于入口机通过 EasyTier 虚拟 IP 访问：
+${landing_et_ip}:REMOTE_PORT
+
+CNIX 面板出口端口应该填写：
+${listener_port}
+
+不要把 REMOTE_PORT 填到 CNIX 面板出口。
+EOF
+}
+
+print_four_port_reminder() {
+    cat >&2 <<EOF
+四端口提醒：
+- LOCAL_PORT：客户端连接公网入口 VPS 的端口。
+- CNIX_ENTRY_PORT：CNIX 商家入口端口。
+- LISTENER_PORT：落地机 EasyTier listener，填写到 CNIX 面板出口。
+- REMOTE_PORT：落地业务服务端口，不是 CNIX 面板出口。
+
+EOF
+}
+
+print_remote_port_short_hint() {
+    printf 'REMOTE_PORT 是业务服务端口，不是 CNIX 面板出口端口。\n' >&2
+}
+
+validate_remote_port_with_context() {
+    local remote_port="$1"
+    local listener_port="${2:-}"
+    local cnix_entry_port="${3:-}"
+    local local_port="${4:-}"
+    local answer
+
+    validate_port "$remote_port" || return 1
+    if warn_if_remote_port_looks_like_tunnel_port "$remote_port" "$listener_port" "$cnix_entry_port" "$local_port"; then
+        answer="$(prompt_yes_no "是否确认继续使用这个 REMOTE_PORT" "false")" || return 1
+        [[ "$answer" == "true" ]] || return 2
+    fi
+    return 0
+}
+
+prompt_remote_port_with_context() {
+    local label="$1"
+    local default="${2:-}"
+    local listener_port="${3:-}"
+    local cnix_entry_port="${4:-}"
+    local local_port="${5:-}"
+    local value rc
+
+    require_tty
+    while true; do
+        if [[ -n "$default" ]]; then
+            printf '%s（默认 %s）：' "$label" "$default" >&2
+        else
+            printf '%s：' "$label" >&2
+        fi
+        IFS= read -r value || return 1
+        value="${value:-$default}"
+        if [[ -z "$value" ]]; then
+            return 3
+        fi
+
+        set +e
+        validate_remote_port_with_context "$value" "$listener_port" "$cnix_entry_port" "$local_port"
+        rc=$?
+        set -e
+        case "$rc" in
+            0) printf '%s\n' "$value"; return 0 ;;
+            1) log_warn "REMOTE_PORT 必须是 1-65535 之间的整数。" ;;
+            2) log_warn "已取消使用该 REMOTE_PORT，请重新输入。" ;;
+        esac
+    done
+}
+
+ask_forward_later() {
+    local answer
+    cat >&2 <<EOF
+尚未配置落地机业务端口，无法生成业务转发规则。
+你可以：
+1) 输入业务端口
+2) 暂时只配置 EasyTier，不应用 nftables 转发
+EOF
+    answer="$(prompt_required "请选择" "1")" || return 1
+    case "$answer" in
+        1) return 1 ;;
+        2) return 0 ;;
+        *) log_warn "请输入 1 或 2。默认建议 1。"; return 1 ;;
+    esac
+}
+
+prompt_listener_proto() {
+    local label="$1"
+    local default="${2:-both}"
+    local value normalized
+
+    require_tty
+    while true; do
+        printf '%s（默认 %s）：' "$label" "$(proto_display "$default")" >&2
+        IFS= read -r value || return 1
+        if normalized="$(normalize_listener_proto "$value" "$default")"; then
+            printf '%s\n' "$normalized"
+            return 0
+        fi
+        log_warn "EasyTier 监听协议支持 tcp、udp、tcp+udp、both、ws、wss、quic、wg 或 all。直接回车默认 TCP/UDP。"
+    done
+}
+
+prompt_entry_proto() {
+    local label="$1"
+    local default="${2:-both}"
+    local value normalized
+
+    require_tty
+    while true; do
+        printf '%s（默认 %s）：' "$label" "$(proto_display "$default")" >&2
+        IFS= read -r value || return 1
+        if normalized="$(normalize_entry_proto "$value" "$default")"; then
+            printf '%s\n' "$normalized"
+            return 0
+        fi
+        log_warn "CNIX 入口协议支持 tcp、udp、tcp+udp、both、ws、wss、quic、wg 或 all。直接回车默认 TCP/UDP；如果 CNIX 只开单协议，请按实际协议输入。"
+    done
+}
+
+prompt_forward_proto() {
+    local label="$1"
+    local default="${2:-both}"
+    local value normalized
+
+    require_tty
+    while true; do
+        printf '%s（默认 %s）：' "$label" "$(proto_display "$default")" >&2
+        IFS= read -r value || return 1
+        if normalized="$(normalize_forward_proto "$value" "$default")"; then
+            printf '%s\n' "$normalized"
+            return 0
+        fi
+        log_warn "转发协议支持 tcp、udp、both、tcp/udp、tcp udp 或 all。直接回车默认 TCP/UDP。"
+    done
+}
+
+prompt_yes_no() {
+    local label="$1"
+    local default_bool="$2"
+    local suffix answer normalized
+
+    require_tty
+    if [[ "$default_bool" == "true" ]]; then
+        suffix="Y/n"
+    else
+        suffix="y/N"
+    fi
+
+    while true; do
+        printf '%s [%s]：' "$label" "$suffix" >&2
+        IFS= read -r answer || return 1
+        if [[ -z "$answer" ]]; then
+            printf '%s\n' "$default_bool"
+            return 0
+        fi
+        normalized="${answer,,}"
+        case "$normalized" in
+            y|yes) printf 'true\n'; return 0 ;;
+            n|no) printf 'false\n'; return 0 ;;
+            *) log_warn "请输入 yes 或 no。" ;;
+        esac
+    done
+}
+
+mask_secret() {
+    local secret="${1:-}"
+    local length="${#secret}"
+    if (( length <= 6 )); then
+        printf '****\n'
+    else
+        printf '%s****%s\n' "${secret:0:3}" "${secret: -3}"
+    fi
+}
+
+strip_optional_quotes() {
+    local value="$1"
+    if [[ "$value" == \"*\" && "$value" == *\" ]]; then
+        value="${value#\"}"
+        value="${value%\"}"
+    elif [[ "$value" == \'*\' && "$value" == *\' ]]; then
+        value="${value#\'}"
+        value="${value%\'}"
+    fi
+    printf '%s\n' "$value"
+}
+
+quote_env_value() {
+    local value="$1"
+    value="${value//\\/\\\\}"
+    value="${value//\"/\\\"}"
+    value="${value//\$/\\\$}"
+    value="${value//\`/\\\`}"
+    printf '"%s"\n' "$value"
+}
+
+json_escape() {
+    local value="$1"
+    value="${value//\\/\\\\}"
+    value="${value//\"/\\\"}"
+    printf '%s\n' "$value"
+}
+
+base64url_encode() {
+    base64 | tr -d '\n' | tr '+/' '-_' | tr -d '='
+}
+
+base64url_decode() {
+    local data="$1"
+    local pad
+    data="${data//-/+}"
+    data="${data//_//}"
+    case $((${#data} % 4)) in
+        2) pad="==" ;;
+        3) pad="=" ;;
+        0) pad="" ;;
+        *) return 1 ;;
+    esac
+    printf '%s%s' "$data" "$pad" | base64 -d 2>/dev/null
+}
+
+json_get_string() {
+    local json="$1"
+    local key="$2"
+    printf '%s\n' "$json" | sed -nE 's/.*"'"$key"'"[[:space:]]*:[[:space:]]*"([^"]*)".*/\1/p' | head -n 1
+}
+
+json_get_number() {
+    local json="$1"
+    local key="$2"
+    printf '%s\n' "$json" | sed -nE 's/.*"'"$key"'"[[:space:]]*:[[:space:]]*([0-9]+).*/\1/p' | head -n 1
+}
+
+json_get_string_array_as_words() {
+    local json="$1"
+    local key="$2"
+    local raw
+    raw="$(printf '%s\n' "$json" | sed -nE 's/.*"'"$key"'"[[:space:]]*:[[:space:]]*\[([^]]*)\].*/\1/p' | head -n 1)"
+    [[ -n "$raw" ]] || return 1
+    printf '%s\n' "$raw" | tr ',' '\n' | sed -nE 's/^[[:space:]]*"([^"]*)"[[:space:]]*$/\1/p' | tr '\n' ' ' | sed 's/[[:space:]]*$//'
+}
+
+clear_config_vars() {
+    local key
+    for key in PROFILE_ID PROFILE_NAME ENABLED LANDING_PUBLIC_HOST EASYTIER_VERSION CREATED_AT UPDATED_AT REMARK \
+        LINE_GROUP LINE_ROLE LINE_PRIORITY HEALTH_CHECK_ENABLED HEALTH_STATUS LAST_HEALTH_CHECK_AT LAST_HEALTH_REASON LAST_SWITCH_AT SWITCH_NOTE \
+        ROLE ET_NETWORK_NAME ET_NETWORK_SECRET ET_HOSTNAME ET_IPV4 ET_SUBNET \
+        ET_LISTENER_PROTO ET_LISTENER_PORT ET_LISTENERS ET_PEERS ET_NO_LISTENER \
+        LISTENER_PROTOS LISTENER_PORT CNIX_ENTRY_PROTOS \
+        ET_PRIVATE_MODE ET_EXPLICIT_ONLY IXTF_EXPLICIT_ONLY CNIX_ENTRY_PROTO CNIX_ENTRY_HOST CNIX_ENTRY_PORT \
+        LOCAL_PORT LANDING_ET_IP REMOTE_PORT FORWARD_PROTO SERVICE_PORT CODE_LISTENER_PORT \
+        FORWARD_ENABLED LANDING_EASYTIER_VERSION CODE_EASYTIER_VERSION CODE_TUNNEL_PROTOS \
+        CODE_LANDING_ET_CIDR CODE_SUGGESTED_INGRESS_ET_IP CODE_SUGGESTED_INGRESS_ET_CIDR \
+        CODE_PROFILE_ID CODE_PROFILE_NAME CODE_SUGGESTED_INGRESS_PROFILE_ID CODE_LANDING_PUBLIC_HINT CODE_REMARK; do
+        unset "$key" 2>/dev/null || true
+    done
+}
+
+load_env_from_path() {
+    local path="$1"
+    clear_config_vars
+    [[ -f "$path" && -r "$path" ]] || return 1
+
+    local line key value mode
+    mode="$(stat -c '%a' "$path" 2>/dev/null || printf '未知')"
+    if [[ "$mode" != "600" && "$mode" != "400" && "$mode" != "700" ]]; then
+        log_warn "env 文件权限可能过宽：${path} 当前权限 ${mode}，建议 chmod 600。"
+    fi
+
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        line="${line%$'\r'}"
+        [[ -z "$line" || "${line:0:1}" == "#" ]] && continue
+        [[ "$line" == *=* ]] || continue
+        key="$(trim_space "${line%%=*}")"
+        value="$(trim_space "${line#*=}")"
+        value="$(strip_optional_quotes "$value")"
+        case "$key" in
+            PROFILE_ID|PROFILE_NAME|ENABLED|LANDING_PUBLIC_HOST|EASYTIER_VERSION|CREATED_AT|UPDATED_AT|REMARK|\
+            LINE_GROUP|LINE_ROLE|LINE_PRIORITY|HEALTH_CHECK_ENABLED|HEALTH_STATUS|LAST_HEALTH_CHECK_AT|LAST_HEALTH_REASON|LAST_SWITCH_AT|SWITCH_NOTE|\
+            ROLE|ET_NETWORK_NAME|ET_NETWORK_SECRET|ET_HOSTNAME|ET_IPV4|ET_SUBNET|\
+            ET_LISTENER_PROTO|ET_LISTENER_PORT|ET_LISTENERS|ET_PEERS|\
+            LISTENER_PROTOS|LISTENER_PORT|CNIX_ENTRY_PROTOS|\
+            ET_NO_LISTENER|ET_PRIVATE_MODE|ET_EXPLICIT_ONLY|IXTF_EXPLICIT_ONLY|CNIX_ENTRY_PROTO|CNIX_ENTRY_HOST|\
+            CNIX_ENTRY_PORT|LOCAL_PORT|LANDING_ET_IP|REMOTE_PORT|FORWARD_PROTO|\
+            SERVICE_PORT|CODE_LISTENER_PORT|FORWARD_ENABLED|LANDING_EASYTIER_VERSION|CODE_EASYTIER_VERSION|\
+            CODE_TUNNEL_PROTOS|CODE_LANDING_ET_CIDR|CODE_SUGGESTED_INGRESS_ET_IP|CODE_SUGGESTED_INGRESS_ET_CIDR)
+                printf -v "$key" '%s' "$value"
+                ;;
+        esac
+    done <"$path"
+}
+
+load_env() {
+    load_env_from_path "$ENV_FILE"
+}
+
+profile_env_value_from_path() {
+    local path="$1" wanted="$2" line key value
+    [[ -f "$path" && -r "$path" ]] || return 1
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        line="${line%$'\r'}"
+        [[ -z "$line" || "${line:0:1}" == "#" ]] && continue
+        [[ "$line" == *=* ]] || continue
+        key="$(trim_space "${line%%=*}")"
+        [[ "$key" == "$wanted" ]] || continue
+        value="$(trim_space "${line#*=}")"
+        strip_optional_quotes "$value"
+        return 0
+    done <"$path"
+    return 1
+}
+
+profile_path_enabled() {
+    local path="$1" enabled
+    enabled="$(profile_env_value_from_path "$path" ENABLED 2>/dev/null || true)"
+    [[ "${enabled:-true}" == "true" ]]
+}
+
+profile_subnet_from_path() {
+    local path="$1" subnet et_ipv4
+    subnet="$(profile_env_value_from_path "$path" ET_SUBNET 2>/dev/null || true)"
+    if [[ -n "$subnet" ]]; then
+        printf '%s\n' "$subnet"
+        return 0
+    fi
+    et_ipv4="$(profile_env_value_from_path "$path" ET_IPV4 2>/dev/null || true)"
+    [[ -n "$et_ipv4" ]] || return 1
+    cidr_network24 "$et_ipv4"
+}
+
+profile_et_ip_addr_from_path() {
+    local path="$1" et_ipv4
+    et_ipv4="$(profile_env_value_from_path "$path" ET_IPV4 2>/dev/null || true)"
+    [[ -n "$et_ipv4" ]] || return 1
+    printf '%s\n' "${et_ipv4%%/*}"
+}
+
+normalize_profile_compat_vars() {
+    if [[ -n "${LISTENER_PROTOS:-}" ]]; then
+        ET_LISTENER_PROTO="$(proto_list_to_value "$LISTENER_PROTOS")"
+    fi
+    if [[ -z "${LISTENER_PROTOS:-}" && -n "${ET_LISTENER_PROTO:-}" ]]; then
+        LISTENER_PROTOS="$(normalize_listener_protos "$ET_LISTENER_PROTO" "both" 2>/dev/null || printf '%s' "$ET_LISTENER_PROTO")"
+    fi
+    if [[ -n "${LISTENER_PORT:-}" ]]; then
+        ET_LISTENER_PORT="$LISTENER_PORT"
+    fi
+    if [[ -z "${LISTENER_PORT:-}" && -n "${ET_LISTENER_PORT:-}" ]]; then
+        LISTENER_PORT="$ET_LISTENER_PORT"
+    fi
+    if [[ -n "${CNIX_ENTRY_PROTOS:-}" ]]; then
+        CNIX_ENTRY_PROTO="$(proto_list_to_value "$CNIX_ENTRY_PROTOS")"
+    fi
+    if [[ -z "${CNIX_ENTRY_PROTOS:-}" && -n "${CNIX_ENTRY_PROTO:-}" ]]; then
+        CNIX_ENTRY_PROTOS="$(normalize_peer_protos "$CNIX_ENTRY_PROTO" "both" 2>/dev/null || printf '%s' "$CNIX_ENTRY_PROTO")"
+    fi
+    ENABLED="${ENABLED:-true}"
+    FORWARD_ENABLED="${FORWARD_ENABLED:-true}"
+    LINE_ROLE="${LINE_ROLE:-standalone}"
+    LINE_PRIORITY="${LINE_PRIORITY:-100}"
+    HEALTH_CHECK_ENABLED="${HEALTH_CHECK_ENABLED:-true}"
+    HEALTH_STATUS="${HEALTH_STATUS:-unknown}"
+    PROFILE_ID="${PROFILE_ID:-default}"
+    PROFILE_NAME="${PROFILE_NAME:-$PROFILE_ID}"
+}
+
+load_profile() {
+    local profile_id="$1" path
+    if [[ "$profile_id" == "default" && ! -f "$(profile_env_path default 2>/dev/null || printf /nonexistent)" && -f "$ENV_FILE" ]]; then
+        load_env || return 1
+        PROFILE_ID="default"
+        PROFILE_NAME="${PROFILE_NAME:-default}"
+        ENABLED="${ENABLED:-true}"
+        normalize_profile_compat_vars
+        return 0
+    fi
+    path="$(profile_env_path "$profile_id")" || return 1
+    load_env_from_path "$path" || return 1
+    normalize_profile_compat_vars
+}
+
+load_profile_or_die() {
+    local profile_id="$1"
+    load_profile "$profile_id" || die_user "无法读取 Profile：${profile_id}"
+}
+
+save_profile_env() {
+    local profile_id="${1:-${PROFILE_ID:-}}" path tmp now listener_protos listener_proto listener_port cnix_protos
+    validate_profile_id "$profile_id" || die_user "PROFILE_ID 格式不正确：${profile_id}"
+    ensure_profile_dirs
+    path="$(profile_env_path "$profile_id")"
+    now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    CREATED_AT="${CREATED_AT:-$now}"
+    UPDATED_AT="$now"
+    ENABLED="${ENABLED:-true}"
+    FORWARD_ENABLED="${FORWARD_ENABLED:-true}"
+    LINE_ROLE="${LINE_ROLE:-standalone}"
+    LINE_PRIORITY="${LINE_PRIORITY:-100}"
+    HEALTH_CHECK_ENABLED="${HEALTH_CHECK_ENABLED:-true}"
+    HEALTH_STATUS="${HEALTH_STATUS:-unknown}"
+    PROFILE_NAME="${PROFILE_NAME:-$profile_id}"
+    PROFILE_ID="$profile_id"
+    normalize_profile_compat_vars
+    listener_proto="${ET_LISTENER_PROTO:-${LISTENER_PROTOS:-both}}"
+    listener_port="${LISTENER_PORT:-${ET_LISTENER_PORT:-}}"
+    listener_protos="${LISTENER_PROTOS:-$(normalize_listener_protos "$listener_proto" "both" 2>/dev/null || true)}"
+    cnix_protos="${CNIX_ENTRY_PROTOS:-$(normalize_peer_protos "${CNIX_ENTRY_PROTO:-both}" "both" 2>/dev/null || true)}"
+    tmp="$(make_tmp_file "ix-transit-fabric.profile")"
+    chmod 600 "$tmp"
+    {
+        printf '# Managed by ix-transit-fabric profile. Do not share this file.\n'
+        printf 'PROFILE_ID=%s\n' "$PROFILE_ID"
+        printf 'PROFILE_NAME=%s\n' "$(quote_env_value "$PROFILE_NAME")"
+        printf 'ROLE=%s\n' "$ROLE"
+        printf 'ENABLED=%s\n' "$ENABLED"
+        [[ -n "${LINE_GROUP:-}" ]] && printf 'LINE_GROUP=%s\n' "$(quote_env_value "$LINE_GROUP")"
+        printf 'LINE_ROLE=%s\n' "$LINE_ROLE"
+        printf 'LINE_PRIORITY=%s\n' "$LINE_PRIORITY"
+        printf 'HEALTH_CHECK_ENABLED=%s\n' "$HEALTH_CHECK_ENABLED"
+        printf 'HEALTH_STATUS=%s\n' "$HEALTH_STATUS"
+        [[ -n "${LAST_HEALTH_CHECK_AT:-}" ]] && printf 'LAST_HEALTH_CHECK_AT=%s\n' "$(quote_env_value "$LAST_HEALTH_CHECK_AT")"
+        [[ -n "${LAST_HEALTH_REASON:-}" ]] && printf 'LAST_HEALTH_REASON=%s\n' "$(quote_env_value "$LAST_HEALTH_REASON")"
+        [[ -n "${LAST_SWITCH_AT:-}" ]] && printf 'LAST_SWITCH_AT=%s\n' "$(quote_env_value "$LAST_SWITCH_AT")"
+        [[ -n "${SWITCH_NOTE:-}" ]] && printf 'SWITCH_NOTE=%s\n' "$(quote_env_value "$SWITCH_NOTE")"
+        printf 'ET_NETWORK_NAME=%s\n' "$ET_NETWORK_NAME"
+        printf 'ET_NETWORK_SECRET=%s\n' "$ET_NETWORK_SECRET"
+        printf 'ET_SUBNET=%s\n' "${ET_SUBNET:-}"
+        printf 'ET_HOSTNAME=%s\n' "$ET_HOSTNAME"
+        printf 'ET_IPV4=%s\n' "$ET_IPV4"
+        printf 'ET_PRIVATE_MODE=true\n'
+        printf 'ET_EXPLICIT_ONLY=true\n'
+        printf 'IXTF_EXPLICIT_ONLY=true\n'
+        printf 'CREATED_AT=%s\n' "$CREATED_AT"
+        printf 'UPDATED_AT=%s\n' "$UPDATED_AT"
+        [[ -n "${LANDING_PUBLIC_HOST:-}" ]] && printf 'LANDING_PUBLIC_HOST=%s\n' "$(quote_env_value "$LANDING_PUBLIC_HOST")"
+        [[ -n "${EASYTIER_VERSION:-}" ]] && printf 'EASYTIER_VERSION=%s\n' "$(quote_env_value "$EASYTIER_VERSION")"
+        [[ -n "${REMARK:-}" ]] && printf 'REMARK=%s\n' "$(quote_env_value "$REMARK")"
+        if [[ "$ROLE" == "panel-landing" ]]; then
+            printf 'LISTENER_PROTOS=%s\n' "$(quote_env_value "$listener_protos")"
+            printf 'LISTENER_PORT=%s\n' "$listener_port"
+            printf 'ET_LISTENER_PROTO=%s\n' "${ET_LISTENER_PROTO:-$(proto_list_to_value "$listener_protos")}"
+            printf 'ET_LISTENER_PORT=%s\n' "$listener_port"
+            printf 'ET_LISTENERS=%s\n' "$(quote_env_value "${ET_LISTENERS:-$(listener_urls_value "$listener_proto" "$listener_port" 2>/dev/null || true)}")"
+            [[ -n "${SERVICE_PORT:-}" ]] && printf 'SERVICE_PORT=%s\n' "$SERVICE_PORT"
+            [[ -n "${SERVICE_PORT:-}" ]] && printf 'REMOTE_PORT=%s\n' "$SERVICE_PORT"
+        else
+            printf 'CNIX_ENTRY_PROTOS=%s\n' "$(quote_env_value "$cnix_protos")"
+            printf 'CNIX_ENTRY_PROTO=%s\n' "$CNIX_ENTRY_PROTO"
+            printf 'CNIX_ENTRY_HOST=%s\n' "$CNIX_ENTRY_HOST"
+            printf 'CNIX_ENTRY_PORT=%s\n' "$CNIX_ENTRY_PORT"
+            printf 'ET_PEERS=%s\n' "$(quote_env_value "$ET_PEERS")"
+            printf 'ET_NO_LISTENER=%s\n' "${ET_NO_LISTENER:-true}"
+            printf 'FORWARD_ENABLED=%s\n' "${FORWARD_ENABLED:-true}"
+            [[ -n "${LOCAL_PORT:-}" ]] && printf 'LOCAL_PORT=%s\n' "$LOCAL_PORT"
+            [[ -n "${LANDING_ET_IP:-}" ]] && printf 'LANDING_ET_IP=%s\n' "$LANDING_ET_IP"
+            [[ -n "${REMOTE_PORT:-}" ]] && printf 'REMOTE_PORT=%s\n' "$REMOTE_PORT"
+            [[ -n "${FORWARD_PROTO:-}" ]] && printf 'FORWARD_PROTO=%s\n' "$FORWARD_PROTO"
+            [[ -n "${CODE_LISTENER_PORT:-}" ]] && printf 'CODE_LISTENER_PORT=%s\n' "$CODE_LISTENER_PORT"
+        fi
+    } >"$tmp"
+    backup_file "$path"
+    mv -f -- "$tmp" "$path"
+    chmod 600 "$path"
+    log_ok "已写入 Profile：${path}"
+}
+
+save_profile_runtime_state() {
+    local profile_id="$1" path tmp found_status=0 found_at=0 found_reason=0
+    validate_profile_id "$profile_id" || return 1
+    path="$(profile_env_path "$profile_id")" || return 1
+    [[ -f "$path" ]] || return 1
+    tmp="$(make_tmp_file "ix-transit-fabric.profile-runtime")"
+    chmod 600 "$tmp"
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        case "$line" in
+            HEALTH_STATUS=*)
+                printf 'HEALTH_STATUS=%s\n' "${HEALTH_STATUS:-unknown}" >>"$tmp"
+                found_status=1
+                ;;
+            LAST_HEALTH_CHECK_AT=*)
+                printf 'LAST_HEALTH_CHECK_AT=%s\n' "${LAST_HEALTH_CHECK_AT:-}" >>"$tmp"
+                found_at=1
+                ;;
+            LAST_HEALTH_REASON=*)
+                printf 'LAST_HEALTH_REASON=%s\n' "$(quote_env_value "${LAST_HEALTH_REASON:-未检查}")" >>"$tmp"
+                found_reason=1
+                ;;
+            *)
+                printf '%s\n' "$line" >>"$tmp"
+                ;;
+        esac
+    done <"$path"
+    [[ "$found_status" -eq 1 ]] || printf 'HEALTH_STATUS=%s\n' "${HEALTH_STATUS:-unknown}" >>"$tmp"
+    [[ "$found_at" -eq 1 ]] || printf 'LAST_HEALTH_CHECK_AT=%s\n' "${LAST_HEALTH_CHECK_AT:-}" >>"$tmp"
+    [[ "$found_reason" -eq 1 ]] || printf 'LAST_HEALTH_REASON=%s\n' "$(quote_env_value "${LAST_HEALTH_REASON:-未检查}")" >>"$tmp"
+    install -m 600 "$tmp" "$path"
+    rm -f -- "$tmp"
+    return 0
+}
+
+save_profile_code_file() {
+    local profile_id="$1" code="$2" path
+    ensure_profile_dirs
+    path="$(profile_code_path "$profile_id")"
+    printf '%s\n' "$code" >"$path"
+    chmod 600 "$path"
+}
+
+save_env() {
+    ensure_config_dir
+    local tmp
+    tmp="$(make_tmp_file "ix-transit-fabric.env")"
+    chmod 600 "$tmp"
+
+    {
+        printf '# Managed by ix-transit-fabric. Do not share this file.\n'
+        printf 'ROLE=%s\n' "$ROLE"
+        printf 'ET_NETWORK_NAME=%s\n' "$ET_NETWORK_NAME"
+        printf 'ET_NETWORK_SECRET=%s\n' "$ET_NETWORK_SECRET"
+        printf 'ET_HOSTNAME=%s\n' "$ET_HOSTNAME"
+        printf 'ET_IPV4=%s\n' "$ET_IPV4"
+        [[ -n "${ET_SUBNET:-}" ]] && printf 'ET_SUBNET=%s\n' "$ET_SUBNET"
+        printf 'ET_PRIVATE_MODE=true\n'
+        printf 'ET_EXPLICIT_ONLY=true\n'
+        printf 'IXTF_EXPLICIT_ONLY=true\n'
+
+        if [[ "$ROLE" == "panel-landing" ]]; then
+            printf 'LISTENER_PROTOS=%s\n' "$(quote_env_value "$(normalize_listener_protos "${ET_LISTENER_PROTO:-both}" "both" 2>/dev/null || printf '%s' "${ET_LISTENER_PROTO:-both}")")"
+            printf 'LISTENER_PORT=%s\n' "$ET_LISTENER_PORT"
+            printf 'ET_LISTENER_PROTO=%s\n' "$ET_LISTENER_PROTO"
+            printf 'ET_LISTENER_PORT=%s\n' "$ET_LISTENER_PORT"
+            printf 'ET_LISTENERS=%s\n' "$(quote_env_value "$ET_LISTENERS")"
+            [[ -n "${SERVICE_PORT:-}" ]] && printf 'SERVICE_PORT=%s\n' "$SERVICE_PORT"
+            [[ -n "${SERVICE_PORT:-}" ]] && printf 'REMOTE_PORT=%s\n' "$SERVICE_PORT"
+        fi
+
+        if [[ "$ROLE" == "panel-ingress" ]]; then
+            printf 'ET_PEERS=%s\n' "$(quote_env_value "$ET_PEERS")"
+            printf 'ET_NO_LISTENER=%s\n' "${ET_NO_LISTENER:-true}"
+            printf 'CNIX_ENTRY_PROTO=%s\n' "$CNIX_ENTRY_PROTO"
+            printf 'CNIX_ENTRY_HOST=%s\n' "$CNIX_ENTRY_HOST"
+            printf 'CNIX_ENTRY_PORT=%s\n' "$CNIX_ENTRY_PORT"
+            [[ -n "${CODE_LISTENER_PORT:-}" ]] && printf 'CODE_LISTENER_PORT=%s\n' "$CODE_LISTENER_PORT"
+            [[ -n "${CODE_TUNNEL_PROTOS:-}" ]] && printf 'CODE_TUNNEL_PROTOS=%s\n' "$(quote_env_value "$CODE_TUNNEL_PROTOS")"
+            [[ -n "${CODE_LANDING_ET_CIDR:-}" ]] && printf 'CODE_LANDING_ET_CIDR=%s\n' "$CODE_LANDING_ET_CIDR"
+            [[ -n "${CODE_SUGGESTED_INGRESS_ET_IP:-}" ]] && printf 'CODE_SUGGESTED_INGRESS_ET_IP=%s\n' "$CODE_SUGGESTED_INGRESS_ET_IP"
+            [[ -n "${CODE_SUGGESTED_INGRESS_ET_CIDR:-}" ]] && printf 'CODE_SUGGESTED_INGRESS_ET_CIDR=%s\n' "$CODE_SUGGESTED_INGRESS_ET_CIDR"
+            printf 'FORWARD_ENABLED=%s\n' "${FORWARD_ENABLED:-true}"
+            [[ -n "${LOCAL_PORT:-}" ]] && printf 'LOCAL_PORT=%s\n' "$LOCAL_PORT"
+            [[ -n "${LANDING_ET_IP:-}" ]] && printf 'LANDING_ET_IP=%s\n' "$LANDING_ET_IP"
+            [[ -n "${REMOTE_PORT:-}" ]] && printf 'REMOTE_PORT=%s\n' "$REMOTE_PORT"
+            [[ -n "${FORWARD_PROTO:-}" ]] && printf 'FORWARD_PROTO=%s\n' "$FORWARD_PROTO"
+            [[ -n "${LANDING_EASYTIER_VERSION:-}" ]] && printf 'LANDING_EASYTIER_VERSION=%s\n' "$(quote_env_value "$LANDING_EASYTIER_VERSION")"
+            [[ -n "${CODE_EASYTIER_VERSION:-}" ]] && printf 'CODE_EASYTIER_VERSION=%s\n' "$(quote_env_value "$CODE_EASYTIER_VERSION")"
+        fi
+    } >"$tmp"
+
+    backup_file "$ENV_FILE"
+    mv -f -- "$tmp" "$ENV_FILE"
+    chmod 600 "$ENV_FILE"
+    chmod 700 "$CONFIG_DIR"
+    log_ok "已写入配置：${ENV_FILE}"
+}
+
+require_config_var() {
+    local name="$1"
+    [[ -n "${!name:-}" ]] || die_user "env 文件缺少必需变量：${name}"
+}
+
+validate_easytier_args() {
+    local normalized
+    require_config_var ROLE
+    require_config_var ET_NETWORK_NAME
+    require_config_var ET_NETWORK_SECRET
+    require_config_var ET_HOSTNAME
+    require_config_var ET_IPV4
+
+    validate_network_name "$ET_NETWORK_NAME" || die_user "ET_NETWORK_NAME 格式不正确：请输入 1-64 个字符，仅允许字母、数字、点、下划线或短横线。"
+    validate_secret "$ET_NETWORK_SECRET" || die_user "ET_NETWORK_SECRET 至少 12 位，且只能包含字母、数字和 . _ ~ : @ % + = , / -。"
+    validate_hostname_value "$ET_HOSTNAME" || die_user "ET_HOSTNAME 格式不正确：请输入 1-64 个字符，仅允许字母、数字、点、下划线或短横线。"
+    validate_ipv4_cidr "$ET_IPV4" || die_user "ET_IPV4 必须是 IPv4/CIDR，例如 10.144.144.1/24。"
+    ET_SUBNET="${ET_SUBNET:-$(cidr_network24 "$ET_IPV4" 2>/dev/null || true)}"
+    ET_PRIVATE_MODE="true"
+    ET_EXPLICIT_ONLY="true"
+    IXTF_EXPLICIT_ONLY="true"
+    normalize_profile_compat_vars
+
+    case "$ROLE" in
+        panel-landing)
+            require_config_var ET_LISTENER_PROTO
+            require_config_var ET_LISTENER_PORT
+            normalized="$(normalize_listener_proto "$ET_LISTENER_PROTO" "both")" || die_user "ET_LISTENER_PROTO 只能是 tcp、udp、tcp+udp、ws、wss、quic、wg 或 all。"
+            ET_LISTENER_PROTO="$normalized"
+            validate_port "$ET_LISTENER_PORT" || die_user "ET_LISTENER_PORT 必须是 1-65535 的端口。"
+            ET_LISTENERS="$(listener_urls_value "$ET_LISTENER_PROTO" "$ET_LISTENER_PORT")"
+            ;;
+        panel-ingress)
+            require_config_var CNIX_ENTRY_PROTO
+            require_config_var CNIX_ENTRY_HOST
+            require_config_var CNIX_ENTRY_PORT
+            normalized="$(normalize_entry_proto "$CNIX_ENTRY_PROTO" "both")" || die_user "CNIX_ENTRY_PROTO 只能是 tcp、udp、tcp+udp、ws、wss、quic、wg 或 all。"
+            CNIX_ENTRY_PROTO="$normalized"
+            validate_host "$CNIX_ENTRY_HOST" || die_user "CNIX_ENTRY_HOST 不能为空，且应为 IPv4 或域名。"
+            validate_port "$CNIX_ENTRY_PORT" || die_user "CNIX_ENTRY_PORT 必须是 1-65535 的端口。"
+            FORWARD_ENABLED="${FORWARD_ENABLED:-true}"
+            if [[ "$FORWARD_ENABLED" == "true" ]]; then
+                require_config_var LOCAL_PORT
+                require_config_var LANDING_ET_IP
+                require_config_var REMOTE_PORT
+                require_config_var FORWARD_PROTO
+                validate_port "$LOCAL_PORT" || die_user "LOCAL_PORT 必须是 1-65535 的端口。"
+                validate_ipv4 "$LANDING_ET_IP" || die_user "LANDING_ET_IP 必须是 IPv4，例如 10.144.144.2。"
+                validate_port "$REMOTE_PORT" || die_user "REMOTE_PORT 必须是 1-65535 的端口。"
+                normalized="$(normalize_forward_proto "$FORWARD_PROTO" "both")" || die_user "FORWARD_PROTO 只能是 tcp、udp 或 both。"
+                FORWARD_PROTO="$normalized"
+            else
+                FORWARD_ENABLED="false"
+            fi
+            ET_PEERS="$(peer_urls_value "$CNIX_ENTRY_PROTO" "$CNIX_ENTRY_HOST" "$CNIX_ENTRY_PORT")"
+            ET_NO_LISTENER="${ET_NO_LISTENER:-true}"
+            ;;
+        *)
+            die_user "ROLE 必须是 panel-landing 或 panel-ingress。"
+            ;;
+    esac
+}
+
+easytier_supports_private_mode() {
+    local et_path help_text
+    et_path="$(detect_easytier_binary 2>/dev/null || true)"
+    [[ -n "$et_path" ]] || return 0
+    help_text="$("$et_path" --help 2>&1 || true)"
+    grep -q -- '--private-mode' <<<"$help_text"
+}
+
+render_private_mode_arg() {
+    if easytier_supports_private_mode; then
+        printf ' --private-mode true'
+    else
+        log_warn "当前 easytier-core 帮助信息未发现 --private-mode，已跳过该参数；请确认未配置公共 peer。"
+    fi
+}
+
+validate_easytier_args_static() {
+    local rendered="$1"
+    case "${ROLE:-}" in
+        panel-landing) [[ -n "${ET_LISTENERS:-}" ]] || return 1 ;;
+        panel-ingress) [[ -n "${ET_PEERS:-}" ]] || return 1 ;;
+        *) return 1 ;;
+    esac
+    [[ "$rendered" != *"--private-mode --"* ]] || return 1
+    [[ "$rendered" != *"--private-mode"$'\n'* ]] || return 1
+    if [[ "$rendered" == *"--private-mode"* && "$rendered" != *"--private-mode true"* && "$rendered" != *"--private-mode=true"* ]]; then
+        return 1
+    fi
+    [[ "$rendered" != *"${ET_NETWORK_SECRET:-}"* ]]
+}
+
+load_install_env_file() {
+    local expected_role="$1"
+    [[ -n "$INSTALL_ENV_FILE_PATH" ]] || return 1
+    load_env_from_path "$INSTALL_ENV_FILE_PATH" || die_user "无法读取 env 文件：${INSTALL_ENV_FILE_PATH}"
+    require_config_var ROLE
+    [[ "$ROLE" == "$expected_role" ]] || die_user "env 文件中的 ROLE=${ROLE}，但当前命令需要 ROLE=${expected_role}。"
+    validate_easytier_args
+    log_ok "已加载非交互 env 文件：${INSTALL_ENV_FILE_PATH}"
+    return 0
+}
+
+render_easytier_args() {
+    local secret_display listener peer
+    validate_easytier_args
+    secret_display="$(mask_secret "$ET_NETWORK_SECRET")"
+
+    printf 'ET_NETWORK_SECRET=%q easytier-core' "$secret_display"
+    printf ' --network-name %q' "$ET_NETWORK_NAME"
+    printf ' --hostname %q' "$ET_HOSTNAME"
+    printf ' --ipv4 %q' "$ET_IPV4"
+    render_private_mode_arg
+
+    if [[ "$ROLE" == "panel-landing" ]]; then
+        [[ -n "${ET_LISTENERS:-}" ]] || die_user "landing 必须至少有一个 listener。"
+        while IFS= read -r listener; do
+            [[ -n "$listener" ]] || continue
+            printf ' --listeners %q' "$listener"
+        done <<<"${ET_LISTENERS// /$'\n'}"
+    else
+        [[ -n "${ET_PEERS:-}" ]] || die_user "ingress 必须至少有一个 peer。"
+        while IFS= read -r peer; do
+            [[ -n "$peer" ]] || continue
+            printf ' --peers %q' "$peer"
+        done <<<"${ET_PEERS// /$'\n'}"
+        if [[ "${ET_NO_LISTENER:-true}" == "true" ]]; then
+            printf ' --no-listener'
+        fi
+    fi
+    printf '\n'
+}
+
+print_easytier_peers() {
+    local peer
+    validate_easytier_args
+    printf 'peers:\n'
+    while IFS= read -r peer; do
+        [[ -n "$peer" ]] || continue
+        printf '  %s\n' "$peer"
+    done <<<"${ET_PEERS// /$'\n'}"
+}
+
+print_easytier_listeners() {
+    local listener
+    validate_easytier_args
+    printf 'listeners:\n'
+    while IFS= read -r listener; do
+        [[ -n "$listener" ]] || continue
+        printf '  %s\n' "$listener"
+    done <<<"${ET_LISTENERS// /$'\n'}"
+}
+
+render_easytier_wrapper() {
+    install -d -m 0755 "$LIBEXEC_DIR"
+    local tmp
+    tmp="$(make_tmp_file "ix-transit-fabric.wrapper")"
+
+    cat >"$tmp" <<EOF
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+DEFAULT_ENV_FILE="${ENV_FILE}"
+CONFIG_DIR="${CONFIG_DIR}"
+EASYTIER_TARGET="${EASYTIER_TARGET}"
+PROFILE_ID="\${1:-}"
+
+if [[ -n "\$PROFILE_ID" ]]; then
+    case "\$PROFILE_ID" in
+        *[!a-z0-9-]*|'') echo "ix-transit-fabric: PROFILE_ID 不合法：\$PROFILE_ID" >&2; exit 1 ;;
+    esac
+    ENV_FILE="\${CONFIG_DIR}/profiles/\${PROFILE_ID}.env"
+else
+    ENV_FILE="\$DEFAULT_ENV_FILE"
+fi
+
+if [[ ! -r "\$ENV_FILE" ]]; then
+    echo "ix-transit-fabric: 配置文件不可读：\$ENV_FILE" >&2
+    exit 1
+fi
+
+set -a
+. "\$ENV_FILE"
+set +a
+
+require_var() {
+    local name="\$1"
+    if [[ -z "\${!name:-}" ]]; then
+        echo "ix-transit-fabric: 必需变量为空：\$name" >&2
+        exit 1
+    fi
+}
+
+require_var ROLE
+require_var ET_NETWORK_NAME
+require_var ET_NETWORK_SECRET
+require_var ET_HOSTNAME
+require_var ET_IPV4
+
+if [[ -x "\$EASYTIER_TARGET" ]]; then
+    EASYTIER_BIN="\$EASYTIER_TARGET"
+elif command -v easytier-core >/dev/null 2>&1; then
+    EASYTIER_BIN="\$(command -v easytier-core)"
+else
+    echo "ix-transit-fabric: 未找到 easytier-core" >&2
+    exit 1
+fi
+
+args=(
+    --network-name "\$ET_NETWORK_NAME"
+    --hostname "\$ET_HOSTNAME"
+    --ipv4 "\$ET_IPV4"
+)
+
+if "\$EASYTIER_BIN" --help 2>&1 | grep -q -- '--private-mode'; then
+    args+=(--private-mode true)
+else
+    echo "ix-transit-fabric: easytier-core 未声明支持 --private-mode，已跳过该参数" >&2
+fi
+
+case "\$ROLE" in
+    panel-landing)
+        require_var ET_LISTENERS
+        read -r -a listener_items <<<"\$ET_LISTENERS"
+        for listener in "\${listener_items[@]}"; do
+            [[ -n "\$listener" ]] || continue
+            args+=(--listeners "\$listener")
+        done
+        ;;
+    panel-ingress)
+        require_var ET_PEERS
+        read -r -a peer_items <<<"\$ET_PEERS"
+        for peer in "\${peer_items[@]}"; do
+            [[ -n "\$peer" ]] || continue
+            args+=(--peers "\$peer")
+        done
+        if [[ "\${ET_NO_LISTENER:-true}" == "true" ]]; then
+            args+=(--no-listener)
+        fi
+        ;;
+    *)
+        echo "ix-transit-fabric: 未知 ROLE：\$ROLE" >&2
+        exit 1
+        ;;
+esac
+
+exec "\$EASYTIER_BIN" "\${args[@]}"
+EOF
+
+    install_if_changed "$tmp" "$WRAPPER_FILE" 0755 "EasyTier 启动包装器"
+}
+
+render_systemd_service() {
+    validate_easytier_args
+    local rendered_args
+    rendered_args="$(render_easytier_args)"
+    validate_easytier_args_static "$rendered_args" || die_user "EasyTier 参数静态校验失败：不能生成裸 --private-mode，且不能输出网络密钥明文。"
+    render_easytier_wrapper
+
+    local nft_bin tmp
+    tmp="$(make_tmp_file "ix-transit-fabric.service")"
+
+    {
+        printf '[Unit]\n'
+        printf 'Description=ix-transit-fabric EasyTier node\n'
+        printf 'After=network-online.target\n'
+        printf 'Wants=network-online.target\n\n'
+        printf '[Service]\n'
+        printf 'Type=simple\n'
+        printf 'EnvironmentFile=%s\n' "$ENV_FILE"
+        printf 'ExecStartPre=/usr/bin/test -r %s\n' "$ENV_FILE"
+        printf 'ExecStartPre=/usr/bin/test -x %s\n' "$WRAPPER_FILE"
+        printf "ExecStartPre=/bin/sh -c 'test -x %s || command -v easytier-core >/dev/null 2>&1'\n" "$EASYTIER_TARGET"
+        if [[ "${ROLE:-}" == "panel-ingress" && "${FORWARD_ENABLED:-true}" == "true" ]]; then
+            nft_bin="$(command -v nft 2>/dev/null || true)"
+            [[ -n "$nft_bin" ]] || nft_bin="/usr/sbin/nft"
+            printf 'ExecStartPre=/usr/bin/test -f %s\n' "$NFT_FILE"
+            printf 'ExecStartPre=%s -c -f %s\n' "$nft_bin" "$NFT_FILE"
+            printf 'ExecStartPre=-%s delete table ip %s\n' "$nft_bin" "$NFT_TABLE"
+            printf 'ExecStartPre=%s -f %s\n' "$nft_bin" "$NFT_FILE"
+        fi
+        printf 'ExecStart=%s\n' "$WRAPPER_FILE"
+        printf 'Restart=on-failure\n'
+        printf 'RestartSec=3\n'
+        printf 'StartLimitIntervalSec=60\n'
+        printf 'StartLimitBurst=5\n'
+        printf 'User=root\n'
+        printf 'LimitNOFILE=1048576\n\n'
+        printf '[Install]\n'
+        printf 'WantedBy=multi-user.target\n'
+    } >"$tmp"
+
+    install_if_changed "$tmp" "$SYSTEMD_SERVICE" 0644 "systemd 服务"
+	}
+
+render_profile_systemd_template() {
+    local tmp
+    tmp="$(make_tmp_file "ix-transit-fabric.profile-service")"
+    {
+        printf '[Unit]\n'
+        printf 'Description=ix-transit-fabric EasyTier profile %%i\n'
+        printf 'After=network-online.target\n'
+        printf 'Wants=network-online.target\n\n'
+        printf '[Service]\n'
+        printf 'Type=simple\n'
+        printf 'ExecStartPre=/usr/bin/test -r %s/profiles/%%i.env\n' "$CONFIG_DIR"
+        printf 'ExecStartPre=/usr/bin/test -x %s\n' "$WRAPPER_FILE"
+        printf "ExecStartPre=/bin/sh -c 'test -x %s || command -v easytier-core >/dev/null 2>&1'\n" "$EASYTIER_TARGET"
+        printf 'ExecStart=%s %%i\n' "$WRAPPER_FILE"
+        printf 'Restart=on-failure\n'
+        printf 'RestartSec=3\n'
+        printf 'StartLimitIntervalSec=60\n'
+        printf 'StartLimitBurst=5\n'
+        printf 'User=root\n'
+        printf 'LimitNOFILE=1048576\n\n'
+        printf '[Install]\n'
+        printf 'WantedBy=multi-user.target\n'
+    } >"$tmp"
+    install_if_changed "$tmp" "$PROFILE_SERVICE_TEMPLATE" 0644 "systemd 模板服务"
+}
+
+render_profile_service_files() {
+    render_easytier_wrapper
+    render_profile_systemd_template
+    _IXTF_PROFILE_SERVICE_FILES_READY="true"
+}
+
+restart_easytier() {
+    local rc
+    ensure_systemctl
+    systemctl daemon-reload
+    systemctl enable "$SERVICE_NAME" >/dev/null
+    set +e
+    systemctl restart "$SERVICE_NAME"
+    rc=$?
+    set -e
+    if [[ "$rc" -ne 0 ]]; then
+        log_warn "systemctl restart ${SERVICE_NAME} 返回非 0（${rc}），继续执行健康检查。"
+    fi
+    sleep 3
+    if health_check_easytier; then
+        log_ok "EasyTier 服务健康检查通过。"
+    else
+        log_warn "EasyTier 服务已提交启动，但健康检查未通过。"
+        log_warn "请运行：bash install.sh logs"
+        analyze_recent_easytier_logs
+    fi
+}
+
+status_easytier() {
+    status_easytier_detailed
+}
+
+check_easytier_process() {
+    if command_exists pgrep; then
+        pgrep -x easytier-core >/dev/null 2>&1 || pgrep -f 'easytier-core' >/dev/null 2>&1
+        return $?
+    fi
+    ps -ef 2>/dev/null | grep -F 'easytier-core' | grep -v grep >/dev/null 2>&1
+}
+
+check_et_ip_present() {
+    local et_ip
+    et_ip="${ET_IPV4:-}"
+    et_ip="${et_ip%%/*}"
+    [[ -n "$et_ip" ]] || return 1
+    command_exists ip || return 2
+    ip addr show 2>/dev/null | grep -Fq "$et_ip"
+}
+
+check_listener_present() {
+    [[ "${ROLE:-}" == "panel-landing" ]] || return 3
+    check_listener_proto_port "${ET_LISTENER_PROTO:-tcp}" "${ET_LISTENER_PORT:-0}"
+}
+
+print_recent_service_logs() {
+    local lines="${1:-20}"
+    local secret="${ET_NETWORK_SECRET:-}"
+    command_exists journalctl || return 0
+    journalctl -u "$SERVICE_NAME" -n "$lines" --no-pager 2>&1 | while IFS= read -r line; do
+        if [[ -n "$secret" ]]; then
+            line="${line//$secret/[hidden]}"
+        fi
+        printf '%s\n' "$line"
+    done
+}
+
+recent_service_logs_text() {
+    local lines="${1:-80}"
+    command_exists journalctl || return 0
+    journalctl -u "$SERVICE_NAME" -n "$lines" --no-pager 2>&1 || true
+}
+
+analyze_recent_easytier_logs() {
+    local logs_text
+    logs_text="$(recent_service_logs_text 80)"
+    [[ -n "$logs_text" ]] || return 0
+    if grep -qi -- 'private-mode' <<<"$logs_text"; then
+        log_warn "检测到 EasyTier 参数 private-mode 相关日志：旧版本可能生成过裸 --private-mode。请使用 0.5.1-alpha 重新重配。"
+    fi
+    if grep -Eqi 'Address in use|failed to listen' <<<"$logs_text"; then
+        log_warn "检测到 listener 端口被占用或监听失败。请更换 EasyTier listener 端口，不要直接杀业务进程。"
+    fi
+}
+
+health_check_easytier() {
+    local active rc proc_ok="false" ip_ok="false" role_ok="false"
+    if command_exists systemctl; then
+        active="$(systemctl is-active "$SERVICE_NAME" 2>/dev/null || true)"
+        [[ "$active" == "active" || "$active" == "activating" ]] || return 1
+    fi
+
+    if check_easytier_process; then
+        proc_ok="true"
+    fi
+
+    set +e
+    check_et_ip_present
+    rc=$?
+    set -e
+    [[ "$rc" -eq 0 || "$rc" -eq 2 ]] && ip_ok="true"
+
+    case "${ROLE:-}" in
+        panel-landing)
+            set +e
+            check_listener_present
+            rc=$?
+            set -e
+            [[ "$rc" -eq 0 || "$rc" -eq 2 ]] && role_ok="true"
+            ;;
+        panel-ingress)
+            [[ -n "${ET_PEERS:-}" ]] && role_ok="true"
+            ;;
+        *)
+            role_ok="false"
+            ;;
+    esac
+
+    [[ "$proc_ok" == "true" && "$ip_ok" == "true" && "$role_ok" == "true" ]]
+}
+
+ensure_listener_port_available_before_start() {
+    [[ "${ROLE:-}" == "panel-landing" ]] || return 0
+    validate_easytier_args
+    if command_exists systemctl; then
+        systemctl stop "$SERVICE_NAME" >/dev/null 2>&1 || true
+        cleanup_own_service_processes
+    fi
+    if validate_listener_port_available "$ET_LISTENER_PROTO" "$ET_LISTENER_PORT"; then
+        return 0
+    fi
+    if [[ "${ET_LISTENER_PORT_WAS_DEFAULT:-false}" == "true" ]]; then
+        local new_port
+        if new_port="$(pick_random_port_excluding_listeners "$ET_LISTENER_PROTO")"; then
+            log_warn "默认 listener 端口被占用，已自动重新随机：${new_port}"
+            ET_LISTENER_PORT="$new_port"
+            ET_LISTENERS="$(listener_urls_value "$ET_LISTENER_PROTO" "$ET_LISTENER_PORT")"
+            return 0
+        fi
+    fi
+    die_user "当前端口已被占用，不能作为 EasyTier listener。请换一个端口。"
+}
+
+cleanup_own_service_processes() {
+    local control_group cg_path pid
+    command_exists systemctl || return 0
+    control_group="$(systemctl show -p ControlGroup --value "$SERVICE_NAME" 2>/dev/null || true)"
+    [[ -n "$control_group" && "$control_group" != "/" ]] || return 0
+    cg_path="/sys/fs/cgroup${control_group}"
+    [[ -r "${cg_path}/cgroup.procs" ]] || return 0
+    while IFS= read -r pid; do
+        [[ "$pid" =~ ^[0-9]+$ ]] || continue
+        [[ "$pid" -ne "$$" ]] || continue
+        kill "$pid" >/dev/null 2>&1 || true
+    done <"${cg_path}/cgroup.procs"
+}
+
+profile_systemd_units() {
+    local id
+    {
+        for id in $(profile_ids); do
+            profile_service_name "$id"
+        done
+        if command_exists systemctl; then
+            systemctl list-units 'ix-transit-easytier@*.service' --all --no-legend --no-pager 2>/dev/null | awk '{print $1}'
+            systemctl list-unit-files 'ix-transit-easytier@*.service' --no-legend --no-pager 2>/dev/null | awk '{print $1}'
+        fi
+    } | while IFS= read -r unit; do
+        case "$unit" in
+            ix-transit-easytier@?*.service) printf '%s\n' "$unit" ;;
+        esac
+    done | sort -u
+}
+
+stop_disable_profile_services() {
+    local unit
+    command_exists systemctl || return 0
+    while IFS= read -r unit; do
+        [[ -n "$unit" ]] || continue
+        systemctl stop "$unit" >/dev/null 2>&1 || true
+        systemctl disable "$unit" >/dev/null 2>&1 || true
+        systemctl reset-failed "$unit" >/dev/null 2>&1 || true
+    done < <(profile_systemd_units)
+}
+
+status_easytier_detailed() {
+    local service_name="${1:-$SERVICE_NAME}"
+    local et_path active enabled version active_since ts now age proc_status ip_status listener_status peer_status ready_status rc
+    et_path="$(detect_easytier_binary 2>/dev/null || true)"
+    if [[ -n "$et_path" ]]; then
+        version="$(get_easytier_version "$et_path")"
+        printf 'EasyTier 程序路径：%s\n' "$et_path"
+        printf 'EasyTier 版本：%s\n' "$version"
+    else
+        printf 'EasyTier 程序路径：未找到\n'
+        printf 'EasyTier 版本：未知\n'
+    fi
+
+    if command_exists systemctl; then
+        active="$(systemctl is-active "$service_name" 2>/dev/null || true)"
+        enabled="$(systemctl is-enabled "$service_name" 2>/dev/null || true)"
+        printf 'systemd 状态：%s（开机自启：%s）\n' "${active:-未知}" "${enabled:-未知}"
+    else
+        active="unknown"
+        printf 'systemd 状态：systemctl 不可用\n'
+    fi
+
+    if check_easytier_process; then
+        proc_status="存在"
+    else
+        proc_status="不存在"
+    fi
+    printf 'easytier-core 进程：%s\n' "$proc_status"
+
+    set +e
+    check_et_ip_present
+    rc=$?
+    set -e
+    case "$rc" in
+        0) ip_status="存在" ;;
+        2) ip_status="无法检查（ip 命令不可用）" ;;
+        *) ip_status="不存在" ;;
+    esac
+    printf '本机 EasyTier 虚拟 IP：%s\n' "$ip_status"
+
+    case "${ROLE:-}" in
+        panel-landing)
+            set +e
+            check_listener_present
+            rc=$?
+            set -e
+            case "$rc" in
+                0) listener_status="已监听" ;;
+                2) listener_status="无法检查（ss 命令不可用）" ;;
+                *) listener_status="未监听" ;;
+            esac
+            printf 'landing listener：%s\n' "$listener_status"
+            ;;
+        panel-ingress)
+            if [[ -n "${ET_PEERS:-}" ]]; then
+                peer_status="存在"
+                printf '入口机 peer 配置：存在\n'
+                printf 'peers:\n'
+                while IFS= read -r peer; do
+                    [[ -n "$peer" ]] || continue
+                    printf '  %s\n' "$peer"
+                done <<<"${ET_PEERS// /$'\n'}"
+            else
+                peer_status="不存在"
+                printf '入口机 peer 配置：不存在\n'
+            fi
+            if [[ "${FORWARD_ENABLED:-true}" == "true" ]]; then
+                printf '业务转发：已配置\n'
+            else
+                printf '业务转发：未配置\n'
+            fi
+            ;;
+    esac
+
+    if [[ "$active" == "activating" ]]; then
+        active_since="$(systemctl show "$service_name" -p ActiveEnterTimestamp --value 2>/dev/null || true)"
+        ts="$(date -d "$active_since" +%s 2>/dev/null || printf '')"
+        now="$(date +%s)"
+        age=""
+        [[ -n "$ts" ]] && age=$((now - ts))
+        ready_status="false"
+        if [[ "${ROLE:-}" == "panel-landing" && "$proc_status" == "存在" && "$ip_status" == "存在" && "${listener_status:-未监听}" == "已监听" ]]; then
+            ready_status="true"
+        elif [[ "${ROLE:-}" == "panel-ingress" && "$proc_status" == "存在" && "$ip_status" == "存在" && "${peer_status:-不存在}" == "存在" ]]; then
+            ready_status="true"
+        fi
+        if [[ "$ready_status" == "true" ]]; then
+            printf '[WARN] systemd 仍显示 activating，但 EasyTier 进程和关键运行状态存在，可能是服务类型/前台行为差异。建议运行 logs 确认。\n'
+        else
+            if [[ -n "$age" && "$age" -gt 30 ]]; then
+                printf '[WARN] 服务仍在 activating（约 %s 秒），且进程/IP/监听检查未全部通过，建议运行 bash install.sh logs。\n' "$age"
+            else
+                printf '[WARN] 服务仍在 activating，且进程/IP/监听检查未全部通过，建议运行 bash install.sh logs。\n'
+            fi
+        fi
+    fi
+}
+
+enable_ip_forward() {
+    local tmp
+    tmp="$(make_tmp_file "ix-transit-fabric.sysctl")"
+    {
+        printf '# Managed by ix-transit-fabric\n'
+        printf 'net.ipv4.ip_forward=1\n'
+    } >"$tmp"
+
+    backup_file "$SYSCTL_FILE"
+    install -m 0644 "$tmp" "$SYSCTL_FILE"
+    rm -f -- "$tmp"
+    sysctl -w net.ipv4.ip_forward=1 >/dev/null
+    log_ok "已开启 IPv4 转发：net.ipv4.ip_forward=1"
+}
+
+render_nft_file() {
+    local output="$1"
+    local table_name="$2"
+    [[ "${FORWARD_ENABLED:-true}" == "true" ]] || die_user "业务转发未配置，不能生成 nftables 规则。请运行 configure-forward。"
+
+    {
+        printf 'table ip %s {\n' "$table_name"
+        printf '    chain prerouting {\n'
+        printf '        type nat hook prerouting priority dstnat; policy accept;\n'
+        if [[ "$FORWARD_PROTO" == "tcp" || "$FORWARD_PROTO" == "both" ]]; then
+            printf '        tcp dport %s dnat to %s:%s\n' "$LOCAL_PORT" "$LANDING_ET_IP" "$REMOTE_PORT"
+        fi
+        if [[ "$FORWARD_PROTO" == "udp" || "$FORWARD_PROTO" == "both" ]]; then
+            printf '        udp dport %s dnat to %s:%s\n' "$LOCAL_PORT" "$LANDING_ET_IP" "$REMOTE_PORT"
+        fi
+        printf '    }\n\n'
+        printf '    chain postrouting {\n'
+        printf '        type nat hook postrouting priority srcnat; policy accept;\n'
+        if [[ "$FORWARD_PROTO" == "tcp" || "$FORWARD_PROTO" == "both" ]]; then
+            printf '        ip daddr %s tcp dport %s masquerade\n' "$LANDING_ET_IP" "$REMOTE_PORT"
+        fi
+        if [[ "$FORWARD_PROTO" == "udp" || "$FORWARD_PROTO" == "both" ]]; then
+            printf '        ip daddr %s udp dport %s masquerade\n' "$LANDING_ET_IP" "$REMOTE_PORT"
+        fi
+        printf '    }\n'
+        printf '}\n'
+    } >"$output"
+}
+
+validate_profile_config() {
+    local profile_id="${1:-${PROFILE_ID:-}}"
+    validate_profile_id "$profile_id" || die_user "PROFILE_ID 格式不正确：${profile_id}"
+    normalize_profile_compat_vars
+    validate_line_role "${LINE_ROLE:-standalone}" || die_user "LINE_ROLE 只能是 primary、backup 或 standalone。"
+    validate_line_priority "${LINE_PRIORITY:-100}" || die_user "LINE_PRIORITY 必须是数字。"
+    validate_health_status_value "${HEALTH_STATUS:-unknown}" || die_user "HEALTH_STATUS 只能是 unknown、healthy、warning 或 down。"
+    validate_easytier_args
+}
+
+check_profile_conflicts() {
+    local profile_id="${1:-${PROFILE_ID:-}}" other path other_role other_forward old_local old_listener old_subnet old_ip
+    local current_subnet current_ip
+    validate_profile_id "$profile_id" || die_user "PROFILE_ID 格式不正确：${profile_id}"
+    normalize_profile_compat_vars
+    [[ "${ENABLED:-true}" == "true" ]] || return 0
+    current_subnet="${ET_SUBNET:-}"
+    if [[ -z "$current_subnet" && -n "${ET_IPV4:-}" ]]; then
+        current_subnet="$(cidr_network24 "$ET_IPV4" 2>/dev/null || true)"
+    fi
+    current_ip="${ET_IPV4:-}"
+    current_ip="${current_ip%%/*}"
+
+    if [[ "${ROLE:-}" == "panel-ingress" && "${FORWARD_ENABLED:-true}" == "true" ]]; then
+        for other in $(profile_ids); do
+            [[ "$other" == "$profile_id" ]] && continue
+            path="$(profile_env_path "$other")"
+            profile_path_enabled "$path" || continue
+            other_role="$(profile_env_value_from_path "$path" ROLE 2>/dev/null || true)"
+            [[ "$other_role" == "panel-ingress" ]] || continue
+            other_forward="$(profile_env_value_from_path "$path" FORWARD_ENABLED 2>/dev/null || true)"
+            [[ "${other_forward:-true}" == "true" ]] || continue
+            old_local="$(profile_env_value_from_path "$path" LOCAL_PORT 2>/dev/null || true)"
+            if [[ -n "${LOCAL_PORT:-}" && "$old_local" == "$LOCAL_PORT" ]]; then
+                die_user "LOCAL_PORT 冲突：${LOCAL_PORT} 已被 profile ${other} 使用。"
+            fi
+        done
+        if [[ -n "${LOCAL_PORT:-}" ]] && is_port_in_use "$LOCAL_PORT"; then
+            log_warn "LOCAL_PORT ${LOCAL_PORT} 已被本机进程监听，可能和 nftables DNAT 冲突。"
+            show_port_owner "$LOCAL_PORT" >&2
+        fi
+        [[ -n "${REMOTE_PORT:-}" ]] || die_user "REMOTE_PORT 为空但业务转发已启用。"
+    fi
+    if [[ "${ROLE:-}" == "panel-landing" ]]; then
+        local listener_port listener_proto
+        listener_port="${LISTENER_PORT:-${ET_LISTENER_PORT:-}}"
+        listener_proto="${ET_LISTENER_PROTO:-${LISTENER_PROTOS:-both}}"
+        for other in $(profile_ids); do
+            [[ "$other" == "$profile_id" ]] && continue
+            path="$(profile_env_path "$other")"
+            profile_path_enabled "$path" || continue
+            other_role="$(profile_env_value_from_path "$path" ROLE 2>/dev/null || true)"
+            [[ "$other_role" == "panel-landing" ]] || continue
+            old_listener="$(profile_env_value_from_path "$path" LISTENER_PORT 2>/dev/null || true)"
+            [[ -n "$old_listener" ]] || old_listener="$(profile_env_value_from_path "$path" ET_LISTENER_PORT 2>/dev/null || true)"
+            if [[ -n "$listener_port" && "$old_listener" == "$listener_port" ]]; then
+                die_user "LISTENER_PORT 冲突：${listener_port} 已被 profile ${other} 使用。"
+            fi
+        done
+        validate_listener_port_available "$listener_proto" "$listener_port" || die_user "EasyTier listener 端口不可用。"
+    fi
+
+    for other in $(profile_ids); do
+        [[ "$other" == "$profile_id" ]] && continue
+        path="$(profile_env_path "$other")"
+        profile_path_enabled "$path" || continue
+        old_subnet="$(profile_subnet_from_path "$path" 2>/dev/null || true)"
+        old_ip="$(profile_et_ip_addr_from_path "$path" 2>/dev/null || true)"
+        if [[ -n "$current_subnet" && -n "$old_subnet" && "$old_subnet" == "$current_subnet" ]]; then
+            die_user "ET_SUBNET 冲突：${current_subnet} 已被 profile ${other} 使用。"
+        fi
+        if [[ -n "$current_ip" && -n "$old_ip" && "$old_ip" == "$current_ip" ]]; then
+            die_user "ET_IPV4 冲突：${current_ip} 已被 profile ${other} 使用。"
+        fi
+    done
+}
+
+check_all_profiles_conflicts() {
+    local id path role enabled forward_enabled local_port listener_port subnet et_ip
+    declare -A seen_local=() seen_listener=() seen_subnet=() seen_ip=()
+    for id in $(profile_ids); do
+        path="$(profile_env_path "$id")"
+        profile_path_enabled "$path" || continue
+        role="$(profile_env_value_from_path "$path" ROLE 2>/dev/null || true)"
+
+        if [[ "$role" == "panel-ingress" ]]; then
+            forward_enabled="$(profile_env_value_from_path "$path" FORWARD_ENABLED 2>/dev/null || true)"
+            if [[ "${forward_enabled:-true}" == "true" ]]; then
+                local_port="$(profile_env_value_from_path "$path" LOCAL_PORT 2>/dev/null || true)"
+                if [[ -n "$local_port" ]]; then
+                    if [[ -n "${seen_local[$local_port]:-}" ]]; then
+                        die_user "多个启用 Profile 使用相同 LOCAL_PORT：${local_port}（${seen_local[$local_port]} 与 ${id}）"
+                    fi
+                    seen_local[$local_port]="$id"
+                fi
+            fi
+        fi
+
+        if [[ "$role" == "panel-landing" ]]; then
+            listener_port="$(profile_env_value_from_path "$path" LISTENER_PORT 2>/dev/null || true)"
+            [[ -n "$listener_port" ]] || listener_port="$(profile_env_value_from_path "$path" ET_LISTENER_PORT 2>/dev/null || true)"
+            if [[ -n "$listener_port" ]]; then
+                if [[ -n "${seen_listener[$listener_port]:-}" ]]; then
+                    die_user "多个启用 Profile 使用相同 LISTENER_PORT：${listener_port}（${seen_listener[$listener_port]} 与 ${id}）"
+                fi
+                seen_listener[$listener_port]="$id"
+            fi
+        fi
+
+        subnet="$(profile_subnet_from_path "$path" 2>/dev/null || true)"
+        if [[ -n "$subnet" ]]; then
+            if [[ -n "${seen_subnet[$subnet]:-}" ]]; then
+                die_user "多个启用 Profile 使用相同 ET_SUBNET：${subnet}（${seen_subnet[$subnet]} 与 ${id}）"
+            fi
+            seen_subnet[$subnet]="$id"
+        fi
+
+        et_ip="$(profile_et_ip_addr_from_path "$path" 2>/dev/null || true)"
+        if [[ -n "$et_ip" ]]; then
+            if [[ -n "${seen_ip[$et_ip]:-}" ]]; then
+                die_user "多个启用 Profile 使用相同 ET_IPV4：${et_ip}（${seen_ip[$et_ip]} 与 ${id}）"
+            fi
+            seen_ip[$et_ip]="$id"
+        fi
+    done
+}
+
+validate_all_enabled_profiles() {
+    local id path
+    for id in $(profile_ids); do
+        path="$(profile_env_path "$id")"
+        profile_path_enabled "$path" || continue
+        load_profile "$id" || die_user "无法读取 Profile：${id}"
+        [[ "${ROLE:-}" == "panel-ingress" && "${FORWARD_ENABLED:-true}" == "true" ]] || continue
+        validate_profile_config "$id"
+    done
+}
+
+render_nft_all_file() {
+    local output="$1" table_name="$2" id saved_vars
+    {
+        printf 'table ip %s {\n' "$table_name"
+        printf '    chain prerouting {\n'
+        printf '        type nat hook prerouting priority dstnat; policy accept;\n\n'
+        for id in $(profile_ids); do
+            load_profile "$id" || continue
+            [[ "${ROLE:-}" == "panel-ingress" && "${ENABLED:-true}" == "true" && "${FORWARD_ENABLED:-true}" == "true" ]] || continue
+            printf '        # profile: %s\n' "$id"
+            if [[ "${FORWARD_PROTO:-both}" == "tcp" || "${FORWARD_PROTO:-both}" == "both" ]]; then
+                printf '        tcp dport %s dnat to %s:%s\n' "$LOCAL_PORT" "$LANDING_ET_IP" "$REMOTE_PORT"
+            fi
+            if [[ "${FORWARD_PROTO:-both}" == "udp" || "${FORWARD_PROTO:-both}" == "both" ]]; then
+                printf '        udp dport %s dnat to %s:%s\n' "$LOCAL_PORT" "$LANDING_ET_IP" "$REMOTE_PORT"
+            fi
+            printf '\n'
+        done
+        printf '    }\n\n'
+        printf '    chain postrouting {\n'
+        printf '        type nat hook postrouting priority srcnat; policy accept;\n\n'
+        for id in $(profile_ids); do
+            load_profile "$id" || continue
+            [[ "${ROLE:-}" == "panel-ingress" && "${ENABLED:-true}" == "true" && "${FORWARD_ENABLED:-true}" == "true" ]] || continue
+            printf '        # profile: %s\n' "$id"
+            if [[ "${FORWARD_PROTO:-both}" == "tcp" || "${FORWARD_PROTO:-both}" == "both" ]]; then
+                printf '        ip daddr %s tcp dport %s masquerade\n' "$LANDING_ET_IP" "$REMOTE_PORT"
+            fi
+            if [[ "${FORWARD_PROTO:-both}" == "udp" || "${FORWARD_PROTO:-both}" == "both" ]]; then
+                printf '        ip daddr %s udp dport %s masquerade\n' "$LANDING_ET_IP" "$REMOTE_PORT"
+            fi
+            printf '\n'
+        done
+        printf '    }\n'
+        printf '}\n'
+    } >"$output"
+}
+
+apply_nft_all() {
+    require_root "$@"
+    ensure_profile_dirs
+    validate_all_enabled_profiles
+    check_all_profiles_conflicts
+    install_nftables
+    install -d -m 0755 "$NFT_DIR"
+    local check_tmp actual_tmp check_table backup_path
+    check_tmp="$(make_tmp_file "ix-transit-fabric.nft-all-check")"
+    actual_tmp="$(make_tmp_file "ix-transit-fabric.nft-all")"
+    check_table="$NFT_TABLE"
+    if nft list table ip "$NFT_TABLE" >/dev/null 2>&1; then
+        check_table="${NFT_TABLE}_check_$$"
+    fi
+    render_nft_all_file "$check_tmp" "$check_table"
+    nft -c -f "$check_tmp"
+    rm -f -- "$check_tmp"
+    render_nft_all_file "$actual_tmp" "$NFT_TABLE"
+    backup_file "$NFT_FILE"
+    install -m 0644 "$actual_tmp" "$NFT_FILE"
+    rm -f -- "$actual_tmp"
+    backup_path="$(backup_current_nft_table)"
+    nft delete table ip "$NFT_TABLE" >/dev/null 2>&1 || true
+    if nft -f "$NFT_FILE"; then
+        log_ok "已应用全部 Profile 的 nftables 项目表。"
+        return 0
+    fi
+    log_error "应用全部 nftables 规则失败，正在回滚。"
+    restore_nft_backup "$backup_path" || true
+    return 1
+}
+
+backup_current_nft_table() {
+    local stamp backup_path
+    ensure_config_dir
+    stamp="$(date +%Y%m%d-%H%M%S)"
+    backup_path="${BACKUP_DIR}/nft-${stamp}.nft"
+
+    if nft list table ip "$NFT_TABLE" >"$backup_path" 2>/dev/null; then
+        chmod 600 "$backup_path" 2>/dev/null || true
+        printf '%s\n' "$backup_path"
+    else
+        rm -f -- "$backup_path"
+        backup_path="${BACKUP_DIR}/nft-${stamp}.empty"
+        : >"$backup_path"
+        chmod 600 "$backup_path" 2>/dev/null || true
+        printf '%s\n' "$backup_path"
+    fi
+}
+
+restore_nft_backup() {
+    local backup_path="$1"
+
+    if [[ "$backup_path" == *.empty ]]; then
+        nft delete table ip "$NFT_TABLE" >/dev/null 2>&1 || true
+        log_warn "之前不存在项目 nftables 表，已清理残留表。"
+        return 0
+    fi
+
+    nft delete table ip "$NFT_TABLE" >/dev/null 2>&1 || true
+    if nft -f "$backup_path"; then
+        log_warn "已恢复旧 nftables 项目表：${backup_path}"
+        return 0
+    fi
+
+    log_error "恢复旧 nftables 项目表失败，请手动检查：${backup_path}"
+    return 1
+}
+
+apply_nft() {
+    install_nftables
+    install -d -m 0755 "$NFT_DIR"
+
+    local check_tmp actual_tmp check_table backup_path
+    check_tmp="$(make_tmp_file "ix-transit-fabric.nft-check")"
+    actual_tmp="$(make_tmp_file "ix-transit-fabric.nft")"
+    check_table="$NFT_TABLE"
+    if nft list table ip "$NFT_TABLE" >/dev/null 2>&1; then
+        check_table="${NFT_TABLE}_check_$$"
+    fi
+
+    render_nft_file "$check_tmp" "$check_table"
+    nft -c -f "$check_tmp"
+    rm -f -- "$check_tmp"
+
+    render_nft_file "$actual_tmp" "$NFT_TABLE"
+    backup_file "$NFT_FILE"
+    install -m 0644 "$actual_tmp" "$NFT_FILE"
+    rm -f -- "$actual_tmp"
+
+    backup_path="$(backup_current_nft_table)"
+    nft delete table ip "$NFT_TABLE" >/dev/null 2>&1 || true
+    if nft -f "$NFT_FILE"; then
+        log_ok "已应用 nftables 项目表：table ip ${NFT_TABLE}"
+        return 0
+    fi
+
+    log_error "应用 nftables 项目表失败，正在尝试回滚。"
+    if ! restore_nft_backup "$backup_path"; then
+        log_error "nftables 回滚失败，备份路径：${backup_path}"
+    fi
+    return 1
+}
+
+remove_nft() {
+    if command_exists nft; then
+        nft delete table ip "$NFT_TABLE" >/dev/null 2>&1 || true
+        log_ok "已删除 nftables 项目表（如果存在）：table ip ${NFT_TABLE}"
+    else
+        log_warn "未找到 nft 命令，跳过运行时表删除。"
+    fi
+    backup_and_remove_file "$NFT_FILE"
+}
+
+delete_nft_runtime_and_file() {
+    if command_exists nft; then
+        nft delete table ip "$NFT_TABLE" >/dev/null 2>&1 || true
+        log_ok "已删除 nftables 项目表（如果存在）：table ip ${NFT_TABLE}"
+    else
+        log_warn "未找到 nft 命令，跳过运行时表删除。"
+    fi
+    rm -f -- "$NFT_FILE"
+}
+
+status_nft() {
+    if command_exists nft; then
+        if nft list table ip "$NFT_TABLE" >/dev/null 2>&1; then
+            printf 'nftables 项目表：存在（table ip %s）\n' "$NFT_TABLE"
+        else
+            printf 'nftables 项目表：不存在（table ip %s）\n' "$NFT_TABLE"
+        fi
+    else
+        printf 'nftables 项目表：nft 命令不可用\n'
+    fi
+}
+
+show_nft() {
+    if ! command_exists nft; then
+        printf '未找到 nft 命令。入口机需要安装 nftables。\n'
+        return 0
+    fi
+
+    if ! nft list table ip "$NFT_TABLE" >/dev/null 2>&1; then
+        printf 'nftables 项目表不存在：table ip %s\n' "$NFT_TABLE"
+        return 0
+    fi
+
+    nft list table ip "$NFT_TABLE"
+}
+
+load_env_or_warn() {
+    if load_env; then
+        return 0
+    fi
+    printf '[WARN] 未找到可读取的配置文件：%s。请先运行 install-panel-landing 或 install-panel-ingress。\n' "$ENV_FILE"
+    return 1
+}
+
+et_ip_addr() {
+    printf '%s\n' "${ET_IPV4%%/*}"
+}
+
+render_landing_code_json() {
+    local landing_et_ip remote_port created_at listener_proto listener_port listener_protos easytier_version et_path et_subnet suggested_ingress_et_ip suggested_ingress_et_cidr
+    validate_easytier_args
+    [[ "$ROLE" == "panel-landing" ]] || die_user "只有落地机模式（panel-landing）可以生成接入码。"
+    normalize_profile_compat_vars
+    landing_et_ip="$(et_ip_addr)"
+    remote_port="${SERVICE_PORT:-}"
+    created_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    listener_proto="$(normalize_listener_proto "${ET_LISTENER_PROTO:-${LISTENER_PROTOS:-both}}" "both")"
+    listener_port="${LISTENER_PORT:-${ET_LISTENER_PORT:-}}"
+    validate_port "$listener_port" || die_user "Profile 缺少 LISTENER_PORT 或端口不正确。"
+    listener_protos="$(normalize_listener_protos "$listener_proto" "both")"
+    et_subnet="${ET_SUBNET:-$(cidr_network24 "$ET_IPV4")}"
+    suggested_ingress_et_ip="$(ip_from_cidr_host "$et_subnet" 1)"
+    suggested_ingress_et_cidr="$(cidr_from_subnet_host "$et_subnet" 1)"
+    et_path="$(detect_easytier_binary 2>/dev/null || true)"
+    if [[ -n "$et_path" ]]; then
+        easytier_version="$(get_easytier_version "$et_path")"
+    else
+        easytier_version=""
+    fi
+
+    printf '{'
+    printf '"version":3,'
+    printf '"code_version":3,'
+    printf '"project":"%s",' "$APP_NAME"
+    printf '"mode":"panel",'
+    printf '"role":"landing-code",'
+    printf '"profile_id":"%s",' "$(json_escape "${PROFILE_ID:-default}")"
+    printf '"profile_name":"%s",' "$(json_escape "${PROFILE_NAME:-${PROFILE_ID:-default}}")"
+    printf '"network_name":"%s",' "$(json_escape "$ET_NETWORK_NAME")"
+    printf '"network_secret":"%s",' "$(json_escape "$ET_NETWORK_SECRET")"
+    printf '"landing_hostname":"%s",' "$(json_escape "$ET_HOSTNAME")"
+    printf '"et_subnet":"%s",' "$et_subnet"
+    printf '"suggested_ingress_profile_id":"%s-ingress",' "$(json_escape "${PROFILE_ID:-default}")"
+    printf '"landing_et_ip":"%s",' "$landing_et_ip"
+    printf '"landing_et_cidr":"%s",' "$ET_IPV4"
+    printf '"suggested_ingress_et_ip":"%s",' "$suggested_ingress_et_ip"
+    printf '"suggested_ingress_et_cidr":"%s",' "$suggested_ingress_et_cidr"
+    printf '"listener_proto":"%s",' "$listener_proto"
+    printf '"listener_protos":%s,' "$(listener_protos_json "$listener_proto")"
+    printf '"tunnel_protos":%s,' "$(listener_protos_json "$listener_proto")"
+    printf '"listener_port":%s,' "$listener_port"
+    [[ -n "${LANDING_PUBLIC_HOST:-}" ]] && printf '"landing_public_hint":"%s",' "$(json_escape "$LANDING_PUBLIC_HOST")"
+    printf '"easytier_version":"%s",' "$(json_escape "$easytier_version")"
+    if [[ -n "$remote_port" ]]; then
+        printf '"remote_port":%s,' "$remote_port"
+    else
+        printf '"remote_port":"",'
+    fi
+    printf '"remark":"%s",' "$(json_escape "${REMARK:-}")"
+    printf '"created_at":"%s"' "$created_at"
+    printf '}'
+}
+
+generate_landing_code() {
+    render_landing_code_json | base64url_encode | sed 's/^/IXTF1:/'
+}
+
+save_landing_code_file() {
+    local code="$1"
+    ensure_config_dir
+    printf '%s\n' "$code" >"$LANDING_CODE_FILE"
+    chmod 600 "$LANDING_CODE_FILE"
+}
+
+show_code() {
+    local code listener_proto listener_port listener_proto_display profile_id="${1:-}" code_path
+    if [[ -n "$profile_id" || -d "$PROFILES_DIR" ]]; then
+        if ! profile_id="$(resolve_profile_id_for_cmd "$profile_id" show-code)"; then
+            return_or_exit 2 || return $?
+        fi
+        if ! load_profile "$profile_id"; then
+            print_profile_selection_hint "$profile_id" show-code
+            return_or_exit 2 || return $?
+        fi
+    elif ! load_env; then
+        printf '[WARN] 未找到可读取的配置文件：%s。请先安装落地机模式。\n' "$ENV_FILE"
+        return 0
+    fi
+    if [[ "${ROLE:-}" != "panel-landing" ]]; then
+        printf '[WARN] 当前角色不是 panel-landing，不能生成落地机接入码。\n'
+        return 0
+    fi
+    normalize_profile_compat_vars
+    listener_proto="${ET_LISTENER_PROTO:-${LISTENER_PROTOS:-}}"
+    listener_port="${LISTENER_PORT:-${ET_LISTENER_PORT:-}}"
+    if [[ -z "$listener_port" ]]; then
+        printf '[WARN] Profile 缺少 LISTENER_PORT，请检查配置文件。\n'
+        return 0
+    fi
+    code="$(generate_landing_code)"
+    listener_proto_display="$(proto_display "$listener_proto")"
+    if [[ -n "${PROFILE_ID:-}" && "${PROFILE_ID:-default}" != "default" ]]; then
+        save_profile_code_file "$PROFILE_ID" "$code"
+    else
+        save_landing_code_file "$code"
+    fi
+    cat <<EOF
+落地机接入码：
+$(c_yellow '===== 接入码开始 =====')
+${code}
+$(c_yellow '===== 接入码结束 =====')
+
+CNIX 面板出口填写：
+出口 IP：本机公网 IP（请自行确认）
+出口端口：${listener_port}
+出口协议：${listener_proto_display}
+
+提醒：
+接入码包含组网密钥，请勿公开。
+EOF
+}
+
+extract_landing_code() {
+    local input="$1"
+    local code
+    input="${input//$'\r'/$'\n'}"
+    code="$(printf '%s\n' "$input" | sed -nE 's/^[[:space:]]*(IXTF1:[A-Za-z0-9_-]+)[[:space:]]*$/\1/p' | head -n 1)"
+    if [[ -n "$code" ]]; then
+        printf '%s\n' "$code"
+        return 0
+    fi
+    input="$(trim_space "$input")"
+    [[ "$input" == IXTF1:* ]] || return 1
+    printf '%s\n' "$input"
+}
+
+read_code_from_args_or_prompt() {
+    local code
+    if [[ -n "$CODE_ARG" ]]; then
+        extract_landing_code "$CODE_ARG" || die_user "接入码格式不正确，应包含 IXTF1: 开头的单行。"
+        return 0
+    fi
+    if [[ -n "$CODE_FILE_ARG" ]]; then
+        [[ -r "$CODE_FILE_ARG" ]] || die_user "无法读取接入码文件：${CODE_FILE_ARG}"
+        code="$(cat "$CODE_FILE_ARG")"
+        extract_landing_code "$code" || die_user "接入码文件中没有找到 IXTF1: 开头的单行。"
+        return 0
+    fi
+    require_tty install-panel-ingress-from-code
+    printf '请粘贴落地机接入码（IXTF1:...）：' >&2
+    IFS= read -r code || return 1
+    if ! extract_landing_code "$code" >/dev/null 2>&1; then
+        local more lines=0
+        while (( lines < 8 )) && IFS= read -r -t 0.2 more; do
+            code="${code}"$'\n'"${more}"
+            extract_landing_code "$code" >/dev/null 2>&1 && break
+            [[ "$more" == *"接入码结束"* ]] && break
+            lines=$((lines + 1))
+        done
+    fi
+    extract_landing_code "$code" || die_user "接入码格式不正确，应包含 IXTF1: 开头的单行。"
+}
+
+parse_landing_code() {
+    local code="$1"
+    local payload json version project mode role cidr_ip normalized tunnel_protos
+    code="$(extract_landing_code "$code")" || die_user "接入码格式不正确，应以 IXTF1: 开头。"
+    [[ "$code" == IXTF1:* ]] || die_user "接入码格式不正确，应以 IXTF1: 开头。"
+    payload="${code#IXTF1:}"
+    json="$(base64url_decode "$payload")" || die_user "接入码解码失败，请确认复制完整。"
+
+    version="$(json_get_number "$json" "version")"
+    project="$(json_get_string "$json" "project")"
+    mode="$(json_get_string "$json" "mode")"
+    role="$(json_get_string "$json" "role")"
+
+    [[ "$version" == "1" || "$version" == "2" || "$version" == "3" || -z "$version" ]] || die_user "接入码版本不支持。"
+    [[ "$project" == "$APP_NAME" ]] || die_user "接入码项目不匹配。"
+    [[ "$mode" == "panel" ]] || die_user "接入码 mode 不匹配。"
+    [[ "$role" == "landing-code" ]] || die_user "接入码 role 不匹配。"
+
+    CODE_NETWORK_NAME="$(json_get_string "$json" "network_name")"
+    CODE_NETWORK_SECRET="$(json_get_string "$json" "network_secret")"
+    CODE_PROFILE_ID="$(json_get_string "$json" "profile_id")"
+    CODE_PROFILE_NAME="$(json_get_string "$json" "profile_name")"
+    CODE_SUGGESTED_INGRESS_PROFILE_ID="$(json_get_string "$json" "suggested_ingress_profile_id")"
+    CODE_LANDING_HOSTNAME="$(json_get_string "$json" "landing_hostname")"
+    ET_SUBNET="$(json_get_string "$json" "et_subnet")"
+    CODE_LANDING_ET_IP="$(json_get_string "$json" "landing_et_ip")"
+    CODE_LANDING_ET_CIDR="$(json_get_string "$json" "landing_et_cidr")"
+    CODE_LANDING_ET_CIDR="${CODE_LANDING_ET_CIDR:-${CODE_LANDING_ET_IP}/24}"
+    CODE_LANDING_ET_IP="${CODE_LANDING_ET_IP:-${CODE_LANDING_ET_CIDR%/*}}"
+    CODE_SUGGESTED_INGRESS_ET_IP="$(json_get_string "$json" "suggested_ingress_et_ip")"
+    CODE_SUGGESTED_INGRESS_ET_CIDR="$(json_get_string "$json" "suggested_ingress_et_cidr")"
+    CODE_LISTENER_PROTO="$(json_get_string "$json" "listener_proto")"
+    tunnel_protos="$(json_get_string_array_as_words "$json" "tunnel_protos" 2>/dev/null || true)"
+    [[ -n "$tunnel_protos" ]] || tunnel_protos="$(json_get_string_array_as_words "$json" "listener_protos" 2>/dev/null || true)"
+    [[ -n "$CODE_LISTENER_PROTO" && -z "$tunnel_protos" ]] && tunnel_protos="$CODE_LISTENER_PROTO"
+    CODE_LISTENER_PORT="$(json_get_number "$json" "listener_port")"
+    CODE_EASYTIER_VERSION="$(json_get_string "$json" "easytier_version")"
+    CODE_LANDING_PUBLIC_HINT="$(json_get_string "$json" "landing_public_hint")"
+    CODE_REMARK="$(json_get_string "$json" "remark")"
+    LANDING_EASYTIER_VERSION="$CODE_EASYTIER_VERSION"
+    CODE_REMOTE_PORT="$(json_get_number "$json" "remote_port")"
+    [[ -n "$CODE_REMOTE_PORT" ]] || CODE_REMOTE_PORT="$(json_get_string "$json" "remote_port")"
+
+    validate_network_name "$CODE_NETWORK_NAME" || die_user "接入码中的 network_name 格式不正确。"
+    validate_secret "$CODE_NETWORK_SECRET" || die_user "接入码中的 network_secret 不合法或长度不足。"
+    validate_ipv4 "$CODE_LANDING_ET_IP" || die_user "接入码中的 landing_et_ip 不正确。"
+    validate_ipv4_cidr "$CODE_LANDING_ET_CIDR" || die_user "接入码中的 landing_et_cidr 不正确。"
+    cidr_ip="${CODE_LANDING_ET_CIDR%%/*}"
+    [[ "$cidr_ip" == "$CODE_LANDING_ET_IP" ]] || die_user "接入码中的 landing_et_ip 和 landing_et_cidr 不一致。"
+    normalized="$(normalize_listener_proto "${tunnel_protos:-$CODE_LISTENER_PROTO}" "both")" || die_user "接入码中的 listener_proto 不正确。"
+    CODE_LISTENER_PROTO="$normalized"
+    CODE_TUNNEL_PROTOS="$(normalize_listener_protos "$normalized" "both")"
+    if [[ -z "$ET_SUBNET" ]]; then
+        ET_SUBNET="$(cidr_network24 "$CODE_LANDING_ET_CIDR")"
+    fi
+    if [[ -z "$CODE_SUGGESTED_INGRESS_ET_IP" || -z "$CODE_SUGGESTED_INGRESS_ET_CIDR" ]]; then
+        CODE_SUGGESTED_INGRESS_ET_IP="$(ip_from_cidr_host "$ET_SUBNET" 1)"
+        CODE_SUGGESTED_INGRESS_ET_CIDR="$(cidr_from_subnet_host "$ET_SUBNET" 1)"
+    fi
+    validate_port "$CODE_LISTENER_PORT" || die_user "接入码中的 listener_port 不正确。"
+    if [[ -n "$CODE_REMOTE_PORT" ]]; then
+        validate_port "$CODE_REMOTE_PORT" || die_user "接入码中的 remote_port 不正确。"
+    fi
+}
+
+import_code() {
+    local code
+    if [[ -z "$CODE_ARG" && -z "$CODE_FILE_ARG" ]]; then
+        require_tty install-panel-ingress-from-code
+    fi
+    if [[ -n "$CODE_FILE_ARG" && ! -r "$CODE_FILE_ARG" ]]; then
+        die_user "无法读取接入码文件：${CODE_FILE_ARG}"
+    fi
+    code="$(read_code_from_args_or_prompt)" || die_user "未读取到接入码。"
+    parse_landing_code "$code"
+    check_easytier_version_compat "$CODE_EASYTIER_VERSION"
+    cat <<EOF
+接入码解析成功：
+  EasyTier 网络名：${CODE_NETWORK_NAME}
+  EasyTier 网络密钥：$(mask_secret "$CODE_NETWORK_SECRET")
+  落地机 EasyTier IP：${CODE_LANDING_ET_IP}
+  落地机 EasyTier CIDR：${CODE_LANDING_ET_CIDR}
+  落地机 listener：$(proto_display "$CODE_LISTENER_PROTO")/${CODE_LISTENER_PORT}
+  落地机 EasyTier 版本：${CODE_EASYTIER_VERSION:-未包含}
+  业务端口：${CODE_REMOTE_PORT:-未包含，入口机配置时需要填写}
+EOF
+}
+
+collect_landing_inputs() {
+    local default_network default_secret default_listener_port default_subnet default_landing_cidr
+    require_tty install-panel-landing
+    ROLE="panel-landing"
+    default_network="$(generate_network_name)"
+    default_secret="$(generate_secret)"
+    default_subnet="$(generate_et_subnet)"
+    default_landing_cidr="$(generate_landing_et_ip "$default_subnet")"
+    default_listener_port="$(pick_random_port_excluding_listeners both || true)"
+    print_four_port_reminder
+    cat >&2 <<EOF
+按 Enter 使用推荐默认值；本项目默认只使用 CNIX 指定线路，不依赖公共节点。
+默认网络名：${default_network}
+默认节点名：ix-landing
+默认 EasyTier 虚拟 IP：${default_landing_cidr}
+默认 listener 协议：TCP/UDP
+默认 listener 端口：随机未占用高端口
+业务端口可留空，入口机粘贴接入码时再填写。
+
+EOF
+    ET_NETWORK_NAME="$(prompt_validated "请输入 EasyTier 网络名" "$default_network" validate_network_name "请输入 1-64 个字符，仅允许字母、数字、点、下划线或短横线。")" || return 1
+    ET_NETWORK_SECRET="$(prompt_secret_default "$default_secret")" || return 1
+    ET_HOSTNAME="$(prompt_validated "请输入当前节点名称" "ix-landing" validate_hostname_value "请输入 1-64 个字符，仅允许字母、数字、点、下划线或短横线。")" || return 1
+    ET_IPV4="$(prompt_validated "请输入当前节点 EasyTier 虚拟 IP，例如 ${default_landing_cidr}" "$default_landing_cidr" validate_ipv4_cidr "请输入 IPv4/CIDR，例如 ${default_landing_cidr}。")" || return 1
+    ET_SUBNET="$(cidr_network24 "$ET_IPV4")"
+    if subnet_conflicts_local_routes "$ET_SUBNET"; then
+        log_warn "EasyTier 虚拟网段 ${ET_SUBNET} 可能和本机现有路由冲突；如已知冲突，请手动更换。"
+    fi
+    ET_LISTENER_PROTO="$(prompt_listener_proto "请选择 EasyTier 监听协议（tcp / udp / tcp+udp / ws / wss / quic / wg / all）" "both")" || return 1
+    ET_LISTENER_PORT="$(prompt_listener_port "请输入 EasyTier 监听端口" "$ET_LISTENER_PROTO" "$default_listener_port")" || return 1
+    if [[ -n "$default_listener_port" && "$ET_LISTENER_PORT" == "$default_listener_port" ]]; then
+        ET_LISTENER_PORT_WAS_DEFAULT="true"
+    else
+        ET_LISTENER_PORT_WAS_DEFAULT="false"
+    fi
+    ET_PRIVATE_MODE="true"
+    ET_EXPLICIT_ONLY="true"
+    IXTF_EXPLICIT_ONLY="true"
+    print_remote_port_short_hint
+    SERVICE_PORT="$(prompt_optional_port "可选：请输入落地机业务服务端口，例如 Remnawave / VLESS / Xray / sing-box 监听端口。这个端口不是 CNIX 面板出口端口。如果业务服务还没部署，可以直接回车，入口机稍后再填写")" || return 1
+
+    if [[ -n "${SERVICE_PORT:-}" && "$SERVICE_PORT" == "$ET_LISTENER_PORT" ]]; then
+        die_user "业务服务端口不能和 EasyTier 监听端口相同。"
+    fi
+
+    ET_LISTENERS="$(listener_urls_value "$ET_LISTENER_PROTO" "$ET_LISTENER_PORT")"
+}
+
+collect_ingress_inputs() {
+    local default_local_port remote_rc default_subnet default_ingress_cidr default_landing_ip
+    require_tty install-panel-ingress
+    default_local_port="$(pick_random_port || true)"
+    default_subnet="$(generate_et_subnet)"
+    default_ingress_cidr="$(generate_ingress_et_ip "$default_subnet")"
+    default_landing_ip="$(ip_from_cidr_host "$default_subnet" 2)"
+    ROLE="panel-ingress"
+    print_four_port_reminder
+    ET_NETWORK_NAME="$(prompt_validated "请输入 EasyTier 网络名" "" validate_network_name "请输入 1-64 个字符，仅允许字母、数字、点、下划线或短横线。")" || return 1
+    ET_NETWORK_SECRET="$(prompt_secret)" || return 1
+    ET_HOSTNAME="$(prompt_validated "请输入当前节点名称" "ix-ingress" validate_hostname_value "请输入 1-64 个字符，仅允许字母、数字、点、下划线或短横线。")" || return 1
+    ET_IPV4="$(prompt_validated "请输入当前节点 EasyTier 虚拟 IP，例如 ${default_ingress_cidr}" "$default_ingress_cidr" validate_ipv4_cidr "请输入 IPv4/CIDR，例如 ${default_ingress_cidr}。")" || return 1
+    ET_SUBNET="$(cidr_network24 "$ET_IPV4")"
+    CNIX_ENTRY_HOST="$(prompt_validated "请输入 CNIX 面板入口 IP 或域名" "" validate_host "CNIX 面板入口 IP 或域名不能为空。")" || return 1
+    CNIX_ENTRY_PORT="$(prompt_port "请输入 CNIX 面板入口端口" "")" || return 1
+    CNIX_ENTRY_PROTO="${CODE_LISTENER_PROTO:-both}"
+    CNIX_ENTRY_PROTO="$(prompt_entry_proto "请输入 CNIX 面板入口协议（tcp / udp / tcp+udp / ws / wss / quic / wg / all）" "$CNIX_ENTRY_PROTO")" || return 1
+    LOCAL_PORT="$(prompt_random_port "请输入入口机公网业务端口 LOCAL_PORT" "$default_local_port")" || return 1
+    LANDING_ET_IP="$(prompt_validated "请输入落地机 EasyTier 虚拟 IP，例如 ${default_landing_ip}" "$default_landing_ip" validate_ipv4 "请输入 IPv4，例如 ${default_landing_ip}。")" || return 1
+    print_remote_port_short_hint
+    set +e
+    REMOTE_PORT="$(prompt_remote_port_with_context "请输入落地机业务端口 REMOTE_PORT，例如 8233" "8233" "" "$CNIX_ENTRY_PORT" "$LOCAL_PORT")"
+    remote_rc=$?
+    set -e
+    [[ "$remote_rc" -eq 0 ]] || return 1
+    FORWARD_PROTO="$(prompt_forward_proto "请选择业务转发协议（tcp / udp / both / tcp/udp）" "both")" || return 1
+    ET_PRIVATE_MODE="true"
+    ET_EXPLICIT_ONLY="true"
+    IXTF_EXPLICIT_ONLY="true"
+    FORWARD_ENABLED="true"
+
+    ET_PEERS="$(peer_urls_value "$CNIX_ENTRY_PROTO" "$CNIX_ENTRY_HOST" "$CNIX_ENTRY_PORT")"
+    ET_NO_LISTENER="true"
+}
+
+print_config_summary() {
+    local source="${1:-env}" listener_proto_display forward_proto_display
+    if [[ "$source" != "loaded" ]]; then
+        if ! load_env; then
+            printf '配置文件：未找到（%s）\n' "$ENV_FILE"
+            return 1
+        fi
+    fi
+
+    printf '项目：%s\n' "$APP_NAME"
+    printf '当前角色：%s\n' "$ROLE"
+    printf '线路组：%s\n' "${LINE_GROUP:-未分组}"
+    printf '线路角色：%s（priority=%s）\n' "${LINE_ROLE:-standalone}" "${LINE_PRIORITY:-100}"
+    printf '启用状态：ENABLED=%s FORWARD_ENABLED=%s\n' "${ENABLED:-true}" "${FORWARD_ENABLED:-true}"
+    printf '健康状态：%s\n' "${HEALTH_STATUS:-unknown}"
+    [[ -n "${LAST_HEALTH_CHECK_AT:-}" ]] && printf '最近健康检查：%s\n' "$LAST_HEALTH_CHECK_AT"
+    [[ -n "${LAST_HEALTH_REASON:-}" ]] && printf '健康说明：%s\n' "$LAST_HEALTH_REASON"
+    printf 'EasyTier 网络名：%s\n' "${ET_NETWORK_NAME:-}"
+    printf 'EasyTier 网络密钥：%s\n' "$(mask_secret "${ET_NETWORK_SECRET:-}")"
+    printf '节点名称：%s\n' "${ET_HOSTNAME:-}"
+    printf 'EasyTier 虚拟 IP：%s\n' "${ET_IPV4:-}"
+
+    case "${ROLE:-}" in
+        panel-landing)
+            normalize_profile_compat_vars
+            listener_proto_display="$(proto_display "${ET_LISTENER_PROTO:-${LISTENER_PROTOS:-}}")"
+            printf 'EasyTier 监听协议：%s\n' "$listener_proto_display"
+            if [[ -n "${ET_LISTENERS:-}" || ( -n "${ET_LISTENER_PROTO:-}" && -n "${ET_LISTENER_PORT:-}" ) ]]; then
+                print_easytier_listeners
+            else
+                printf '[WARN] Profile 缺少 LISTENER_PORT，请检查配置文件。\n'
+            fi
+            [[ -n "${REMOTE_PORT:-${SERVICE_PORT:-}}" ]] && printf '业务端口提示：%s\n' "${REMOTE_PORT:-${SERVICE_PORT:-}}"
+            ;;
+        panel-ingress)
+            printf 'CNIX 面板入口：%s://%s:%s\n' "$(proto_display "${CNIX_ENTRY_PROTO:-}")" "${CNIX_ENTRY_HOST:-}" "${CNIX_ENTRY_PORT:-}"
+            if [[ "${FORWARD_ENABLED:-true}" == "true" ]]; then
+                forward_proto_display="$(proto_display "${FORWARD_PROTO:-}")"
+                printf '入口机公网业务端口 LOCAL_PORT：%s\n' "${LOCAL_PORT:-}"
+                printf '落地机转发目标：%s:%s\n' "${LANDING_ET_IP:-}" "${REMOTE_PORT:-}"
+                printf '转发协议：%s\n' "$forward_proto_display"
+            else
+                printf '业务转发：未配置\n'
+            fi
+            ;;
+    esac
+}
+
+show_profile_summary() {
+    require_root "$@"
+    local profile_id="${1:-}" service active enabled_status listener_port listener_proto remote_port landing_public
+    profile_id="$(resolve_profile_id "$profile_id")"
+    load_profile_or_die "$profile_id"
+    normalize_profile_compat_vars
+    service="$(profile_service_name "$profile_id")"
+    listener_port="${LISTENER_PORT:-${ET_LISTENER_PORT:-}}"
+    listener_proto="${ET_LISTENER_PROTO:-${LISTENER_PROTOS:-}}"
+    remote_port="${REMOTE_PORT:-${SERVICE_PORT:-}}"
+    landing_public="${LANDING_PUBLIC_HOST:-落地 VPS 公网 IP}"
+    if command_exists systemctl; then
+        active="$(systemctl is-active "$service" 2>/dev/null || true)"
+        enabled_status="$(systemctl is-enabled "$service" 2>/dev/null || true)"
+    else
+        active="unknown"
+        enabled_status="unknown"
+    fi
+
+    case "${ROLE:-}" in
+        panel-landing)
+            printf '\n%s\n' "$(c_green "落地线路已完成：${profile_id}")"
+            if [[ -z "$listener_port" ]]; then
+                printf '[WARN] Profile 缺少 LISTENER_PORT，请检查配置文件：%s\n' "$(profile_env_path "$profile_id")"
+            fi
+            print_box "【CNIX 面板出口填写】" \
+                "出口 IP：${landing_public}" \
+                "出口端口：$(c_cyan "${listener_port:-LISTENER_PORT}")" \
+                "出口协议：$(proto_display "$listener_proto")"
+            printf '\n%s\n' "$(c_bold "LISTENER_PORT 是 EasyTier listener / WG ListenPort 等价端口。")"
+            printf '%s\n' "$(c_yellow "REMOTE_PORT 是落地业务服务端口，不要填到 CNIX 面板出口。")"
+            printf '\nProfile：\n'
+            printf '  ID：%s\n' "$profile_id"
+            printf '  名称：%s\n' "${PROFILE_NAME:-$profile_id}"
+            printf '  角色：%s\n' "${ROLE:-}"
+            printf '  EasyTier 虚拟 IP：%s\n' "${ET_IPV4:-未配置}"
+            printf '  EasyTier listener：%s :%s\n' "$(proto_display "$listener_proto")" "${listener_port:-未配置}"
+            printf '  业务端口 REMOTE_PORT：%s\n' "${remote_port:-未配置}"
+            printf '  systemd 实例：%s\n' "$service"
+            printf '  systemd 状态：%s（开机自启：%s）\n' "${active:-unknown}" "${enabled_status:-unknown}"
+            ;;
+        panel-ingress)
+            printf '\n%s\n' "$(c_green "入口线路已完成：${profile_id}")"
+            print_box "【客户端连接】" "入口 VPS 公网 IP:$(c_cyan "${LOCAL_PORT:-LOCAL_PORT}")"
+            print_box "【CNIX 面板】" \
+                "入口：${CNIX_ENTRY_HOST:-CNIX_ENTRY_HOST}:${CNIX_ENTRY_PORT:-CNIX_ENTRY_PORT}" \
+                "出口：${CODE_LANDING_PUBLIC_HINT:-落地 VPS 公网 IP}:${CODE_LISTENER_PORT:-LISTENER_PORT}"
+            if [[ "${FORWARD_ENABLED:-true}" == "true" ]]; then
+                print_box "【内部转发】" "入口机 ${LOCAL_PORT:-LOCAL_PORT} -> ${LANDING_ET_IP:-LANDING_ET_IP}:${REMOTE_PORT:-REMOTE_PORT}"
+            else
+                print_box "【内部转发】" "未配置，稍后可运行 bash install.sh configure-forward"
+            fi
+            printf '\nsystemd 实例：%s\n' "$service"
+            printf 'systemd 状态：%s（开机自启：%s）\n' "${active:-unknown}" "${enabled_status:-unknown}"
+            ;;
+        *)
+            printf '[WARN] Profile 角色未知：%s\n' "${ROLE:-未设置}"
+            ;;
+    esac
+}
+
+print_profile_next_steps() {
+    local profile_id="${1:-}" landing_public listener_port
+    profile_id="$(resolve_profile_id "$profile_id")"
+    load_profile_or_die "$profile_id"
+    normalize_profile_compat_vars
+    landing_public="${LANDING_PUBLIC_HOST:-${CODE_LANDING_PUBLIC_HINT:-落地 VPS 公网 IP}}"
+    listener_port="${LISTENER_PORT:-${ET_LISTENER_PORT:-${CODE_LISTENER_PORT:-LISTENER_PORT}}}"
+    case "${ROLE:-}" in
+        panel-landing)
+            print_next_steps "下一步：" \
+                "在 CNIX 面板出口填 ${landing_public}:${listener_port}" \
+                "到入口机粘贴接入码" \
+                "入口机完成后客户端连接入口机公网 IP:LOCAL_PORT"
+            ;;
+        panel-ingress)
+            print_next_steps "下一步：" \
+                "在客户端填写入口 VPS 公网 IP:${LOCAL_PORT:-LOCAL_PORT}" \
+                "如果不通，运行 bash install.sh health ${profile_id}" \
+                "继续查看：bash install.sh doctor-all 或 bash install.sh logs-profile ${profile_id}"
+            ;;
+    esac
+}
+
+print_access_code_security_hint() {
+    cat <<'EOF'
+安全提醒：
+  接入码包含组网密钥，不要公开。
+  如果接入码曾经发到聊天或工单，正式使用前请运行 refresh-code PROFILE_ID，或 change-landing PROFILE_ID 重新生成 secret。
+EOF
+}
+
+show_profile_summary_legacy_tail() {
+    local profile_id="${1:-}" listener_port listener_proto remote_port landing_public service active enabled_status
+    profile_id="$(resolve_profile_id "$profile_id")"
+    load_profile_or_die "$profile_id"
+    normalize_profile_compat_vars
+    listener_port="${LISTENER_PORT:-${ET_LISTENER_PORT:-}}"
+    listener_proto="${ET_LISTENER_PROTO:-${LISTENER_PROTOS:-}}"
+    remote_port="${REMOTE_PORT:-${SERVICE_PORT:-}}"
+    landing_public="${LANDING_PUBLIC_HOST:-落地 VPS 公网 IP}"
+    service="$(profile_service_name "$profile_id")"
+    if command_exists systemctl; then
+        active="$(systemctl is-active "$service" 2>/dev/null || true)"
+        enabled_status="$(systemctl is-enabled "$service" 2>/dev/null || true)"
+    else
+        active="unknown"
+        enabled_status="unknown"
+    fi
+    case "${ROLE:-}" in
+        panel-landing)
+            printf '\nCNIX 面板出口填写：\n'
+            printf '  出口 IP：%s\n' "$landing_public"
+            printf '  出口端口：%s\n' "${listener_port:-LISTENER_PORT}"
+            printf '  出口协议：%s\n' "$(proto_display "$listener_proto")"
+            printf '\n注意：\n'
+            printf '  %s 是 EasyTier listener / WG ListenPort 等价端口。\n' "${listener_port:-LISTENER_PORT}"
+            printf '  %s 是落地业务服务端口，不要填到 CNIX 面板出口。\n' "${remote_port:-REMOTE_PORT}"
+            printf '\n下一步：\n'
+            printf '  1. 在 CNIX 面板出口填：%s:%s\n' "$landing_public" "${listener_port:-LISTENER_PORT}"
+            printf '  2. 复制下面接入码到公网入口机。\n'
+            printf '  3. 入口机选择“新增入口线路 / 粘贴接入码”。\n'
+            ;;
+        panel-ingress)
+            printf '客户端连接：\n'
+            printf '  公网入口 VPS:%s\n' "${LOCAL_PORT:-LOCAL_PORT}"
+            printf '\nCNIX 商家入口：\n'
+            printf '  %s:%s\n' "${CNIX_ENTRY_HOST:-CNIX_ENTRY_HOST}" "${CNIX_ENTRY_PORT:-CNIX_ENTRY_PORT}"
+            printf '\nCNIX 面板出口应为：\n'
+            printf '  %s:%s\n' "${CODE_LANDING_PUBLIC_HINT:-落地公网 IP}" "${CODE_LISTENER_PORT:-LISTENER_PORT}"
+            printf '\n入口机 nftables 转发目标：\n'
+            if [[ "${FORWARD_ENABLED:-true}" == "true" ]]; then
+                printf '  %s:%s\n' "${LANDING_ET_IP:-LANDING_ET_IP}" "${REMOTE_PORT:-REMOTE_PORT}"
+            else
+                printf '  未配置，稍后可运行 bash install.sh configure-forward\n'
+            fi
+            printf '\nsystemd 实例：%s\n' "$service"
+            printf 'systemd 状态：%s（开机自启：%s）\n' "${active:-unknown}" "${enabled_status:-unknown}"
+            printf '\n下一步：\n'
+            printf '  bash install.sh health %s\n' "$profile_id"
+            printf '  bash install.sh verify-nft-profiles\n'
+            printf '  bash install.sh show-port-map %s\n' "$profile_id"
+            ;;
+        *)
+            printf '[WARN] Profile 角色未知：%s\n' "${ROLE:-未设置}"
+            ;;
+    esac
+}
+
+show_config() {
+    require_root "$@"
+    print_config_summary || die_user "没有可显示的已保存配置。"
+}
+
+panel_guide() {
+    local listener_proto_display listener_port
+    load_env_or_warn || return 0
+    normalize_profile_compat_vars
+
+    case "${ROLE:-}" in
+        panel-landing)
+            listener_proto_display="$(proto_display "${ET_LISTENER_PROTO:-${LISTENER_PROTOS:-}}")"
+            listener_port="${LISTENER_PORT:-${ET_LISTENER_PORT:-}}"
+            cat <<EOF
+当前角色：落地机模式（panel-landing）
+
+CNIX 面板出口应该填写：
+- 出口 IP：落地 VPS 公网 IP
+- 出口端口：${listener_port:-LISTENER_PORT}
+- 出口协议：${listener_proto_display}
+
+不要填写：
+- Remnawave / VLESS / Xray / sing-box 业务服务端口 ${SERVICE_PORT:-REMOTE_PORT}
+
+注意：
+这里的出口端口是 EasyTier listener，等价于 WG ListenPort。
+请把 show-code 输出的接入码复制到入口机。
+EOF
+            ;;
+        panel-ingress)
+            if [[ "${FORWARD_ENABLED:-true}" == "true" ]]; then
+                cat <<EOF
+当前角色：入口机模式（panel-ingress）
+
+客户端：
+- 入口 VPS 公网 IP:${LOCAL_PORT}
+
+CNIX 面板：
+- 入口：${CNIX_ENTRY_HOST}:${CNIX_ENTRY_PORT}
+- 出口：落地 VPS 公网 IP:${CODE_LISTENER_PORT:-LISTENER_PORT}
+
+入口机内部转发：
+- ${LANDING_ET_IP}:${REMOTE_PORT}
+
+注意：
+CNIX 面板出口必须填写落地机 EasyTier listener 端口，不要填写 REMOTE_PORT。
+EOF
+            else
+                cat <<EOF
+当前角色：入口机模式（panel-ingress）
+
+CNIX 面板：
+- 入口：${CNIX_ENTRY_HOST}:${CNIX_ENTRY_PORT}
+- 出口：落地 VPS 公网 IP:${CODE_LISTENER_PORT:-LISTENER_PORT}
+
+业务转发：未配置
+
+下一步：
+运行 bash install.sh configure-forward 配置 LOCAL_PORT / REMOTE_PORT 和 nftables 转发。
+EOF
+            fi
+            ;;
+        *)
+            printf '[WARN] 未知角色：%s\n' "${ROLE:-未设置}"
+            ;;
+    esac
+}
+
+panel_guide_profile() {
+    local profile_id="${1:-}" listener_proto listener_port remote_port landing_public
+    if ! profile_id="$(resolve_profile_id_for_cmd "$profile_id" panel-guide)"; then
+        return_or_exit 2 || return $?
+    fi
+    if ! load_profile "$profile_id"; then
+        print_profile_selection_hint "$profile_id" panel-guide
+        return_or_exit 2 || return $?
+    fi
+    normalize_profile_compat_vars
+    listener_proto="${ET_LISTENER_PROTO:-${LISTENER_PROTOS:-}}"
+    listener_port="${LISTENER_PORT:-${ET_LISTENER_PORT:-}}"
+    remote_port="${REMOTE_PORT:-${SERVICE_PORT:-}}"
+    landing_public="${LANDING_PUBLIC_HOST:-${CODE_LANDING_PUBLIC_HINT:-落地 VPS 公网 IP}}"
+    case "${ROLE:-}" in
+        panel-landing)
+            cat <<EOF
+当前 Profile：${profile_id}（落地机）
+
+CNIX 面板出口应该填写：
+- 出口 IP：${landing_public}
+- 出口端口：${listener_port:-LISTENER_PORT}
+- 出口协议：$(proto_display "$listener_proto")
+
+不要填写：
+- 落地业务服务端口 ${remote_port:-REMOTE_PORT}
+
+注意：
+这里的出口端口是 EasyTier listener，等价于 WG ListenPort。
+请把 show-code 输出的接入码复制到入口机。
+EOF
+            [[ -n "$listener_port" ]] || printf '[WARN] Profile 缺少 LISTENER_PORT，请检查配置文件：%s\n' "$(profile_env_path "$profile_id")"
+            ;;
+        panel-ingress)
+            if [[ "${FORWARD_ENABLED:-true}" == "true" ]]; then
+                cat <<EOF
+当前 Profile：${profile_id}（入口机）
+
+客户端连接：
+- 公网入口 VPS:${LOCAL_PORT:-LOCAL_PORT}
+
+CNIX 面板：
+- 入口：${CNIX_ENTRY_HOST:-CNIX_ENTRY_HOST}:${CNIX_ENTRY_PORT:-CNIX_ENTRY_PORT}
+- 出口：${landing_public}:${CODE_LISTENER_PORT:-LISTENER_PORT}
+
+入口机内部转发：
+- ${LANDING_ET_IP:-LANDING_ET_IP}:${REMOTE_PORT:-REMOTE_PORT}
+
+注意：CNIX 面板出口必须填写落地机 EasyTier listener 端口，不要填写 REMOTE_PORT。
+EOF
+            else
+                cat <<EOF
+当前 Profile：${profile_id}（入口机）
+
+CNIX 面板：
+- 入口：${CNIX_ENTRY_HOST:-CNIX_ENTRY_HOST}:${CNIX_ENTRY_PORT:-CNIX_ENTRY_PORT}
+- 出口：${landing_public}:${CODE_LISTENER_PORT:-LISTENER_PORT}
+
+业务转发：未配置
+
+下一步：
+运行 bash install.sh configure-forward 配置 LOCAL_PORT / REMOTE_PORT 和 nftables 转发。
+EOF
+            fi
+            ;;
+        *)
+            printf '[WARN] 未知 Profile 角色：%s\n' "${ROLE:-未设置}"
+            ;;
+    esac
+}
+
+panel_guide_all() {
+    require_root "$@"
+    local id
+    for id in $(profile_ids); do
+        printf '\n===== Profile %s =====\n' "$id"
+        panel_guide_profile "$id"
+    done
+}
+
+panel_guide_cmd() {
+    require_root "$@"
+    case "${1:-}" in
+        --all)
+            panel_guide_all
+            ;;
+        "")
+            if [[ -d "$PROFILES_DIR" && "$(profile_count)" != "0" ]]; then
+                panel_guide_profile ""
+            else
+                panel_guide
+            fi
+            ;;
+        *)
+            panel_guide_profile "$1"
+            ;;
+    esac
+}
+
+show_easytier_command() {
+    load_env_or_warn || return 0
+    printf 'EasyTier 启动命令（已脱敏，不执行）：\n'
+    render_easytier_args
+    if [[ "${ROLE:-}" == "panel-landing" ]]; then
+        print_easytier_listeners
+    elif [[ "${ROLE:-}" == "panel-ingress" ]]; then
+        print_easytier_peers
+    fi
+}
+
+status_brief() {
+    status_easytier
+    if [[ "${ROLE:-}" == "panel-ingress" ]]; then
+        if [[ "${FORWARD_ENABLED:-true}" == "true" ]]; then
+            status_nft
+            if command_exists sysctl; then
+                printf 'IPv4 转发：%s\n' "$(sysctl -n net.ipv4.ip_forward 2>/dev/null || printf '未知')"
+            fi
+        else
+            printf '业务转发：未配置\n'
+        fi
+    fi
+}
+
+post_install_summary() {
+    local role="$1" listener_state listener_note listener_port listener_proto
+    normalize_profile_compat_vars
+    listener_port="${LISTENER_PORT:-${ET_LISTENER_PORT:-}}"
+    listener_proto="${ET_LISTENER_PROTO:-${LISTENER_PROTOS:-}}"
+    printf '\n配置摘要：\n'
+    print_config_summary loaded || true
+    printf '\nCNIX 面板填写指引：\n'
+    panel_guide || true
+    printf '\n简短状态：\n'
+    status_brief || true
+
+    if [[ "$role" == "panel-landing" ]]; then
+        listener_note="如 listener 未监听，请先运行 bash install.sh logs 或 bash install.sh doctor。"
+        if command_exists ss && check_listener_present >/dev/null 2>&1; then
+            listener_note="EasyTier listener 已检测到监听，即使 systemd 暂时显示 activating，也可以继续填写 CNIX 面板；随后运行 logs 确认。"
+        fi
+        cat <<EOF
+
+【CNIX 面板出口填写】
+出口 IP：落地 VPS 公网 IP
+出口端口：$(c_cyan "${listener_port:-LISTENER_PORT}")
+出口协议：$(proto_display "$listener_proto")
+
+重要：
+这个端口是 EasyTier listener，等价于 WG ListenPort。
+不要填写 Remnawave / VLESS / Xray / sing-box 的业务端口。
+EOF
+        if [[ -n "${SERVICE_PORT:-}" ]]; then
+            cat <<EOF
+
+【业务端口】
+REMOTE_PORT：$(c_cyan "$SERVICE_PORT")
+这是落地机业务服务端口，只在 EasyTier 虚拟网内访问。
+它不是 CNIX 面板出口端口。
+EOF
+        fi
+        cat <<EOF
+
+下一步：
+  1. 在 CNIX 面板出口填写上面的 EasyTier listener 端口。
+  2. 复制接入码到入口机。
+  3. 入口机选择“粘贴接入码组网”。
+
+${listener_note}
+EOF
+    else
+        if [[ "${FORWARD_ENABLED:-true}" == "true" ]]; then
+            cat <<EOF
+
+【客户端填写】
+地址：入口 VPS 公网 IP
+端口：$(c_cyan "${LOCAL_PORT:-LOCAL_PORT}")
+
+【CNIX 面板入口】
+$(c_cyan "${CNIX_ENTRY_HOST}:${CNIX_ENTRY_PORT}")
+
+【CNIX 面板出口】
+落地 VPS 公网 IP:$(c_cyan "${CODE_LISTENER_PORT:-LISTENER_PORT}")
+
+【入口机 nftables 转发目标】
+$(c_cyan "${LANDING_ET_IP}:${REMOTE_PORT}")
+
+下一步：
+  1. 确认 CNIX 面板入口 IP / 端口 / 协议正确。
+  2. 入口 VPS 安全组放行 LOCAL_PORT。
+  3. 运行：bash install.sh doctor
+  4. 运行：bash install.sh self-test
+  5. 客户端连接：入口 VPS 公网 IP:${LOCAL_PORT}
+EOF
+        else
+            cat <<EOF
+
+下一步：
+  1. 先运行：bash install.sh doctor，确认 EasyTier 互通。
+  2. 再运行：bash install.sh configure-forward，配置业务转发。
+EOF
+        fi
+    fi
+}
+
+install_panel_landing() {
+    require_root "$@"
+    run_profile_install_preflight landing
+    if [[ -n "$INSTALL_ENV_FILE_PATH" ]]; then
+        load_install_env_file "panel-landing"
+    else
+        require_tty install-panel-landing
+        collect_landing_inputs || return 1
+        validate_easytier_args
+    fi
+    ensure_systemctl
+    ensure_listener_port_available_before_start
+    save_env
+    save_landing_code_file "$(generate_landing_code)"
+    render_systemd_service
+    restart_easytier
+    post_install_summary "panel-landing"
+    printf '\n落地机接入码：\n'
+    show_code || true
+}
+
+collect_profile_identity() {
+    local role_prefix="$1" default_id
+    default_id="$(generate_profile_id "$role_prefix")"
+    PROFILE_ID="$(prompt_validated "请输入 Profile ID" "$default_id" validate_profile_id "PROFILE_ID 只能包含小写字母、数字、短横线，长度 3-32。")" || return 1
+    if [[ -f "$(profile_env_path "$PROFILE_ID")" ]]; then
+        die_user "Profile 已存在：${PROFILE_ID}"
+    fi
+    PROFILE_NAME="$(prompt_required "请输入 Profile 名称" "$PROFILE_ID")" || return 1
+    ENABLED="true"
+}
+
+add_landing_profile() {
+    require_root "$@"
+    run_profile_install_preflight landing
+    require_tty add-landing-profile
+    ensure_profile_dirs
+    collect_profile_identity "line" || return 1
+    collect_landing_inputs || return 1
+    PROFILE_ID="${PROFILE_ID}"
+    PROFILE_NAME="${PROFILE_NAME:-$PROFILE_ID}"
+    ENABLED="true"
+    ET_HOSTNAME="ix-landing-${PROFILE_ID}"
+    validate_profile_config "$PROFILE_ID"
+    check_profile_conflicts "$PROFILE_ID"
+    ensure_systemctl
+    save_profile_env "$PROFILE_ID"
+    save_profile_code_file "$PROFILE_ID" "$(generate_landing_code)"
+    render_profile_service_files
+    start_profile "$PROFILE_ID"
+    show_profile_summary "$PROFILE_ID"
+    printf '\n接入码：\n'
+    show_code "$PROFILE_ID" || true
+    print_access_code_security_hint
+    printf '\n端口映射：\n'
+    show_port_map "$PROFILE_ID" --compact || true
+    printf '\n状态摘要：\n'
+    run_line_health_check "$PROFILE_ID" false || true
+    print_profile_next_steps "$PROFILE_ID"
+}
+
+add_ingress_profile_from_code() {
+    local profile_id code default_local_port remote_default remote_rc forward_later
+    require_root "$@"
+    run_profile_install_preflight ingress
+    require_tty add-ingress-profile-from-code
+    ensure_profile_dirs
+    collect_profile_identity "line" || return 1
+    profile_id="$PROFILE_ID"
+    code="$(read_code_from_args_or_prompt)" || die_user "未读取到接入码。"
+    parse_landing_code "$code"
+    ROLE="panel-ingress"
+    PROFILE_ID="$profile_id"
+    PROFILE_NAME="${PROFILE_NAME:-$profile_id}"
+    ENABLED="true"
+    ET_NETWORK_NAME="$CODE_NETWORK_NAME"
+    ET_NETWORK_SECRET="$CODE_NETWORK_SECRET"
+    ET_SUBNET="${ET_SUBNET:-$(cidr_network24 "$CODE_LANDING_ET_CIDR")}"
+    ET_HOSTNAME="ix-ingress-${PROFILE_ID}"
+    ET_IPV4="${CODE_SUGGESTED_INGRESS_ET_CIDR:-$(generate_ingress_et_ip "$ET_SUBNET")}"
+    CNIX_ENTRY_HOST="$(prompt_validated "请输入 CNIX 商家提供的入口 IP 或域名" "" validate_host "CNIX 面板入口 IP 或域名不能为空。")" || return 1
+    CNIX_ENTRY_PORT="$(prompt_port "请输入 CNIX 商家提供的入口端口" "")" || return 1
+    CNIX_ENTRY_PROTO="${CODE_LISTENER_PROTO:-both}"
+    CNIX_ENTRY_PROTO="$(prompt_entry_proto "请输入 CNIX 商家提供的入口协议（tcp / udp / tcp+udp / ws / wss / quic / wg / all）" "$CNIX_ENTRY_PROTO")" || return 1
+    default_local_port="$(pick_random_port || true)"
+    LOCAL_PORT="$(prompt_random_port "请输入入口机公网业务端口 LOCAL_PORT" "$default_local_port")" || return 1
+    LANDING_ET_IP="$CODE_LANDING_ET_IP"
+    remote_default="${CODE_REMOTE_PORT:-}"
+    while true; do
+        set +e
+        REMOTE_PORT="$(prompt_remote_port_with_context "请输入落地机业务端口 REMOTE_PORT" "$remote_default" "$CODE_LISTENER_PORT" "$CNIX_ENTRY_PORT" "$LOCAL_PORT")"
+        remote_rc=$?
+        set -e
+        if [[ "$remote_rc" -eq 0 ]]; then
+            FORWARD_ENABLED="true"
+            break
+        fi
+        if [[ "$remote_rc" -eq 3 && -z "$remote_default" ]]; then
+            set +e
+            ask_forward_later
+            forward_later=$?
+            set -e
+            if [[ "$forward_later" -eq 0 ]]; then
+                FORWARD_ENABLED="false"
+                LOCAL_PORT=""
+                REMOTE_PORT=""
+                FORWARD_PROTO=""
+                break
+            fi
+        else
+            return 1
+        fi
+    done
+    if [[ "${FORWARD_ENABLED:-true}" == "true" ]]; then
+        FORWARD_PROTO="$(prompt_forward_proto "请选择业务转发协议（tcp / udp / both / tcp/udp）" "both")" || return 1
+    fi
+    CODE_LISTENER_PORT="$CODE_LISTENER_PORT"
+    ET_PEERS="$(peer_urls_value "$CNIX_ENTRY_PROTO" "$CNIX_ENTRY_HOST" "$CNIX_ENTRY_PORT")"
+    ET_NO_LISTENER="true"
+    validate_profile_config "$PROFILE_ID"
+    check_profile_conflicts "$PROFILE_ID"
+    ensure_systemctl
+    if [[ "${FORWARD_ENABLED:-true}" == "true" ]]; then
+        enable_ip_forward
+    fi
+    save_profile_env "$PROFILE_ID"
+    render_profile_service_files
+    apply_nft_all
+    start_profile "$PROFILE_ID"
+    show_profile_summary "$PROFILE_ID"
+    printf '\n端口映射：\n'
+    show_port_map "$PROFILE_ID" --compact || true
+    printf '\n健康检查摘要：\n'
+    run_line_health_check "$PROFILE_ID" false || true
+    printf '\nnftables：\n'
+    verify_nft_profiles_core || true
+    print_profile_next_steps "$PROFILE_ID"
+}
+
+install_panel_ingress() {
+    require_root "$@"
+    run_profile_install_preflight ingress
+    if [[ -n "$INSTALL_ENV_FILE_PATH" ]]; then
+        load_install_env_file "panel-ingress"
+    else
+        require_tty install-panel-ingress
+        collect_ingress_inputs || return 1
+        validate_easytier_args
+    fi
+    ensure_systemctl
+    ensure_listener_port_available_before_start
+    if [[ "${FORWARD_ENABLED:-true}" == "true" ]]; then
+        enable_ip_forward
+        apply_nft
+    fi
+    save_env
+    render_systemd_service
+    restart_easytier
+    post_install_summary "panel-ingress"
+}
+
+install_panel_ingress_from_code() {
+    local code default_local_port remote_default remote_rc forward_later
+    require_root "$@"
+    run_profile_install_preflight ingress
+    require_tty install-panel-ingress-from-code
+
+    code="$(read_code_from_args_or_prompt)" || die_user "未读取到接入码。"
+    parse_landing_code "$code"
+
+    ROLE="panel-ingress"
+    ET_NETWORK_NAME="$CODE_NETWORK_NAME"
+    ET_NETWORK_SECRET="$CODE_NETWORK_SECRET"
+    LANDING_EASYTIER_VERSION="$CODE_EASYTIER_VERSION"
+    check_easytier_version_compat "$CODE_EASYTIER_VERSION"
+    ET_HOSTNAME="ix-ingress"
+    ET_IPV4="${CODE_SUGGESTED_INGRESS_ET_CIDR:-$(generate_ingress_et_ip "${ET_SUBNET:-$(generate_et_subnet)}")}"
+    ET_SUBNET="${ET_SUBNET:-$(cidr_network24 "$ET_IPV4")}"
+
+    printf '\n已从接入码导入 EasyTier 网络名、网络密钥、落地机 EasyTier IP 和 listener 信息。\n'
+    printf '入口机节点名默认：%s\n' "$ET_HOSTNAME"
+    printf '入口机 EasyTier 虚拟 IP 默认：%s\n' "$ET_IPV4"
+    printf '\n请确认 CNIX 面板出口已经填写落地机 EasyTier listener：\n'
+    printf '  出口 IP：落地 VPS 公网 IP（用户自行确认）\n'
+    printf '  出口端口：%s\n' "$CODE_LISTENER_PORT"
+    printf '  出口协议：%s\n\n' "$(proto_display "$CODE_LISTENER_PROTO")"
+
+    CNIX_ENTRY_HOST="$(prompt_validated "请输入 CNIX 商家提供的入口 IP 或域名" "" validate_host "CNIX 面板入口 IP 或域名不能为空。")" || return 1
+    CNIX_ENTRY_PORT="$(prompt_port "请输入 CNIX 商家提供的入口端口" "")" || return 1
+    printf '如果 CNIX 面板只开了单协议，请在这里选择对应协议；否则直接回车使用 TCP/UDP。\n' >&2
+    CNIX_ENTRY_PROTO=both
+    CNIX_ENTRY_PROTO="$(prompt_entry_proto "请输入 CNIX 商家提供的入口协议（tcp / udp / tcp+udp / ws / wss / quic / wg / all）" "$CNIX_ENTRY_PROTO")" || return 1
+    default_local_port="$(pick_random_port || true)"
+    LOCAL_PORT="$(prompt_random_port "请输入入口机公网业务端口 LOCAL_PORT" "$default_local_port")" || return 1
+    LANDING_ET_IP="$CODE_LANDING_ET_IP"
+    remote_default="${CODE_REMOTE_PORT:-}"
+    while true; do
+        set +e
+        if [[ -n "$remote_default" ]]; then
+            REMOTE_PORT="$(prompt_remote_port_with_context "请输入落地机业务端口 REMOTE_PORT" "$remote_default" "$CODE_LISTENER_PORT" "$CNIX_ENTRY_PORT" "$LOCAL_PORT")"
+        else
+            REMOTE_PORT="$(prompt_remote_port_with_context "接入码未包含业务端口，请输入落地机业务端口 REMOTE_PORT，例如 8233" "" "$CODE_LISTENER_PORT" "$CNIX_ENTRY_PORT" "$LOCAL_PORT")"
+        fi
+        remote_rc=$?
+        set -e
+        if [[ "$remote_rc" -eq 0 ]]; then
+            FORWARD_ENABLED="true"
+            break
+        fi
+        if [[ "$remote_rc" -eq 3 && -z "$remote_default" ]]; then
+            set +e
+            ask_forward_later
+            forward_later=$?
+            set -e
+            if [[ "$forward_later" -eq 0 ]]; then
+                FORWARD_ENABLED="false"
+                LOCAL_PORT=""
+                LANDING_ET_IP="$CODE_LANDING_ET_IP"
+                REMOTE_PORT=""
+                FORWARD_PROTO=""
+                break
+            fi
+        else
+            return 1
+        fi
+    done
+    if [[ "$FORWARD_ENABLED" == "true" ]]; then
+        FORWARD_PROTO="$(prompt_forward_proto "请选择业务转发协议（tcp / udp / both / tcp/udp）" "both")" || return 1
+    fi
+    ET_PRIVATE_MODE="true"
+    ET_EXPLICIT_ONLY="true"
+    IXTF_EXPLICIT_ONLY="true"
+    ET_PEERS="$(peer_urls_value "$CNIX_ENTRY_PROTO" "$CNIX_ENTRY_HOST" "$CNIX_ENTRY_PORT")"
+    ET_NO_LISTENER="true"
+
+    validate_easytier_args
+    ensure_systemctl
+    ensure_listener_port_available_before_start
+    if [[ "$FORWARD_ENABLED" == "true" ]]; then
+        enable_ip_forward
+        apply_nft
+    fi
+    save_env
+    render_systemd_service
+    restart_easytier
+    post_install_summary "panel-ingress"
+}
+
+configure_forward() {
+    local default_local_port remote_rc listener_port_for_warn
+    require_root "$@"
+    require_tty configure-forward
+    load_env_or_warn || die_user "未找到入口机配置，无法配置业务转发。请先运行 install-panel-ingress-from-code。"
+    [[ "${ROLE:-}" == "panel-ingress" ]] || die_user "configure-forward 只适用于入口机模式。"
+
+    default_local_port="${LOCAL_PORT:-}"
+    [[ -n "$default_local_port" ]] || default_local_port="$(pick_random_port || true)"
+    LOCAL_PORT="$(prompt_random_port "请输入入口机公网业务端口 LOCAL_PORT" "$default_local_port")" || return 1
+    LANDING_ET_IP="$(prompt_validated "请输入落地机 EasyTier 虚拟 IP" "${LANDING_ET_IP:-10.144.144.2}" validate_ipv4 "请输入 IPv4，例如 10.144.144.2。")" || return 1
+    listener_port_for_warn="${CODE_LISTENER_PORT:-}"
+    while true; do
+        set +e
+        REMOTE_PORT="$(prompt_remote_port_with_context "请输入落地机业务端口 REMOTE_PORT，例如 8233" "${REMOTE_PORT:-}" "$listener_port_for_warn" "${CNIX_ENTRY_PORT:-}" "$LOCAL_PORT")"
+        remote_rc=$?
+        set -e
+        if [[ "$remote_rc" -eq 0 ]]; then
+            break
+        fi
+        [[ "$remote_rc" -eq 3 ]] && log_warn "REMOTE_PORT 不能为空。业务转发必须知道落地机业务服务端口。"
+    done
+    FORWARD_PROTO="$(prompt_forward_proto "请选择业务转发协议（tcp / udp / both / tcp/udp）" "${FORWARD_PROTO:-both}")" || return 1
+    FORWARD_ENABLED="true"
+
+    validate_easytier_args
+    enable_ip_forward
+    apply_nft
+    save_env
+    render_systemd_service
+    if command_exists systemctl; then
+        systemctl daemon-reload
+    fi
+    printf '\n业务转发已配置：入口 VPS 公网 IP:%s -> %s:%s（%s）\n' "$LOCAL_PORT" "$LANDING_ET_IP" "$REMOTE_PORT" "$(proto_display "$FORWARD_PROTO")"
+}
+
+show_landing() {
+    require_root
+    local profile_id=""
+    if [[ -n "${1:-}" || -d "$PROFILES_DIR" ]]; then
+        profile_id="$(resolve_profile_id "${1:-}")"
+        load_profile_or_die "$profile_id"
+    else
+        load_env_or_warn || die_user "未找到配置。"
+    fi
+    [[ "${ROLE:-}" == "panel-landing" ]] || die_user "show-landing 只适用于落地机配置。"
+    print_config_summary loaded
+    printf '\n'
+    if [[ -n "$profile_id" ]]; then
+        panel_guide_profile "$profile_id"
+    else
+        panel_guide
+    fi
+}
+
+show_ingress() {
+    require_root
+    local profile_id=""
+    if [[ -n "${1:-}" || -d "$PROFILES_DIR" ]]; then
+        profile_id="$(resolve_profile_id "${1:-}")"
+        load_profile_or_die "$profile_id"
+    else
+        load_env_or_warn || die_user "未找到配置。"
+    fi
+    [[ "${ROLE:-}" == "panel-ingress" ]] || die_user "show-ingress 只适用于入口机配置。"
+    print_config_summary loaded
+    printf '\n'
+    if [[ -n "$profile_id" ]]; then
+        show_port_map "$profile_id"
+    else
+        show_port_map
+    fi
+}
+
+refresh_code() {
+    require_root
+    if [[ -n "${1:-}" || -d "$PROFILES_DIR" ]]; then
+        load_profile_or_die "$(resolve_profile_id "${1:-}")"
+    else
+        load_env_or_warn || die_user "未找到配置，无法刷新接入码。"
+    fi
+    [[ "${ROLE:-}" == "panel-landing" ]] || die_user "refresh-code 只适用于落地机。"
+    validate_easytier_args
+    if [[ -n "${PROFILE_ID:-}" && "${PROFILE_ID:-default}" != "default" ]]; then
+        save_profile_code_file "$PROFILE_ID" "$(generate_landing_code)"
+        show_code "$PROFILE_ID"
+    else
+        save_landing_code_file "$(generate_landing_code)"
+        show_code
+    fi
+}
+
+change_landing() {
+    local keep_identity regen_ip regen_listener change_remote default_subnet default_landing_cidr default_listener_port profile_id use_profile="false"
+    require_root "$@"
+    run_profile_install_preflight landing
+    require_tty change-landing
+    if [[ -n "${1:-}" || -d "$PROFILES_DIR" ]]; then
+        profile_id="$(resolve_profile_id "${1:-}")"
+        load_profile_or_die "$profile_id"
+        use_profile="true"
+    else
+        load_env_or_warn || die_user "未找到落地机配置。请先运行 install-panel-landing。"
+    fi
+    [[ "${ROLE:-}" == "panel-landing" ]] || die_user "change-landing 只适用于落地机。"
+
+    keep_identity="$(prompt_yes_no "是否保留当前网络名和密钥" "true")" || return 1
+    if [[ "$keep_identity" != "true" ]]; then
+        ET_NETWORK_NAME="$(prompt_validated "请输入新的 EasyTier 网络名" "$(generate_network_name)" validate_network_name "请输入 1-64 个字符，仅允许字母、数字、点、下划线或短横线。")" || return 1
+        ET_NETWORK_SECRET="$(prompt_secret_default "$(generate_secret)")" || return 1
+    fi
+
+    regen_ip="$(prompt_yes_no "是否重新生成落地机 EasyTier 虚拟 IP" "false")" || return 1
+    if [[ "$regen_ip" == "true" ]]; then
+        default_subnet="$(generate_et_subnet)"
+        default_landing_cidr="$(generate_landing_et_ip "$default_subnet")"
+        ET_IPV4="$(prompt_validated "请输入新的落地机 EasyTier 虚拟 IP" "$default_landing_cidr" validate_ipv4_cidr "请输入 IPv4/CIDR，例如 ${default_landing_cidr}。")" || return 1
+        ET_SUBNET="$(cidr_network24 "$ET_IPV4")"
+    fi
+
+    ET_LISTENER_PROTO="$(prompt_listener_proto "请选择 EasyTier listener 协议（tcp / udp / tcp+udp / ws / wss / quic / wg / all）" "${ET_LISTENER_PROTO:-both}")" || return 1
+
+    regen_listener="$(prompt_yes_no "是否重新生成 EasyTier listener 端口" "true")" || return 1
+    if [[ "$regen_listener" == "true" ]]; then
+        default_listener_port="$(pick_random_port_excluding_listeners "${ET_LISTENER_PROTO:-both}" || true)"
+        ET_LISTENER_PORT="$(prompt_listener_port "请输入新的 EasyTier listener 端口" "${ET_LISTENER_PROTO:-both}" "$default_listener_port")" || return 1
+    fi
+
+    change_remote="$(prompt_yes_no "是否修改业务服务端口 REMOTE_PORT" "false")" || return 1
+    if [[ "$change_remote" == "true" ]]; then
+        SERVICE_PORT="$(prompt_optional_port "可选：请输入落地机业务服务端口，例如 Remnawave / VLESS / Xray / sing-box 监听端口。这个端口不是 CNIX 面板出口端口。如果业务服务还没部署，可以直接回车，入口机稍后再填写")" || return 1
+    fi
+
+    validate_easytier_args
+    ensure_systemctl
+    ensure_listener_port_available_before_start
+    if [[ "$use_profile" == "true" ]]; then
+        check_profile_conflicts "$profile_id"
+        save_profile_env "$profile_id"
+        save_profile_code_file "$profile_id" "$(generate_landing_code)"
+        render_profile_service_files
+        restart_profile "$profile_id"
+    else
+        save_env
+        save_landing_code_file "$(generate_landing_code)"
+        render_systemd_service
+        restart_easytier
+    fi
+    if [[ "$use_profile" == "true" ]]; then
+        show_profile_summary "$profile_id"
+        printf '\n重要：更换落地机后，入口机必须重新粘贴新的接入码，或运行 bash install.sh update-from-code %s。\n' "$profile_id"
+        printf '\n新的接入码：\n'
+        show_code "$profile_id" || true
+        printf '\n端口映射：\n'
+        show_port_map "$profile_id" || true
+        printf '\n状态：\n'
+        status_profile "$profile_id" || true
+    else
+        post_install_summary "panel-landing"
+        printf '\n重要：更换落地机后，入口机必须重新粘贴新的接入码，或运行 bash install.sh update-from-code。\n'
+        printf '\n新的接入码：\n'
+        show_code || true
+    fi
+}
+
+update_from_code() {
+    local code modify_entry remote_default remote_rc profile_id use_profile="false"
+    require_root "$@"
+    run_profile_install_preflight ingress
+    require_tty update-from-code
+    if [[ -n "${1:-}" || -d "$PROFILES_DIR" ]]; then
+        profile_id="$(resolve_profile_id "${1:-}")"
+        load_profile_or_die "$profile_id"
+        use_profile="true"
+    else
+        load_env_or_warn || die_user "未找到入口机配置。请先运行 install-panel-ingress-from-code。"
+    fi
+    [[ "${ROLE:-}" == "panel-ingress" ]] || die_user "update-from-code 只适用于入口机。"
+
+    code="$(read_code_from_args_or_prompt)" || die_user "未读取到接入码。"
+    parse_landing_code "$code"
+
+    ET_NETWORK_NAME="$CODE_NETWORK_NAME"
+    ET_NETWORK_SECRET="$CODE_NETWORK_SECRET"
+    ET_SUBNET="$(cidr_network24 "$CODE_LANDING_ET_CIDR")"
+    LANDING_ET_IP="$CODE_LANDING_ET_IP"
+    CODE_LANDING_ET_CIDR="$CODE_LANDING_ET_CIDR"
+    CODE_SUGGESTED_INGRESS_ET_IP="$CODE_SUGGESTED_INGRESS_ET_IP"
+    CODE_SUGGESTED_INGRESS_ET_CIDR="$CODE_SUGGESTED_INGRESS_ET_CIDR"
+    LANDING_EASYTIER_VERSION="$CODE_EASYTIER_VERSION"
+
+    if [[ -n "${CODE_SUGGESTED_INGRESS_ET_CIDR:-}" ]]; then
+        if ! validate_et_cidr_pair "$CODE_LANDING_ET_CIDR" "${ET_IPV4:-$CODE_SUGGESTED_INGRESS_ET_CIDR}"; then
+            ET_IPV4="$CODE_SUGGESTED_INGRESS_ET_CIDR"
+        fi
+    fi
+
+    remote_default="${CODE_REMOTE_PORT:-${REMOTE_PORT:-}}"
+    if [[ -n "$remote_default" ]]; then
+        REMOTE_PORT="$remote_default"
+    fi
+
+    modify_entry="$(prompt_yes_no "是否修改 CNIX 商家入口 IP/端口/协议" "false")" || return 1
+    if [[ "$modify_entry" == "true" ]]; then
+        CNIX_ENTRY_HOST="$(prompt_validated "请输入 CNIX 商家入口 IP 或域名" "${CNIX_ENTRY_HOST:-}" validate_host "CNIX 面板入口 IP 或域名不能为空。")" || return 1
+        CNIX_ENTRY_PORT="$(prompt_port "请输入 CNIX 商家入口端口" "${CNIX_ENTRY_PORT:-}")" || return 1
+        CNIX_ENTRY_PROTO="$(prompt_entry_proto "请输入 CNIX 商家入口协议（tcp / udp / tcp+udp / ws / wss / quic / wg / all）" "${CNIX_ENTRY_PROTO:-$CODE_LISTENER_PROTO}")" || return 1
+    fi
+
+    if [[ "${FORWARD_ENABLED:-true}" == "true" ]]; then
+        if [[ -z "${LOCAL_PORT:-}" ]]; then
+            LOCAL_PORT="$(prompt_random_port "请输入入口机公网业务端口 LOCAL_PORT" "$(pick_random_port || true)")" || return 1
+        fi
+        while [[ -z "${REMOTE_PORT:-}" ]]; do
+            set +e
+            REMOTE_PORT="$(prompt_remote_port_with_context "请输入落地机业务端口 REMOTE_PORT" "$remote_default" "$CODE_LISTENER_PORT" "${CNIX_ENTRY_PORT:-}" "${LOCAL_PORT:-}")"
+            remote_rc=$?
+            set -e
+            [[ "$remote_rc" -eq 0 ]] || return 1
+        done
+        FORWARD_PROTO="${FORWARD_PROTO:-both}"
+    fi
+
+    ET_PEERS="$(peer_urls_value "${CNIX_ENTRY_PROTO:-$CODE_LISTENER_PROTO}" "$CNIX_ENTRY_HOST" "$CNIX_ENTRY_PORT")"
+    ET_NO_LISTENER="true"
+    validate_easytier_args
+    ensure_systemctl
+    if [[ "$use_profile" == "true" ]]; then
+        check_profile_conflicts "$profile_id"
+        save_profile_env "$profile_id"
+    fi
+    if [[ "${FORWARD_ENABLED:-true}" == "true" ]]; then
+        enable_ip_forward
+        if [[ "$use_profile" == "true" ]]; then
+            apply_nft_all
+        else
+            apply_nft
+        fi
+    fi
+    if [[ "$use_profile" == "true" ]]; then
+        render_profile_service_files
+        restart_profile "$profile_id"
+    else
+        save_env
+        render_systemd_service
+        restart_easytier
+    fi
+    if [[ "$use_profile" == "true" ]]; then
+        show_profile_summary "$profile_id"
+        printf '\n端口映射：\n'
+        show_port_map "$profile_id" || true
+        printf '\n状态：\n'
+        status_profile "$profile_id" || true
+        printf '\nnftables：\n'
+        verify_nft_profiles_core || true
+    else
+        post_install_summary "panel-ingress"
+    fi
+}
+
+change_ingress() {
+    local change_host change_port change_proto regen_local regen_ip default_local_port default_ingress_cidr profile_id use_profile="false"
+    require_root "$@"
+    require_tty change-ingress
+    if [[ -n "${1:-}" || -d "$PROFILES_DIR" ]]; then
+        profile_id="$(resolve_profile_id "${1:-}")"
+        load_profile_or_die "$profile_id"
+        use_profile="true"
+    else
+        load_env_or_warn || die_user "未找到入口机配置。请先运行 install-panel-ingress-from-code。"
+    fi
+    [[ "${ROLE:-}" == "panel-ingress" ]] || die_user "change-ingress 只适用于入口机。"
+
+    change_host="$(prompt_yes_no "是否修改 CNIX 商家入口 IP/域名" "false")" || return 1
+    [[ "$change_host" == "true" ]] && CNIX_ENTRY_HOST="$(prompt_validated "请输入 CNIX 商家入口 IP 或域名" "${CNIX_ENTRY_HOST:-}" validate_host "CNIX 面板入口 IP 或域名不能为空。")"
+    change_port="$(prompt_yes_no "是否修改 CNIX 商家入口端口" "false")" || return 1
+    [[ "$change_port" == "true" ]] && CNIX_ENTRY_PORT="$(prompt_port "请输入 CNIX 商家入口端口" "${CNIX_ENTRY_PORT:-}")"
+    change_proto="$(prompt_yes_no "是否修改入口协议" "false")" || return 1
+    [[ "$change_proto" == "true" ]] && CNIX_ENTRY_PROTO="$(prompt_entry_proto "请输入 CNIX 商家入口协议（tcp / udp / tcp+udp / ws / wss / quic / wg / all）" "${CNIX_ENTRY_PROTO:-both}")"
+
+    regen_local="$(prompt_yes_no "是否重新随机 LOCAL_PORT" "true")" || return 1
+    if [[ "$regen_local" == "true" || -z "${LOCAL_PORT:-}" ]]; then
+        default_local_port="$(pick_random_port || true)"
+        LOCAL_PORT="$(prompt_random_port "请输入入口机公网业务端口 LOCAL_PORT" "$default_local_port")" || return 1
+    fi
+
+    regen_ip="$(prompt_yes_no "是否重新随机入口机 EasyTier 虚拟 IP" "false")" || return 1
+    if [[ "$regen_ip" == "true" ]]; then
+        default_ingress_cidr="$(generate_ingress_et_ip "${ET_SUBNET:-$(generate_et_subnet)}")"
+        ET_IPV4="$(prompt_validated "请输入新的入口机 EasyTier 虚拟 IP" "$default_ingress_cidr" validate_ipv4_cidr "请输入 IPv4/CIDR，例如 ${default_ingress_cidr}。")" || return 1
+    fi
+
+    ET_PEERS="$(peer_urls_value "${CNIX_ENTRY_PROTO:-both}" "$CNIX_ENTRY_HOST" "$CNIX_ENTRY_PORT")"
+    validate_easytier_args
+    ensure_systemctl
+    ensure_easytier
+    if [[ "$use_profile" == "true" ]]; then
+        check_profile_conflicts "$profile_id"
+        save_profile_env "$profile_id"
+    fi
+    if [[ "${FORWARD_ENABLED:-true}" == "true" ]]; then
+        enable_ip_forward
+        if [[ "$use_profile" == "true" ]]; then
+            apply_nft_all
+        else
+            apply_nft
+        fi
+    fi
+    if [[ "$use_profile" == "true" ]]; then
+        render_profile_service_files
+        restart_profile "$profile_id"
+    else
+        save_env
+        render_systemd_service
+        restart_easytier
+    fi
+    if [[ "$use_profile" == "true" ]]; then
+        show_profile_summary "$profile_id"
+        printf '\n端口映射：\n'
+        show_port_map "$profile_id" || true
+        printf '\n状态：\n'
+        status_profile "$profile_id" || true
+        printf '\nnftables：\n'
+        verify_nft_profiles_core || true
+    else
+        post_install_summary "panel-ingress"
+    fi
+}
+
+change_cnix_entry() {
+    change_ingress "$@"
+}
+
+enabled_display() {
+    [[ "${1:-true}" == "true" ]] && printf 'on\n' || printf 'off\n'
+}
+
+forward_display() {
+    local role="${1:-}" enabled="${2:-true}" forward="${3:-true}"
+    if [[ "$role" != "panel-ingress" ]]; then
+        printf 'n/a\n'
+    elif [[ "$enabled" != "true" ]]; then
+        printf 'off\n'
+    elif [[ "$forward" == "true" ]]; then
+        printf 'active\n'
+    else
+        printf 'standby\n'
+    fi
+}
+
+sorted_profile_ids() {
+    local id group priority group_key
+    for id in $(profile_ids); do
+        if load_profile "$id" >/dev/null 2>&1; then
+            group="${LINE_GROUP:-}"
+            priority="${LINE_PRIORITY:-100}"
+            [[ "$priority" =~ ^[0-9]+$ ]] || priority="99999"
+            if [[ -n "$group" && "${LINE_ROLE:-standalone}" != "standalone" ]]; then
+                group_key="$group"
+            else
+                group_key="~standalone"
+            fi
+            printf '%s\t%05d\t%s\n' "$group_key" "$priority" "$id"
+        else
+            printf '~unreadable\t99999\t%s\n' "$id"
+        fi
+    done | sort -t $'\t' -k1,1 -k2,2n -k3,3 | cut -f3
+}
+
+list_profiles() {
+    require_root "$@"
+    ensure_profile_dirs
+    local id note enabled_label forward_label
+    printf 'PROFILE_ID\tROLE\tGROUP\tLINE_ROLE\tPRIORITY\tENABLED\tFORWARD\tHEALTH\tLOCAL_PORT\tREMOTE_PORT\tNOTE\n'
+    for id in $(sorted_profile_ids); do
+        load_profile "$id" || continue
+        enabled_label="$(enabled_display "${ENABLED:-true}")"
+        forward_label="$(forward_display "${ROLE:-}" "${ENABLED:-true}" "${FORWARD_ENABLED:-true}")"
+        note="${SWITCH_NOTE:-${REMARK:-}}"
+        printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+            "$id" "${ROLE:-}" "${LINE_GROUP:--}" "${LINE_ROLE:-standalone}" "${LINE_PRIORITY:-100}" \
+            "$enabled_label" "$forward_label" "${HEALTH_STATUS:-unknown}" \
+            "${LOCAL_PORT:-}" "${REMOTE_PORT:-${SERVICE_PORT:-}}" "${note:-}"
+    done
+    if [[ "$(profile_count)" == "0" ]]; then
+        printf '暂无 Profile。旧单线路配置可运行 migrate-single-profile 迁移。\n'
+    fi
+}
+
+show_profile() {
+    require_root "$@"
+    local profile_id
+    profile_id="$(resolve_profile_id "${1:-}")"
+    load_profile_or_die "$profile_id"
+    print_config_summary loaded
+}
+
+set_profile_enabled() {
+    local profile_id="$1" value="$2"
+    load_profile_or_die "$profile_id"
+    ENABLED="$value"
+    if [[ "$value" == "true" ]]; then
+        validate_profile_config "$profile_id"
+        check_profile_conflicts "$profile_id"
+    fi
+    save_profile_env "$profile_id"
+    if [[ "$value" == "true" ]]; then
+        start_profile "$profile_id"
+    else
+        stop_profile "$profile_id"
+    fi
+    apply_nft_all || true
+}
+
+enable_profile() {
+    require_root "$@"
+    local profile_id
+    profile_id="$(resolve_profile_id "${1:-}")"
+    set_profile_enabled "$profile_id" true
+}
+
+disable_profile() {
+    require_root "$@"
+    local profile_id
+    profile_id="$(resolve_profile_id "${1:-}")"
+    set_profile_enabled "$profile_id" false
+}
+
+delete_profile() {
+    require_root "$@"
+    local profile_id answer service
+    profile_id="$(resolve_profile_id "${1:-}")"
+    require_tty delete-profile
+    answer="$(prompt_yes_no "确认删除 Profile ${profile_id}" "false")" || return 1
+    [[ "$answer" == "true" ]] || die_user "已取消删除。"
+    service="$(profile_service_name "$profile_id")"
+    if command_exists systemctl; then
+        systemctl stop "$service" >/dev/null 2>&1 || true
+        systemctl disable "$service" >/dev/null 2>&1 || true
+    fi
+    rm -f -- "$(profile_env_path "$profile_id")" "$(profile_code_path "$profile_id")"
+    apply_nft_all || true
+    log_ok "已删除 Profile：${profile_id}"
+}
+
+rename_profile() {
+    require_root "$@"
+    local profile_id="${1:-}" new_name="${2:-}"
+    profile_id="$(resolve_profile_id "$profile_id")"
+    [[ -n "$new_name" ]] || die_user "请提供新的 Profile 名称。"
+    load_profile_or_die "$profile_id"
+    PROFILE_NAME="$new_name"
+    save_profile_env "$profile_id"
+}
+
+start_profile() {
+    local profile_id="${1:-}" service
+    profile_id="$(resolve_profile_id "$profile_id")"
+    load_profile_or_die "$profile_id"
+    if [[ "${_IXTF_PROFILE_SERVICE_FILES_READY:-false}" != "true" ]]; then
+        render_profile_service_files
+    fi
+    service="$(profile_service_name "$profile_id")"
+    systemctl daemon-reload
+    systemctl enable --now "$service"
+    log_ok "已启动 Profile 服务：${service}"
+}
+
+stop_profile() {
+    local profile_id="${1:-}" service
+    profile_id="$(resolve_profile_id "$profile_id")"
+    service="$(profile_service_name "$profile_id")"
+    if command_exists systemctl; then
+        systemctl stop "$service" >/dev/null 2>&1 || true
+        log_ok "已停止 Profile 服务：${service}"
+    fi
+}
+
+restart_profile() {
+    local profile_id="${1:-}" service
+    profile_id="$(resolve_profile_id "$profile_id")"
+    load_profile_or_die "$profile_id"
+    if [[ "${_IXTF_PROFILE_SERVICE_FILES_READY:-false}" != "true" ]]; then
+        render_profile_service_files
+    fi
+    service="$(profile_service_name "$profile_id")"
+    systemctl daemon-reload
+    systemctl restart "$service"
+    log_ok "已重启 Profile 服务：${service}"
+}
+
+status_profile() {
+    require_root "$@"
+    local profile_id service active enabled_status
+    if ! profile_id="$(resolve_profile_id_for_cmd "${1:-}" status-profile)"; then
+        return_or_exit 2 || return $?
+    fi
+    if ! load_profile "$profile_id"; then
+        print_profile_selection_hint "$profile_id" status-profile
+        return_or_exit 2 || return $?
+    fi
+    print_config_summary loaded
+    service="$(profile_service_name "$profile_id")"
+    printf '\nsystemd 实例：%s\n' "$service"
+    if command_exists systemctl; then
+        active="$(systemctl is-active "$service" 2>/dev/null || true)"
+        enabled_status="$(systemctl is-enabled "$service" 2>/dev/null || true)"
+        printf 'systemd 状态：%s（开机自启：%s）\n' "${active:-unknown}" "${enabled_status:-unknown}"
+        printf '\nEasyTier 详细状态：\n'
+        status_easytier_detailed "$service" || true
+    else
+        printf 'systemd 状态：unknown（systemctl 不可用）\n'
+    fi
+}
+
+logs_profile() {
+    require_root "$@"
+    local profile_id service secret line
+    profile_id="$(resolve_profile_id "${1:-}")"
+    load_profile_or_die "$profile_id"
+    service="$(profile_service_name "$profile_id")"
+    secret="${ET_NETWORK_SECRET:-}"
+    journalctl -u "$service" -n 120 --no-pager 2>&1 | while IFS= read -r line; do
+        [[ -n "$secret" ]] && line="${line//$secret/[hidden]}"
+        printf '%s\n' "$line"
+    done || true
+}
+
+validate_line_role() {
+    case "${1:-}" in
+        primary|backup|standalone) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+validate_health_status_value() {
+    case "${1:-}" in
+        unknown|healthy|warning|down) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+validate_line_priority() {
+    [[ "${1:-}" =~ ^[0-9]{1,5}$ ]]
+}
+
+utc_now() {
+    date -u +%Y-%m-%dT%H:%M:%SZ
+}
+
+health_rank() {
+    case "${1:-unknown}" in
+        healthy) printf '0\n' ;;
+        unknown) printf '1\n' ;;
+        warning) printf '2\n' ;;
+        down) printf '3\n' ;;
+        *) printf '1\n' ;;
+    esac
+}
+
+health_mark() {
+    local status="$1" reason="$2" current_rank next_rank
+    current_rank="$(health_rank "$_IXTF_HEALTH_STATUS")"
+    next_rank="$(health_rank "$status")"
+    if (( next_rank > current_rank )); then
+        _IXTF_HEALTH_STATUS="$status"
+    fi
+    if [[ -n "$reason" ]]; then
+        if [[ -n "${_IXTF_HEALTH_REASON:-}" ]]; then
+            _IXTF_HEALTH_REASON="${_IXTF_HEALTH_REASON}; ${reason}"
+        else
+            _IXTF_HEALTH_REASON="$reason"
+        fi
+    fi
+}
+
+health_line() {
+    printf '  %-30s %s\n' "$1" "$2"
+}
+
+profile_service_status() {
+    local service="$1"
+    if ! command_exists systemctl; then
+        printf 'unknown\n'
+        return 0
+    fi
+    systemctl is-active "$service" 2>/dev/null || true
+}
+
+nft_profile_rule_present() {
+    local profile_id="$1" output expected actual missing
+    [[ "${ROLE:-}" == "panel-ingress" && "${FORWARD_ENABLED:-true}" == "true" ]] || return 3
+    output="$(nft_table_text 2>/dev/null || true)"
+    [[ -n "$output" ]] || return 2
+    expected="$(profile_expected_nft_rules)"
+    [[ -n "$expected" ]] || return 2
+    actual="$(nft_dnat_rules_from_text "$output")"
+    missing="$(comm -23 <(printf '%s\n' "$expected" | awk 'NF' | sort -u) <(printf '%s\n' "$actual" | awk 'NF' | sort -u) || true)"
+    [[ -z "$missing" ]]
+}
+
+nft_profile_rule_label() {
+    local profile_id="$1"
+    nft_profile_rule_status "$profile_id"
+}
+
+enabled_forwarding_ingress_count() {
+    local id count=0
+    for id in $(profile_ids); do
+        load_profile "$id" >/dev/null 2>&1 || continue
+        [[ "${ROLE:-}" == "panel-ingress" && "${ENABLED:-true}" == "true" && "${FORWARD_ENABLED:-true}" == "true" ]] || continue
+        count=$((count + 1))
+    done
+    printf '%s\n' "$count"
+}
+
+profile_role_counts() {
+    local id landing=0 ingress=0 other=0
+    for id in $(profile_ids); do
+        load_profile "$id" >/dev/null 2>&1 || continue
+        case "${ROLE:-}" in
+            panel-landing) landing=$((landing + 1)) ;;
+            panel-ingress) ingress=$((ingress + 1)) ;;
+            *) other=$((other + 1)) ;;
+        esac
+    done
+    printf '%s %s %s\n' "$landing" "$ingress" "$other"
+}
+
+nft_profile_rule_status() {
+    local profile_id="$1" text expected_rules actual_rules missing_rules
+    if [[ -n "$profile_id" ]]; then
+        load_profile "$profile_id" >/dev/null 2>&1 || { printf 'unknown\n'; return 0; }
+    fi
+    [[ "${ROLE:-}" == "panel-ingress" ]] || { printf 'skipped\n'; return 0; }
+    [[ "${ENABLED:-true}" == "true" && "${FORWARD_ENABLED:-true}" == "true" ]] || { printf 'skipped\n'; return 0; }
+    expected_rules="$(profile_expected_nft_rules)"
+    [[ -n "$expected_rules" ]] || { printf 'unknown\n'; return 0; }
+    text="$(nft_table_text 2>/dev/null || true)"
+    [[ -n "$text" ]] || { printf 'unknown\n'; return 0; }
+    actual_rules="$(nft_dnat_rules_from_text "$text")"
+    missing_rules="$(comm -23 <(printf '%s\n' "$expected_rules" | awk 'NF' | sort -u) <(printf '%s\n' "$actual_rules" | awk 'NF' | sort -u) || true)"
+    [[ -z "$missing_rules" ]] && printf 'present\n' || printf 'missing\n'
+}
+
+nft_forwarding_verify_status() {
+    local text expected_rules actual_rules missing_rules extra_rules
+    if [[ "$(enabled_forwarding_ingress_count)" -eq 0 ]]; then
+        printf 'skipped\n'
+        return 0
+    fi
+    text="$(nft_table_text 2>/dev/null || true)"
+    if [[ -z "$text" ]]; then
+        printf 'unavailable\n'
+        return 0
+    fi
+    expected_rules="$(expected_forwarding_nft_rules)"
+    actual_rules="$(nft_dnat_rules_from_text "$text")"
+    missing_rules="$(comm -23 <(printf '%s\n' "$expected_rules" | awk 'NF' | sort -u) <(printf '%s\n' "$actual_rules" | awk 'NF' | sort -u) || true)"
+    extra_rules="$(comm -13 <(printf '%s\n' "$expected_rules" | awk 'NF' | sort -u) <(printf '%s\n' "$actual_rules" | awk 'NF' | sort -u) || true)"
+    [[ -z "$missing_rules" && -z "$extra_rules" ]] && printf 'ok\n' || printf 'mismatch\n'
+}
+
+nft_table_text() {
+    if command_exists nft && nft list table ip "$NFT_TABLE" >/dev/null 2>&1; then
+        nft list table ip "$NFT_TABLE" 2>/dev/null
+        return 0
+    fi
+    if [[ -r "$NFT_FILE" ]]; then
+        cat "$NFT_FILE" 2>/dev/null
+        return 0
+    fi
+    return 1
+}
+
+nft_text_has_dnat_rule() {
+    local text="$1" proto="$2" local_port="$3" landing_ip="$4" remote_port="$5"
+    [[ -n "$local_port" && -n "$landing_ip" && -n "$remote_port" ]] || return 1
+    grep -Eq "${proto}[[:space:]]+dport[[:space:]]+${local_port}[[:space:]]+dnat[[:space:]]+to[[:space:]]+${landing_ip}:${remote_port}" <<<"$text" || return 1
+}
+
+nft_text_has_profile_rule() {
+    local text="$1" proto="${FORWARD_PROTO:-both}" ok=0
+    case "$proto" in
+        tcp)
+            nft_text_has_dnat_rule "$text" tcp "${LOCAL_PORT:-}" "${LANDING_ET_IP:-}" "${REMOTE_PORT:-}" || ok=1
+            ;;
+        udp)
+            nft_text_has_dnat_rule "$text" udp "${LOCAL_PORT:-}" "${LANDING_ET_IP:-}" "${REMOTE_PORT:-}" || ok=1
+            ;;
+        *)
+            nft_text_has_dnat_rule "$text" tcp "${LOCAL_PORT:-}" "${LANDING_ET_IP:-}" "${REMOTE_PORT:-}" || ok=1
+            nft_text_has_dnat_rule "$text" udp "${LOCAL_PORT:-}" "${LANDING_ET_IP:-}" "${REMOTE_PORT:-}" || ok=1
+            ;;
+    esac
+    return "$ok"
+}
+
+active_forwarding_local_ports() {
+    local id
+    for id in $(profile_ids); do
+        load_profile "$id" >/dev/null 2>&1 || continue
+        [[ "${ROLE:-}" == "panel-ingress" && "${ENABLED:-true}" == "true" && "${FORWARD_ENABLED:-true}" == "true" ]] || continue
+        [[ -n "${LOCAL_PORT:-}" ]] && printf '%s\n' "$LOCAL_PORT"
+    done | sort -u
+}
+
+nft_dnat_local_ports_from_text() {
+    local text="$1"
+    { grep -Eo 'dport[[:space:]]+[0-9]+[[:space:]]+dnat[[:space:]]+to' <<<"$text" 2>/dev/null || true; } | awk '{print $2}' | sort -u
+    return 0
+}
+
+nft_dnat_rules_from_text() {
+    local text="$1"
+    { grep -E '^[[:space:]]*(tcp|udp)[[:space:]]+dport[[:space:]]+[0-9]+[[:space:]]+dnat[[:space:]]+to[[:space:]]+' <<<"$text" 2>/dev/null || true; } |
+        sed -E 's/^[[:space:]]+//; s/[[:space:]]+/ /g' | sort -u
+    return 0
+}
+
+profile_expected_nft_rules() {
+    local proto="${FORWARD_PROTO:-both}"
+    [[ "${ROLE:-}" == "panel-ingress" ]] || return 0
+    [[ -n "${LOCAL_PORT:-}" && -n "${LANDING_ET_IP:-}" && -n "${REMOTE_PORT:-}" ]] || return 0
+    if [[ "$proto" == "tcp" || "$proto" == "both" ]]; then
+        printf 'tcp dport %s dnat to %s:%s\n' "$LOCAL_PORT" "$LANDING_ET_IP" "$REMOTE_PORT"
+    fi
+    if [[ "$proto" == "udp" || "$proto" == "both" ]]; then
+        printf 'udp dport %s dnat to %s:%s\n' "$LOCAL_PORT" "$LANDING_ET_IP" "$REMOTE_PORT"
+    fi
+}
+
+expected_forwarding_nft_rules() {
+    local id
+    for id in $(profile_ids); do
+        load_profile "$id" >/dev/null 2>&1 || continue
+        [[ "${ROLE:-}" == "panel-ingress" && "${ENABLED:-true}" == "true" && "${FORWARD_ENABLED:-true}" == "true" ]] || continue
+        profile_expected_nft_rules
+    done | sort -u
+}
+
+group_expected_nft_rules() {
+    local group="$1" id
+    for id in $(list_group_ingress_profiles "$group"); do
+        load_profile "$id" >/dev/null 2>&1 || continue
+        [[ "${ENABLED:-true}" == "true" && "${FORWARD_ENABLED:-true}" == "true" ]] || continue
+        profile_expected_nft_rules
+    done | sort -u
+}
+
+group_actual_nft_rules() {
+    local group="$1" text="${2:-}" id local_port
+    [[ -n "$text" ]] || text="$(nft_table_text 2>/dev/null || true)"
+    [[ -n "$text" ]] || return 0
+    for id in $(list_group_ingress_profiles "$group"); do
+        load_profile "$id" >/dev/null 2>&1 || continue
+        local_port="${LOCAL_PORT:-}"
+        [[ -n "$local_port" ]] || continue
+        nft_dnat_rules_from_text "$text" | grep -E "^(tcp|udp) dport ${local_port} dnat to " || true
+    done | sort -u
+}
+
+print_rule_list() {
+    local rules="$1"
+    if [[ -n "$rules" ]]; then
+        while IFS= read -r rule; do
+            [[ -n "$rule" ]] && printf '  - %s\n' "$rule"
+        done <<<"$rules"
+    else
+        printf '  - none\n'
+    fi
+}
+
+verify_nft_profiles_core() {
+    local text source id issues=0 expected=0 expected_rules actual_rules missing_rules extra_rules
+    local expected_ports actual_ports port unknown_count=0 disabled_residue=0 standby_residue=0 rule
+    local forwarding_count landing_count ingress_count other_count
+
+    read -r landing_count ingress_count other_count < <(profile_role_counts)
+    forwarding_count="$(enabled_forwarding_ingress_count)"
+    if [[ "$forwarding_count" -eq 0 ]]; then
+        printf 'nftables profile verification\n'
+        printf '当前机器没有启用中的入口转发 Profile，nftables 转发校验已跳过。\n'
+        return 0
+    fi
+
+    if command_exists nft && nft list table ip "$NFT_TABLE" >/dev/null 2>&1; then
+        source="runtime table ip ${NFT_TABLE}"
+        text="$(nft list table ip "$NFT_TABLE" 2>/dev/null || true)"
+    elif [[ -r "$NFT_FILE" ]]; then
+        source="$NFT_FILE"
+        text="$(cat "$NFT_FILE" 2>/dev/null || true)"
+    else
+        printf 'nftables profile verification\n'
+        printf 'Source: unavailable (no runtime table and no readable %s)\n' "$NFT_FILE"
+        printf '[WARN] 入口转发 Profile 已启用，但当前没有可读取的 nftables 项目表。\n'
+        printf 'Suggested repair after config review: bash install.sh apply-nft-all\n'
+        return 1
+    fi
+
+    expected_rules="$(expected_forwarding_nft_rules)"
+    actual_rules="$(nft_dnat_rules_from_text "$text")"
+
+    printf 'nftables profile verification\n'
+    printf 'Source: %s\n' "$source"
+    printf '\nExpected rules:\n'
+    print_rule_list "$expected_rules"
+    printf '\nActual rules:\n'
+    print_rule_list "$actual_rules"
+
+    printf '\nExpected forwarding profiles:\n'
+    for id in $(profile_ids); do
+        load_profile "$id" >/dev/null 2>&1 || continue
+        [[ "${ROLE:-}" == "panel-ingress" && "${ENABLED:-true}" == "true" && "${FORWARD_ENABLED:-true}" == "true" ]] || continue
+        expected=$((expected + 1))
+        printf '  - %s LOCAL_PORT=%s -> %s:%s proto=%s\n' "$id" "${LOCAL_PORT:-missing}" "${LANDING_ET_IP:-missing}" "${REMOTE_PORT:-missing}" "${FORWARD_PROTO:-both}"
+    done
+    if [[ "$expected" -eq 0 ]]; then
+        printf '  - none\n'
+        if [[ -n "$actual_rules" ]]; then
+            printf '[WARN] No enabled + FORWARD_ENABLED=true ingress Profile exists, so the project table should not contain forwarding rules.\n'
+        else
+            printf '[OK] No enabled forwarding Profile and no actual forwarding rules.\n'
+        fi
+    fi
+
+    missing_rules="$(comm -23 <(printf '%s\n' "$expected_rules" | awk 'NF' | sort -u) <(printf '%s\n' "$actual_rules" | awk 'NF' | sort -u) || true)"
+    extra_rules="$(comm -13 <(printf '%s\n' "$expected_rules" | awk 'NF' | sort -u) <(printf '%s\n' "$actual_rules" | awk 'NF' | sort -u) || true)"
+    printf '\nMissing rules:\n'
+    print_rule_list "$missing_rules"
+    if [[ -n "$missing_rules" ]]; then
+        issues=$((issues + $(printf '%s\n' "$missing_rules" | awk 'NF{c++} END{print c+0}')))
+    fi
+    printf '\nExtra rules:\n'
+    print_rule_list "$extra_rules"
+    if [[ -n "$extra_rules" ]]; then
+        issues=$((issues + $(printf '%s\n' "$extra_rules" | awk 'NF{c++} END{print c+0}')))
+    fi
+
+    printf '\nDisabled Profile residual rules:\n'
+    for id in $(profile_ids); do
+        load_profile "$id" >/dev/null 2>&1 || continue
+        [[ "${ROLE:-}" == "panel-ingress" ]] || continue
+        [[ -n "${LOCAL_PORT:-}" && -n "${LANDING_ET_IP:-}" && -n "${REMOTE_PORT:-}" ]] || continue
+        if [[ "${ENABLED:-true}" != "true" ]] && nft_text_has_profile_rule "$text"; then
+            disabled_residue=$((disabled_residue + 1))
+            printf '[FAIL] disabled Profile %s still has nft rule (LOCAL_PORT=%s)\n' "$id" "$LOCAL_PORT"
+        fi
+    done
+    [[ "$disabled_residue" -gt 0 ]] || printf '  - none\n'
+    issues=$((issues + disabled_residue))
+
+    printf '\nFORWARD_ENABLED=false Profile residual rules:\n'
+    for id in $(profile_ids); do
+        load_profile "$id" >/dev/null 2>&1 || continue
+        [[ "${ROLE:-}" == "panel-ingress" ]] || continue
+        [[ -n "${LOCAL_PORT:-}" && -n "${LANDING_ET_IP:-}" && -n "${REMOTE_PORT:-}" ]] || continue
+        if [[ "${ENABLED:-true}" == "true" && "${FORWARD_ENABLED:-true}" != "true" ]] && nft_text_has_profile_rule "$text"; then
+            standby_residue=$((standby_residue + 1))
+            printf '[FAIL] FORWARD_ENABLED=false Profile %s still has nft rule (LOCAL_PORT=%s)\n' "$id" "$LOCAL_PORT"
+        fi
+    done
+    [[ "$standby_residue" -gt 0 ]] || printf '  - none\n'
+    issues=$((issues + standby_residue))
+
+    expected_ports="$(active_forwarding_local_ports)"
+    actual_ports="$(nft_dnat_local_ports_from_text "$text")"
+    printf '\nUnknown LOCAL_PORT rules:\n'
+    while IFS= read -r port; do
+        [[ -n "$port" ]] || continue
+        if ! grep -qxF "$port" <<<"$expected_ports"; then
+            printf '[FAIL] nftables table contains unknown LOCAL_PORT rule: %s\n' "$port"
+            unknown_count=$((unknown_count + 1))
+        fi
+    done <<<"$actual_ports"
+    [[ "$unknown_count" -gt 0 ]] || printf '  - none\n'
+    issues=$((issues + unknown_count))
+
+    if [[ "$issues" -eq 0 ]]; then
+        printf '\n[OK] nftables rules match enabled + FORWARD_ENABLED=true ingress Profiles.\n'
+        return 0
+    fi
+    printf '\n[FAIL] nftables rules differ from Profile state.\n'
+    printf 'Suggested repair: bash install.sh apply-nft-all\n'
+    return 1
+}
+
+verify_nft_profiles() {
+    require_root "$@"
+    local rc
+    if verify_nft_profiles_core; then
+        return 0
+    fi
+    rc=$?
+    return_or_exit "$rc" || return $?
+}
+
+port_owner_has_easytier() {
+    local proto="$1" port="$2" output=""
+    command_exists ss || return 2
+    case "$proto" in
+        tcp) output="$(ss -lntp 2>/dev/null | grep -E "[:.]${port}[[:space:]]" || true)" ;;
+        udp) output="$(ss -lnup 2>/dev/null | grep -E "[:.]${port}[[:space:]]" || true)" ;;
+        both)
+            output="$({
+                ss -lntp 2>/dev/null | grep -E "[:.]${port}[[:space:]]" || true
+                ss -lnup 2>/dev/null | grep -E "[:.]${port}[[:space:]]" || true
+            })"
+            ;;
+    esac
+    [[ -n "$output" ]] || return 1
+    grep -qi 'easytier' <<<"$output" && return 0
+    return 3
+}
+
+profile_service_owns_port() {
+    local service="$1" proto="$2" port="$3" control_group cg_path service_pids port_pids pid output=""
+    command_exists systemctl && command_exists ss || return 2
+    control_group="$(systemctl show -p ControlGroup --value "$service" 2>/dev/null || true)"
+    [[ -n "$control_group" && "$control_group" != "/" ]] || return 2
+    cg_path="/sys/fs/cgroup${control_group}"
+    [[ -r "${cg_path}/cgroup.procs" ]] || return 2
+    service_pids="$(cat "${cg_path}/cgroup.procs" 2>/dev/null || true)"
+    [[ -n "$service_pids" ]] || return 2
+    case "$proto" in
+        tcp) output="$(ss -lntp 2>/dev/null | grep -E "[:.]${port}[[:space:]]" || true)" ;;
+        udp) output="$(ss -lnup 2>/dev/null | grep -E "[:.]${port}[[:space:]]" || true)" ;;
+        both)
+            output="$({
+                ss -lntp 2>/dev/null | grep -E "[:.]${port}[[:space:]]" || true
+                ss -lnup 2>/dev/null | grep -E "[:.]${port}[[:space:]]" || true
+            })"
+            ;;
+    esac
+    port_pids="$(grep -oE 'pid=[0-9]+' <<<"$output" | cut -d= -f2 | sort -u)"
+    [[ -n "$port_pids" ]] || return 2
+    while IFS= read -r pid; do
+        [[ -n "$pid" ]] || continue
+        grep -qx "$pid" <<<"$service_pids" && return 0
+    done <<<"$port_pids"
+    return 1
+}
+
+profile_port_map_complete() {
+    case "${ROLE:-}" in
+        panel-landing)
+            [[ -n "${LISTENER_PORT:-${ET_LISTENER_PORT:-}}" && -n "${ET_LISTENERS:-}" ]]
+            ;;
+        panel-ingress)
+            [[ -n "${CNIX_ENTRY_HOST:-}" && -n "${CNIX_ENTRY_PORT:-}" && -n "${ET_PEERS:-}" ]] || return 1
+            if [[ "${FORWARD_ENABLED:-true}" == "true" ]]; then
+                [[ -n "${LOCAL_PORT:-}" && -n "${LANDING_ET_IP:-}" && -n "${REMOTE_PORT:-}" && -n "${FORWARD_PROTO:-}" ]]
+            fi
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+run_line_health_check() {
+    local profile_id="$1" write_back="${2:-false}" service active rc nft_label tcp_needed="false" nc_cmd business_port
+    local saved_status saved_reason now
+    require_root "$@"
+    if ! profile_id="$(resolve_profile_id_for_cmd "$profile_id" health)"; then
+        return_or_exit 2 || return $?
+    fi
+    if ! load_profile "$profile_id"; then
+        print_profile_selection_hint "$profile_id" health
+        return_or_exit 2 || return $?
+    fi
+    service="$(profile_service_name "$profile_id")"
+    _IXTF_HEALTH_STATUS="healthy"
+    _IXTF_HEALTH_REASON=""
+
+    printf '线路健康检查：%s\n' "$profile_id"
+    health_line "Profile" "存在"
+    health_line "LINE_GROUP" "${LINE_GROUP:-未分组}"
+    health_line "LINE_ROLE" "${LINE_ROLE:-standalone}"
+    health_line "LINE_PRIORITY" "${LINE_PRIORITY:-100}"
+    health_line "ENABLED" "${ENABLED:-true}"
+    health_line "FORWARD_ENABLED" "${FORWARD_ENABLED:-true}"
+
+    if ! ( validate_profile_config "$profile_id" ) >/dev/null 2>&1; then
+        health_line "配置校验" "失败"
+        health_mark down "Profile 配置不完整"
+    else
+        health_line "配置校验" "通过"
+    fi
+
+    if [[ "${ENABLED:-true}" != "true" ]]; then
+        health_line "启用状态" "disabled"
+        health_mark warning "Profile 已禁用"
+    fi
+
+    active="$(profile_service_status "$service")"
+    health_line "systemd 实例" "${service} / ${active}"
+    if [[ "$active" == "active" ]]; then
+        :
+    elif [[ "$active" == "unknown" ]]; then
+        health_mark warning "无法检查 systemd"
+    else
+        health_mark down "Profile 服务不是 active：${active}"
+    fi
+
+    if check_easytier_process; then
+        health_line "easytier-core 进程" "存在"
+    else
+        health_line "easytier-core 进程" "未检测到"
+        health_mark down "easytier-core 进程不存在"
+    fi
+
+    set +e
+    check_et_ip_present
+    rc=$?
+    set -e
+    case "$rc" in
+        0) health_line "本机 ET_IPV4" "存在（${ET_IPV4:-}）" ;;
+        2) health_line "本机 ET_IPV4" "无法检查（ip 命令不可用）"; health_mark warning "无法检查 ET_IPV4" ;;
+        *) health_line "本机 ET_IPV4" "不存在（${ET_IPV4:-}）"; health_mark down "ET_IPV4 不存在" ;;
+    esac
+
+    if profile_port_map_complete; then
+        health_line "四端口信息" "完整"
+    else
+        health_line "四端口信息" "不完整"
+        health_mark down "show-port-map 信息不完整"
+    fi
+
+    nft_label="$(nft_profile_rule_status "$profile_id")"
+    health_line "nftables 规则" "$nft_label"
+    if [[ "${ROLE:-}" == "panel-ingress" && "${FORWARD_ENABLED:-true}" == "true" ]]; then
+        case "$nft_label" in
+            present) ;;
+            missing) health_mark down "nftables 缺少 LOCAL_PORT 转发规则" ;;
+            unknown) health_mark warning "无法检查 nftables 项目表" ;;
+            skipped) ;;
+        esac
+    fi
+
+    case "${ROLE:-}" in
+        panel-landing)
+            health_line "CNIX 面板出口端口" "${LISTENER_PORT:-${ET_LISTENER_PORT:-未配置}}"
+            set +e
+            check_listener_proto_port "${ET_LISTENER_PROTO:-tcp}" "${ET_LISTENER_PORT:-${LISTENER_PORT:-0}}"
+            rc=$?
+            set -e
+            case "$rc" in
+                0) health_line "listener 监听" "已检测到" ;;
+                2) health_line "listener 监听" "无法检查（ss 命令不可用）"; health_mark warning "无法检查 listener" ;;
+                *) health_line "listener 监听" "未检测到"; health_mark down "listener 未监听" ;;
+            esac
+            set +e
+            profile_service_owns_port "$service" "${ET_LISTENER_PROTO:-tcp}" "${ET_LISTENER_PORT:-${LISTENER_PORT:-0}}"
+            rc=$?
+            set -e
+            case "$rc" in
+                0) health_line "listener 归属" "本项目 Profile service" ;;
+                1) health_line "listener 归属" "不是本项目 Profile service"; health_mark warning "listener 端口可能被其他进程占用" ;;
+                *)
+                    set +e
+                    port_owner_has_easytier "${ET_LISTENER_PROTO:-tcp}" "${ET_LISTENER_PORT:-${LISTENER_PORT:-0}}"
+                    rc=$?
+                    set -e
+                    case "$rc" in
+                        0) health_line "listener 归属" "疑似 easytier-core" ;;
+                        2) health_line "listener 归属" "无法检查" ;;
+                        3) health_line "listener 归属" "不是 easytier-core 或无法确认"; health_mark warning "listener 端口可能被其他进程占用" ;;
+                    esac
+                    ;;
+            esac
+            if [[ -n "${SERVICE_PORT:-}" ]]; then
+                if command_exists ss; then
+                    if ss -lntup 2>/dev/null | grep -Eq "[:.]${SERVICE_PORT}[[:space:]]"; then
+                        health_line "REMOTE_PORT 业务监听" "已检测到（${SERVICE_PORT}）"
+                    else
+                        health_line "REMOTE_PORT 业务监听" "未检测到（${SERVICE_PORT}）"
+                        health_mark warning "业务端口未监听"
+                    fi
+                else
+                    health_line "REMOTE_PORT 业务监听" "无法检查"
+                    health_mark warning "无法检查业务端口"
+                fi
+            fi
+            ;;
+        panel-ingress)
+            if [[ -n "${ET_PEERS:-}" ]]; then
+                health_line "EasyTier peers" "存在"
+            else
+                health_line "EasyTier peers" "不存在"
+                health_mark down "ET_PEERS 不存在"
+            fi
+            if command_exists ip && [[ -n "${LANDING_ET_IP:-}" ]]; then
+                if ip route get "$LANDING_ET_IP" >/dev/null 2>&1; then
+                    health_line "LANDING_ET_IP 路由" "存在"
+                else
+                    health_line "LANDING_ET_IP 路由" "未找到"
+                    health_mark warning "到 LANDING_ET_IP 的路由未确认"
+                fi
+            else
+                health_line "LANDING_ET_IP 路由" "无法检查"
+                health_mark warning "无法检查 LANDING_ET_IP 路由"
+            fi
+            if command_exists ping && [[ -n "${LANDING_ET_IP:-}" ]]; then
+                if ping -c 1 -W 3 "$LANDING_ET_IP" >/dev/null 2>&1; then
+                    health_line "LANDING_ET_IP ping" "成功"
+                else
+                    health_line "LANDING_ET_IP ping" "失败"
+                    health_mark down "ping LANDING_ET_IP 失败"
+                fi
+            else
+                health_line "LANDING_ET_IP ping" "跳过"
+            fi
+            [[ "${FORWARD_PROTO:-both}" == "tcp" || "${FORWARD_PROTO:-both}" == "both" ]] && tcp_needed="true"
+            if [[ "$tcp_needed" == "true" && -n "${LANDING_ET_IP:-}" && -n "${REMOTE_PORT:-}" ]]; then
+                if nc_cmd="$(detect_nc_cmd 2>/dev/null)"; then
+                    if "$nc_cmd" -vz -w 3 "$LANDING_ET_IP" "$REMOTE_PORT" >/dev/null 2>&1; then
+                        health_line "LANDING_ET_IP:REMOTE_PORT TCP" "可达"
+                    else
+                        health_line "LANDING_ET_IP:REMOTE_PORT TCP" "不可达"
+                        health_mark warning "TCP 业务探测失败"
+                    fi
+                else
+                    health_line "LANDING_ET_IP:REMOTE_PORT TCP" "nc 不可用"
+                    suggest_install_nc | sed 's/^/  /'
+                    health_mark warning "nc 不可用，跳过 TCP 业务端口探测"
+                fi
+            fi
+            if [[ "${FORWARD_PROTO:-both}" == "udp" || "${FORWARD_PROTO:-both}" == "both" ]]; then
+                health_line "UDP 探测" "跳过（UDP 不可靠）"
+            fi
+            if [[ "${FORWARD_ENABLED:-true}" == "true" && -n "${LOCAL_PORT:-}" ]] && command_exists ss; then
+                if ss -lntup 2>/dev/null | grep -Eq "[:.]${LOCAL_PORT}[[:space:]]"; then
+                    health_line "LOCAL_PORT 本机监听冲突" "检测到"
+                    health_mark warning "LOCAL_PORT 被本机进程监听"
+                else
+                    health_line "LOCAL_PORT 本机监听冲突" "未检测到"
+                fi
+            fi
+            if [[ -n "${CNIX_ENTRY_HOST:-}" && -n "${CNIX_ENTRY_PORT:-}" ]]; then
+                if [[ "${CNIX_ENTRY_PROTO:-both}" == "tcp" || "${CNIX_ENTRY_PROTO:-both}" == "both" ]]; then
+                    if nc_cmd="$(detect_nc_cmd 2>/dev/null)"; then
+                        if "$nc_cmd" -vz -w 3 "$CNIX_ENTRY_HOST" "$CNIX_ENTRY_PORT" >/dev/null 2>&1; then
+                            health_line "CNIX TCP 可达性" "可达"
+                        else
+                            health_line "CNIX TCP 可达性" "不可达"
+                            health_mark warning "CNIX TCP 探测失败"
+                        fi
+                    else
+                        health_line "CNIX TCP 可达性" "nc 不可用"
+                        health_mark warning "nc 不可用，跳过 CNIX TCP 探测"
+                    fi
+                fi
+                if [[ "${CNIX_ENTRY_PROTO:-both}" == "udp" || "${CNIX_ENTRY_PROTO:-both}" == "both" ]]; then
+                    health_line "CNIX UDP 探测" "跳过（UDP 不可靠）"
+                fi
+            fi
+            ;;
+    esac
+
+    [[ -n "$_IXTF_HEALTH_REASON" ]] || _IXTF_HEALTH_REASON="检查通过"
+    printf '\nHEALTH_STATUS=%s\n' "$_IXTF_HEALTH_STATUS"
+    printf 'LAST_HEALTH_REASON=%s\n' "$_IXTF_HEALTH_REASON"
+
+    if [[ "$write_back" == "true" ]]; then
+        saved_status="$_IXTF_HEALTH_STATUS"
+        saved_reason="$_IXTF_HEALTH_REASON"
+        now="$(utc_now)"
+        HEALTH_STATUS="$saved_status"
+        LAST_HEALTH_REASON="$saved_reason"
+        LAST_HEALTH_CHECK_AT="$now"
+        if ( validate_profile_config "$profile_id" ) >/dev/null 2>&1; then
+            if save_profile_runtime_state "$profile_id"; then
+                :
+            else
+                save_profile_env "$profile_id"
+            fi
+            printf '已写回健康状态：%s / %s\n' "$HEALTH_STATUS" "$LAST_HEALTH_CHECK_AT"
+        else
+            printf '[WARN] Profile 配置不完整，未写回健康状态。\n'
+        fi
+    fi
+}
+
+check_line() {
+    require_root "$@"
+    if [[ "${1:-}" == "--all" ]]; then
+        local id
+        for id in $(profile_ids); do
+            printf '\n===== Profile %s =====\n' "$id"
+            ( run_line_health_check "$id" false ) || true
+        done
+        return 0
+    fi
+    run_line_health_check "${1:-}" false
+}
+
+health_profile() {
+    require_root "$@"
+    run_line_health_check "${1:-}" true
+}
+
+health_all() {
+    require_root "$@"
+    local id output rc status total=0 healthy=0 warning=0 down=0 unknown=0
+    for id in $(profile_ids); do
+        load_profile "$id" || { printf '[WARN] 无法读取 Profile：%s\n' "$id"; continue; }
+        [[ "${ENABLED:-true}" == "true" && "${HEALTH_CHECK_ENABLED:-true}" == "true" ]] || continue
+        printf '\n===== Profile %s =====\n' "$id"
+        set +e
+        output="$(run_line_health_check "$id" true 2>&1)"
+        rc=$?
+        set -e
+        printf '%s\n' "$output"
+        total=$((total + 1))
+        status="$(grep -E '^HEALTH_STATUS=' <<<"$output" | tail -n 1 | cut -d= -f2- || true)"
+        status="${status:-unknown}"
+        if [[ "$rc" -ne 0 ]]; then
+            unknown=$((unknown + 1))
+            printf '[WARN] health %s 失败（退出码 %s），已继续检查后续 Profile。\n' "$id" "$rc"
+        else
+            case "$status" in
+                healthy) healthy=$((healthy + 1)) ;;
+                warning) warning=$((warning + 1)) ;;
+                down) down=$((down + 1)) ;;
+                *) unknown=$((unknown + 1)) ;;
+            esac
+        fi
+    done
+    printf '\n汇总：total=%s healthy=%s warning=%s down=%s unknown=%s\n' "$total" "$healthy" "$warning" "$down" "$unknown"
+}
+
+set_health() {
+    require_root "$@"
+    local profile_id="${1:-}" status="${2:-}" reason
+    [[ -n "$profile_id" && -n "$status" ]] || die_user "用法：set-health PROFILE_ID STATUS REASON"
+    shift 2 || true
+    reason="$*"
+    validate_health_status_value "$status" || die_user "HEALTH_STATUS 只能是 unknown、healthy、warning 或 down。"
+    load_profile_or_die "$profile_id"
+    HEALTH_STATUS="$status"
+    LAST_HEALTH_CHECK_AT="$(utc_now)"
+    LAST_HEALTH_REASON="${reason:-手动设置}"
+    save_profile_env "$profile_id"
+    log_ok "已设置健康状态：${profile_id} -> ${HEALTH_STATUS}"
+}
+
+health_report() {
+    require_root "$@"
+    local group_filter="" output_file="" id service active et_ip nft_label enabled_label forward_label group_display health
+    local total=0 healthy=0 warning=0 down=0 unknown=0 groups_total=0 groups_with_issues=0 group issue backup_id
+    if [[ "${1:-}" == "--group" ]]; then
+        group_filter="${2:-}"
+        [[ -n "$group_filter" ]] || die_user "用法：health-report --group GROUP"
+    elif [[ -n "${1:-}" ]]; then
+        group_filter="$1"
+    fi
+
+    printf '%-20s %-14s %-14s %-10s %-5s %-7s %-8s %-10s %-15s %-8s %-8s %-20s %s\n' \
+        "PROFILE" "GROUP" "ROLE" "LINE" "PRI" "ENABLED" "FORWARD" "SERVICE" "ET-IP" "NFT" "HEALTH" "LAST CHECK" "REASON"
+    printf '%-20s %-14s %-14s %-10s %-5s %-7s %-8s %-10s %-15s %-8s %-8s %-20s %s\n' \
+        "--------------------" "--------------" "--------------" "----------" "-----" "-------" "--------" "----------" "---------------" "--------" "--------" "--------------------" "------"
+    for id in $(sorted_profile_ids); do
+        if ! load_profile "$id"; then
+            [[ -z "$group_filter" ]] || continue
+            printf '%-20s %-14s %-14s %-10s %-5s %-7s %-8s %-10s %-15s %-8s %-8s %-20s %s\n' \
+                "$id" "-" "-" "-" "-" "off" "off" "unknown" "-" "unknown" "down" "-" "cannot read Profile"
+            total=$((total + 1))
+            down=$((down + 1))
+            continue
+        fi
+        [[ -z "$group_filter" || "${LINE_GROUP:-}" == "$group_filter" ]] || continue
+        service="$(profile_service_name "$id")"
+        active="$(profile_service_status "$service")"
+        et_ip="${ET_IPV4:-}"
+        et_ip="${et_ip%%/*}"
+        nft_label="$(nft_profile_rule_label "$id")"
+        enabled_label="$(enabled_display "${ENABLED:-true}")"
+        forward_label="$(forward_display "${ROLE:-}" "${ENABLED:-true}" "${FORWARD_ENABLED:-true}")"
+        group_display="${LINE_GROUP:-standalone}"
+        health="${HEALTH_STATUS:-unknown}"
+        case "$health" in
+            healthy) healthy=$((healthy + 1)) ;;
+            warning) warning=$((warning + 1)) ;;
+            down) down=$((down + 1)) ;;
+            *) unknown=$((unknown + 1)) ;;
+        esac
+        total=$((total + 1))
+        printf '%-20s %-14s %-14s %-10s %-5s %-7s %-8s %-10s %-15s %-8s %-8s %-20s %s\n' \
+            "$id" "$group_display" "${ROLE:-}" "${LINE_ROLE:-standalone}" "${LINE_PRIORITY:-100}" \
+            "$enabled_label" "$forward_label" "${active:-unknown}" "${et_ip:-}" "$nft_label" \
+            "$health" "${LAST_HEALTH_CHECK_AT:--}" "${LAST_HEALTH_REASON:-未检查}"
+    done
+
+    if [[ -n "$group_filter" ]]; then
+        group_exists "$group_filter" && groups_total=1 || groups_total=0
+    else
+        groups_total="$(profile_groups | awk 'NF{c++} END{print c+0}')"
+    fi
+
+    printf '\nSummary:\n'
+    printf 'Profiles total: %s\n' "$total"
+    printf 'Groups total: %s\n' "$groups_total"
+    printf 'Healthy: %s\n' "$healthy"
+    printf 'Warning: %s\n' "$warning"
+    printf 'Down: %s\n' "$down"
+    printf 'Unknown: %s\n' "$unknown"
+
+    printf '\nGroup issues:\n'
+    while IFS= read -r group; do
+        [[ -n "$group" ]] || continue
+        [[ -z "$group_filter" || "$group" == "$group_filter" ]] || continue
+        if [[ "$(group_issue_count "$group")" -gt 0 ]]; then
+            groups_with_issues=$((groups_with_issues + 1))
+            while IFS= read -r issue; do
+                [[ -n "$issue" ]] || continue
+                printf '  - %s: %s\n' "$group" "${issue%%:*}"
+                if [[ "$issue" == primary\ down\ but\ backup\ healthy:* ]]; then
+                    backup_id="${issue#*:}"
+                    printf '    建议：bash install.sh switch-dry-run %s %s\n' "$group" "$backup_id"
+                    printf '    执行：bash install.sh switch-line %s %s\n' "$group" "$backup_id"
+                fi
+            done < <(group_issue_lines "$group")
+        fi
+    done < <(profile_groups)
+    [[ "$groups_with_issues" -gt 0 ]] || printf '  - none\n'
+    printf 'Groups with issues: %s\n' "$groups_with_issues"
+}
+
+export_health_report() {
+    require_root "$@"
+    local output_file="" tmp
+    if [[ "${1:-}" == "--file" ]]; then
+        output_file="${2:-}"
+        [[ -n "$output_file" ]] || die_user "用法：export-health-report --file PATH"
+    elif [[ -n "${1:-}" ]]; then
+        output_file="$1"
+    fi
+
+    if [[ -n "$output_file" ]]; then
+        tmp="$(make_tmp_file "ix-transit-fabric.health-report")"
+        health_report >"$tmp"
+        install -m 0600 "$tmp" "$output_file"
+        rm -f -- "$tmp"
+        log_ok "已导出健康报告：${output_file}"
+    else
+        health_report
+    fi
+}
+
+profile_groups() {
+    local id
+    for id in $(profile_ids); do
+        load_profile "$id" >/dev/null 2>&1 || continue
+        [[ -n "${LINE_GROUP:-}" ]] && printf '%s\n' "$LINE_GROUP"
+    done | sort -u || true
+    return 0
+}
+
+profile_group_count() {
+    profile_groups | awk 'NF{c++} END{print c+0}'
+    return 0
+}
+
+print_no_group_message() {
+    printf '当前没有已配置的线路组；standalone 模式下主备组检查已跳过。若需要主备切换，请先设置 LINE_GROUP。\n'
+}
+
+join_profile_list() {
+    local value output=""
+    while IFS= read -r value; do
+        [[ -n "$value" ]] || continue
+        output="${output:+$output }$value"
+    done
+    printf '%s\n' "${output:--}"
+}
+
+list_group_ingress_profiles() {
+    local group="$1" id
+    for id in $(profile_ids); do
+        load_profile "$id" >/dev/null 2>&1 || continue
+        [[ "${LINE_GROUP:-}" == "$group" && "${ROLE:-}" == "panel-ingress" ]] || continue
+        printf '%s\n' "$id"
+    done
+    return 0
+}
+
+list_group_forwarding_profiles() {
+    local group="$1" id
+    for id in $(profile_ids); do
+        load_profile "$id" >/dev/null 2>&1 || continue
+        [[ "${LINE_GROUP:-}" == "$group" && "${ROLE:-}" == "panel-ingress" && "${ENABLED:-true}" == "true" && "${FORWARD_ENABLED:-true}" == "true" ]] || continue
+        printf '%s\n' "$id"
+    done
+    return 0
+}
+
+list_group_primary_profiles() {
+    local group="$1" id
+    for id in $(profile_ids); do
+        load_profile "$id" >/dev/null 2>&1 || continue
+        [[ "${LINE_GROUP:-}" == "$group" && "${LINE_ROLE:-standalone}" == "primary" ]] || continue
+        printf '%s\n' "$id"
+    done
+    return 0
+}
+
+list_group_backup_profiles() {
+    local group="$1" id
+    for id in $(profile_ids); do
+        load_profile "$id" >/dev/null 2>&1 || continue
+        [[ "${LINE_GROUP:-}" == "$group" && "${LINE_ROLE:-standalone}" == "backup" ]] || continue
+        printf '%s\n' "$id"
+    done
+    return 0
+}
+
+group_profile_count() {
+    local group="$1" id count=0
+    for id in $(profile_ids); do
+        load_profile "$id" >/dev/null 2>&1 || continue
+        [[ "${LINE_GROUP:-}" == "$group" ]] || continue
+        count=$((count + 1))
+    done
+    printf '%s\n' "$count"
+    return 0
+}
+
+group_exists() {
+    [[ "$(group_profile_count "$1")" -gt 0 ]]
+}
+
+list_existing_groups_for_message() {
+    local groups
+    groups="$(profile_groups | join_profile_list)"
+    printf '%s\n' "${groups:--}"
+    return 0
+}
+
+profile_four_ports_missing() {
+    local missing=()
+    case "${ROLE:-}" in
+        panel-ingress)
+            [[ -n "${LOCAL_PORT:-}" ]] || missing+=("LOCAL_PORT")
+            [[ -n "${CNIX_ENTRY_HOST:-}" ]] || missing+=("CNIX_ENTRY_HOST")
+            [[ -n "${CNIX_ENTRY_PORT:-}" ]] || missing+=("CNIX_ENTRY_PORT")
+            [[ -n "${CODE_LISTENER_PORT:-}" ]] || missing+=("CODE_LISTENER_PORT")
+            [[ -n "${REMOTE_PORT:-}" ]] || missing+=("REMOTE_PORT")
+            [[ -n "${LANDING_ET_IP:-}" ]] || missing+=("LANDING_ET_IP")
+            [[ -n "${FORWARD_PROTO:-}" ]] || missing+=("FORWARD_PROTO")
+            ;;
+        panel-landing)
+            [[ -n "${ET_LISTENER_PORT:-${LISTENER_PORT:-}}" ]] || missing+=("LISTENER_PORT")
+            [[ -n "${SERVICE_PORT:-${REMOTE_PORT:-}}" ]] || missing+=("REMOTE_PORT")
+            ;;
+        *)
+            missing+=("ROLE")
+            ;;
+    esac
+    if ((${#missing[@]} == 0)); then
+        printf 'complete\n'
+    else
+        (IFS=','; printf '%s\n' "${missing[*]}")
+    fi
+}
+
+profile_four_port_summary() {
+    local cnix listener remote landing
+    cnix="${CNIX_ENTRY_HOST:-?}:${CNIX_ENTRY_PORT:-?}"
+    listener="${CODE_LISTENER_PORT:-${ET_LISTENER_PORT:-${LISTENER_PORT:-?}}}"
+    remote="${REMOTE_PORT:-${SERVICE_PORT:-?}}"
+    landing="${LANDING_ET_IP:-?}"
+    printf 'LOCAL=%s CNIX=%s LISTENER=%s LANDING=%s REMOTE=%s PROTO=%s\n' \
+        "${LOCAL_PORT:-?}" "$cnix" "$listener" "$landing" "$remote" "${FORWARD_PROTO:-?}"
+}
+
+group_health_for_profiles() {
+    local profiles="$1" id out="" h
+    while IFS= read -r id; do
+        [[ -n "$id" ]] || continue
+        if load_profile "$id" >/dev/null 2>&1; then
+            h="${HEALTH_STATUS:-unknown}"
+        else
+            h="unknown"
+        fi
+        out="${out:+${out},}${id}:${h}"
+    done <<<"$profiles"
+    printf '%s\n' "${out:-none}"
+}
+
+switch_history_sanitize() {
+    local value="${1:-}"
+    value="${value//$'\t'/ }"
+    value="${value//$'\r'/ }"
+    value="${value//$'\n'/ }"
+    printf '%s\n' "$value"
+}
+
+switch_history_path() {
+    printf '%s/switch-history.tsv\n' "$STATE_DIR"
+}
+
+ensure_switch_history_file() {
+    local history_file
+    ensure_profile_dirs
+    install -d -m 700 "$STATE_DIR"
+    history_file="$(switch_history_path)"
+    if [[ ! -e "$history_file" ]]; then
+        printf 'timestamp\tgroup\tfrom_profile\tto_profile\toperator\treason\tfrom_health\tto_health\tresult\tnote\n' >"$history_file"
+    fi
+    chmod 600 "$history_file"
+}
+
+append_switch_history() {
+    local stamp="$1" group="$2" from_profile="$3" to_profile="$4" operator="$5" reason="$6" from_health="$7" to_health="$8" result="$9" note="${10:-}"
+    local history_file
+    ensure_switch_history_file
+    history_file="$(switch_history_path)"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+        "$(switch_history_sanitize "$stamp")" \
+        "$(switch_history_sanitize "$group")" \
+        "$(switch_history_sanitize "$from_profile")" \
+        "$(switch_history_sanitize "$to_profile")" \
+        "$(switch_history_sanitize "$operator")" \
+        "$(switch_history_sanitize "$reason")" \
+        "$(switch_history_sanitize "$from_health")" \
+        "$(switch_history_sanitize "$to_health")" \
+        "$(switch_history_sanitize "$result")" \
+        "$(switch_history_sanitize "$note")" >>"$history_file"
+    chmod 600 "$history_file"
+}
+
+switch_history() {
+    require_root "$@"
+    local group_filter="${1:-}" tmp history_file
+    ensure_switch_history_file
+    history_file="$(switch_history_path)"
+    tmp="$(make_tmp_file "ix-transit-fabric.switch-history")"
+    if [[ -n "$group_filter" ]]; then
+        awk -F '\t' -v g="$group_filter" 'NR==1 || $2==g {print}' "$history_file" >"$tmp"
+    else
+        cat "$history_file" >"$tmp"
+    fi
+    printf 'Recent switch history%s (last 20):\n' "$([[ -n "$group_filter" ]] && printf ' for %s' "$group_filter" || true)"
+    awk -F '\t' '
+        NR==1 {header=$0; next}
+        {rows[++n]=$0}
+        END {
+            print header
+            start=n-19
+            if (start < 1) start=1
+            for (i=start; i<=n; i++) if (i in rows) print rows[i]
+            if (n == 0) print "(empty)"
+        }
+    ' "$tmp"
+    rm -f -- "$tmp"
+}
+
+clear_switch_history() {
+    require_root "$@"
+    local history_file
+    if read_exact_confirmation "确认清空切换历史请输入 CLEAR：" "CLEAR"; then
+        ensure_switch_history_file
+        history_file="$(switch_history_path)"
+        printf 'timestamp\tgroup\tfrom_profile\tto_profile\toperator\treason\tfrom_health\tto_health\tresult\tnote\n' >"$history_file"
+        chmod 600 "$history_file"
+        log_ok "已清空切换历史：${history_file}"
+    else
+        die_user "已取消清空切换历史。"
+    fi
+}
+
+last_switch_history_for_group() {
+    local group="$1" history_file
+    history_file="$(switch_history_path)"
+    [[ -r "$history_file" ]] || return 1
+    awk -F '\t' -v g="$group" 'NR>1 && $2==g {line=$0} END {if (line) print line}' "$history_file"
+}
+
+first_healthy_backup_in_group() {
+    local group="$1" id
+    for id in $(profile_ids); do
+        load_profile "$id" >/dev/null 2>&1 || continue
+        [[ "${LINE_GROUP:-}" == "$group" && "${LINE_ROLE:-standalone}" == "backup" && "${HEALTH_STATUS:-unknown}" == "healthy" ]] || continue
+        printf '%s\n' "$id"
+        return 0
+    done
+    return 1
+}
+
+first_available_backup_in_group() {
+    local group="$1" id fallback=""
+    for id in $(list_group_backup_profiles "$group"); do
+        load_profile "$id" >/dev/null 2>&1 || continue
+        [[ -z "$fallback" ]] && fallback="$id"
+        if [[ "${ENABLED:-true}" == "true" && "${HEALTH_STATUS:-unknown}" != "down" ]]; then
+            printf '%s\n' "$id"
+            return 0
+        fi
+    done
+    [[ -n "$fallback" ]] && { printf '%s\n' "$fallback"; return 0; }
+    return 1
+}
+
+primary_profile_in_group() {
+    list_group_primary_profiles "$1" | awk 'NF{print; exit}' || true
+    return 0
+}
+
+group_hot_standby_count() {
+    local group="$1" id count=0
+    for id in $(list_group_backup_profiles "$group"); do
+        load_profile "$id" >/dev/null 2>&1 || continue
+        [[ "${ENABLED:-true}" == "true" && "${FORWARD_ENABLED:-true}" == "false" ]] && count=$((count + 1))
+    done
+    printf '%s\n' "$count"
+    return 0
+}
+
+group_cold_standby_count() {
+    local group="$1" id count=0
+    for id in $(list_group_backup_profiles "$group"); do
+        load_profile "$id" >/dev/null 2>&1 || continue
+        [[ "${ENABLED:-true}" == "false" ]] && count=$((count + 1))
+    done
+    printf '%s\n' "$count"
+    return 0
+}
+
+group_ready_state() {
+    local group="$1" primary_count backup_count forwarding_count ingress_count down_count=0 warning_count=0 id status
+    group_exists "$group" || { printf 'not-ready\n'; return 0; }
+    ingress_count="$(list_group_ingress_profiles "$group" | awk 'NF{c++} END{print c+0}')"
+    primary_count="$(list_group_primary_profiles "$group" | awk 'NF{c++} END{print c+0}')"
+    backup_count="$(list_group_backup_profiles "$group" | awk 'NF{c++} END{print c+0}')"
+    forwarding_count="$(list_group_forwarding_profiles "$group" | awk 'NF{c++} END{print c+0}')"
+    if [[ "$ingress_count" -lt 2 || "$primary_count" -ne 1 || "$backup_count" -lt 1 || "$forwarding_count" -ne 1 ]]; then
+        printf 'not-ready\n'
+        return 0
+    fi
+    for id in $(list_group_ingress_profiles "$group"); do
+        load_profile "$id" >/dev/null 2>&1 || continue
+        status="${HEALTH_STATUS:-unknown}"
+        [[ "$status" == "down" ]] && down_count=$((down_count + 1))
+        [[ "$status" == "warning" || "$status" == "unknown" ]] && warning_count=$((warning_count + 1))
+    done
+    if [[ "$down_count" -gt 0 ]]; then
+        printf 'warning\n'
+    elif [[ "$warning_count" -gt 0 ]]; then
+        printf 'warning\n'
+    else
+        printf 'ready\n'
+    fi
+}
+
+group_issue_lines() {
+    local group="$1" id primary_count=0 backup_count=0 forwarding_count=0 profile_count=0 down_count=0
+    local primary_down=0 backup_healthy=0 backup_id status
+    [[ -n "$group" ]] || return 0
+    for id in $(profile_ids); do
+        load_profile "$id" >/dev/null 2>&1 || continue
+        [[ "${LINE_GROUP:-}" == "$group" ]] || continue
+        profile_count=$((profile_count + 1))
+        status="${HEALTH_STATUS:-unknown}"
+        [[ "$status" == "down" ]] && down_count=$((down_count + 1))
+        [[ "${LINE_ROLE:-standalone}" == "primary" ]] && primary_count=$((primary_count + 1))
+        [[ "${LINE_ROLE:-standalone}" == "backup" ]] && backup_count=$((backup_count + 1))
+        [[ "${ROLE:-}" == "panel-ingress" && "${ENABLED:-true}" == "true" && "${FORWARD_ENABLED:-true}" == "true" ]] && forwarding_count=$((forwarding_count + 1))
+        [[ "${LINE_ROLE:-standalone}" == "primary" && "$status" == "down" ]] && { primary_down=1; printf 'primary down\n'; }
+        [[ "${LINE_ROLE:-standalone}" == "backup" && "$status" == "down" ]] && printf 'backup down:%s\n' "$id"
+        if [[ "${LINE_ROLE:-standalone}" == "backup" && "$status" == "healthy" ]]; then
+            backup_healthy=1
+            backup_id="${backup_id:-$id}"
+        fi
+    done
+    [[ "$primary_count" -gt 0 ]] || printf 'no primary\n'
+    [[ "$primary_count" -le 1 ]] || printf 'multiple primary\n'
+    [[ "$forwarding_count" -gt 0 ]] || printf 'no forwarding\n'
+    [[ "$forwarding_count" -le 1 ]] || printf 'multiple forwarding\n'
+    [[ "$backup_count" -gt 0 ]] || printf 'no backup\n'
+    [[ "$primary_down" -eq 1 && "$backup_healthy" -eq 1 ]] && printf 'primary down but backup healthy:%s\n' "$backup_id"
+    [[ "$profile_count" -gt 0 && "$down_count" -eq "$profile_count" ]] && printf 'all lines down\n'
+    return 0
+}
+
+group_issue_count() {
+    local group="$1"
+    group_issue_lines "$group" | awk 'NF{c++} END{print c+0}' || true
+    return 0
+}
+
+validate_primary_backup() {
+    require_root "$@"
+    local group="${1:-}" id path primary_count=0 backup_count=0 ingress_count=0 forwarding_count=0
+    local fail_count=0 warn_count=0 pass_count=0 primary_ids backup_ids forwarding_ids nft_text nft_available=0
+    local missing dup_ports="" active_ports all_ports port seen_ports="" current current_found=0 primary_down=0 healthy_backup=""
+    if [[ -z "$group" ]]; then
+        if [[ "$(profile_group_count)" -eq 0 ]]; then
+            print_no_group_message
+            return 0
+        fi
+        die_user "用法：validate-primary-backup GROUP"
+    fi
+
+    pb_item() {
+        local status="$1" message="$2"
+        case "$status" in
+            OK) pass_count=$((pass_count + 1)) ;;
+            WARN) warn_count=$((warn_count + 1)) ;;
+            FAIL) fail_count=$((fail_count + 1)) ;;
+        esac
+        printf '[%s] %s\n' "$status" "$message"
+    }
+
+    printf 'Primary/backup validation: %s\n' "$group"
+    if group_exists "$group"; then
+        pb_item OK "GROUP exists."
+    else
+        pb_item FAIL "GROUP does not exist. Existing groups: $(list_existing_groups_for_message)"
+        printf '\nRecommendation: create or assign profiles with set-line-group before validating.\n'
+        return 1
+    fi
+
+    primary_ids="$(list_group_primary_profiles "$group")"
+    backup_ids="$(list_group_backup_profiles "$group")"
+    forwarding_ids="$(list_group_forwarding_profiles "$group")"
+    primary_count="$(printf '%s\n' "$primary_ids" | awk 'NF{c++} END{print c+0}')"
+    backup_count="$(printf '%s\n' "$backup_ids" | awk 'NF{c++} END{print c+0}')"
+    forwarding_count="$(printf '%s\n' "$forwarding_ids" | awk 'NF{c++} END{print c+0}')"
+    ingress_count="$(list_group_ingress_profiles "$group" | awk 'NF{c++} END{print c+0}')"
+
+    [[ "$ingress_count" -gt 0 ]] && pb_item OK "Group has ${ingress_count} ingress Profile(s)." || pb_item FAIL "Group has no ingress Profile."
+    [[ "$primary_count" -gt 0 ]] && pb_item OK "Primary exists: $(printf '%s\n' "$primary_ids" | join_profile_list)." || pb_item FAIL "No primary Profile."
+    [[ "$backup_count" -gt 0 ]] && pb_item OK "Backup exists: $(printf '%s\n' "$backup_ids" | join_profile_list)." || pb_item FAIL "No backup Profile."
+    [[ "$primary_count" -le 1 ]] && pb_item OK "No multiple primary." || pb_item FAIL "Multiple primary Profiles: $(printf '%s\n' "$primary_ids" | join_profile_list)."
+    [[ "$forwarding_count" -le 1 ]] && pb_item OK "No multiple FORWARD_ENABLED=true ingress Profile in this group." || pb_item FAIL "Multiple forwarding Profiles: $(printf '%s\n' "$forwarding_ids" | join_profile_list)."
+    [[ "$forwarding_count" -gt 0 ]] && pb_item OK "Current forwarding Profile: $(printf '%s\n' "$forwarding_ids" | join_profile_list)." || pb_item FAIL "No FORWARD_ENABLED=true ingress Profile."
+
+    if [[ "$forwarding_count" -gt 0 ]]; then
+        while IFS= read -r id; do
+            [[ -n "$id" ]] || continue
+            load_profile "$id" >/dev/null 2>&1 || continue
+            if [[ "${LINE_GROUP:-}" == "$group" ]]; then
+                current_found=1
+            fi
+        done <<<"$forwarding_ids"
+        [[ "$current_found" -eq 1 ]] && pb_item OK "Current forwarding Profile belongs to GROUP ${group}." || pb_item FAIL "Current forwarding Profile is not in GROUP ${group}."
+    else
+        pb_item FAIL "Cannot confirm forwarding Profile belongs to GROUP because no group forwarding Profile is active."
+    fi
+
+    while IFS= read -r id; do
+        [[ -n "$id" ]] || continue
+        load_profile "$id" >/dev/null 2>&1 || continue
+        if [[ "${ENABLED:-true}" == "true" ]]; then
+            pb_item OK "Primary ${id} is enabled."
+        else
+            pb_item FAIL "Primary ${id} is disabled."
+        fi
+        [[ "${HEALTH_STATUS:-unknown}" == "down" ]] && primary_down=1
+    done <<<"$primary_ids"
+
+    while IFS= read -r id; do
+        [[ -n "$id" ]] || continue
+        load_profile "$id" >/dev/null 2>&1 || continue
+        if [[ "${ENABLED:-true}" == "true" ]]; then
+            pb_item OK "Backup ${id} is enabled."
+        else
+            pb_item WARN "Backup ${id} is disabled: cold standby, enable it before switching."
+        fi
+        [[ "${HEALTH_STATUS:-unknown}" == "healthy" && -z "$healthy_backup" ]] && healthy_backup="$id"
+    done <<<"$backup_ids"
+
+    while IFS= read -r id; do
+        [[ -n "$id" ]] || continue
+        load_profile "$id" >/dev/null 2>&1 || continue
+        missing="$(profile_four_ports_missing)"
+        if [[ "$missing" == "complete" ]]; then
+            pb_item OK "Profile ${id} four-port config complete: $(profile_four_port_summary)"
+        else
+            pb_item FAIL "Profile ${id} four-port config incomplete: missing ${missing}."
+        fi
+    done <<<"$(printf '%s\n%s\n' "$primary_ids" "$backup_ids" | awk 'NF' | sort -u)"
+
+    for id in $(list_group_ingress_profiles "$group"); do
+        load_profile "$id" >/dev/null 2>&1 || continue
+        [[ "${ENABLED:-true}" == "true" && "${FORWARD_ENABLED:-true}" == "true" ]] || continue
+        [[ -n "${LOCAL_PORT:-}" ]] || continue
+        if grep -qxF "$LOCAL_PORT" <<<"$seen_ports"; then
+            dup_ports="${dup_ports:+${dup_ports} }${LOCAL_PORT}"
+        else
+            seen_ports="${seen_ports}${LOCAL_PORT}"$'\n'
+        fi
+    done
+    [[ -z "$dup_ports" ]] && pb_item OK "No active LOCAL_PORT conflict inside this group." || pb_item FAIL "Active forwarding LOCAL_PORT conflict: ${dup_ports}."
+
+    if nft_text="$(nft_table_text 2>/dev/null)"; then
+        nft_available=1
+    fi
+    if [[ "$nft_available" -eq 1 ]]; then
+        local nft_issues=0 actual_ports expected_ports
+        for id in $(list_group_ingress_profiles "$group"); do
+            load_profile "$id" >/dev/null 2>&1 || continue
+            [[ -n "${LOCAL_PORT:-}" && -n "${LANDING_ET_IP:-}" && -n "${REMOTE_PORT:-}" ]] || continue
+            if [[ "${ENABLED:-true}" == "true" && "${FORWARD_ENABLED:-true}" == "true" ]]; then
+                if ! nft_text_has_profile_rule "$nft_text"; then
+                    nft_issues=$((nft_issues + 1))
+                fi
+            else
+                if nft_text_has_profile_rule "$nft_text"; then
+                    nft_issues=$((nft_issues + 1))
+                fi
+            fi
+        done
+        actual_ports="$(nft_dnat_local_ports_from_text "$nft_text")"
+        expected_ports="$(active_forwarding_local_ports)"
+        while IFS= read -r port; do
+            [[ -n "$port" ]] || continue
+            grep -qxF "$port" <<<"$expected_ports" || nft_issues=$((nft_issues + 1))
+        done <<<"$actual_ports"
+        [[ "$nft_issues" -eq 0 ]] && pb_item OK "nftables only contains rules for enabled + FORWARD_ENABLED=true ingress Profiles." || pb_item FAIL "nftables rules do not match Profile forwarding state; run verify-nft-profiles."
+    else
+        pb_item WARN "Cannot read nftables project table or ${NFT_FILE}; run verify-nft-profiles on the ingress host."
+    fi
+
+    while IFS= read -r id; do
+        [[ -n "$id" ]] || continue
+        load_profile "$id" >/dev/null 2>&1 || continue
+        if [[ "${ENABLED:-true}" == "true" && "${FORWARD_ENABLED:-true}" == "false" ]]; then
+            pb_item OK "Backup ${id} is hot standby: ENABLED=true and FORWARD_ENABLED=false."
+        elif [[ "${ENABLED:-true}" == "true" && "${FORWARD_ENABLED:-true}" == "true" ]]; then
+            pb_item WARN "Backup ${id} is currently forwarding; it is active now, not standby."
+        fi
+        if [[ "${ENABLED:-true}" == "false" ]]; then
+            pb_item WARN "Backup ${id} is cold standby: ENABLED=false. Enable it before switch-line."
+        fi
+    done <<<"$backup_ids"
+
+    printf '\nResult: OK=%s WARN=%s FAIL=%s\n' "$pass_count" "$warn_count" "$fail_count"
+    printf 'Recommendation:\n'
+    if [[ "$fail_count" -gt 0 ]]; then
+        printf '  - Fix FAIL items first. For nft drift, run: bash install.sh verify-nft-profiles\n'
+        printf '  - After config changes, run: bash install.sh apply-nft-all\n'
+    elif [[ "$primary_down" -eq 1 && -n "$healthy_backup" ]]; then
+        printf '  - Primary is down and backup %s is healthy.\n' "$healthy_backup"
+        printf '  - 建议：bash install.sh switch-dry-run %s %s\n' "$group" "$healthy_backup"
+        printf '  - 执行：bash install.sh switch-line %s %s\n' "$group" "$healthy_backup"
+    elif [[ "$warn_count" -gt 0 ]]; then
+        printf '  - Review WARN items; cold standby needs enable-profile before switching.\n'
+    else
+        printf '  - Model looks ready. Use switch-dry-run before any manual switch.\n'
+    fi
+    [[ "$fail_count" -eq 0 ]]
+}
+
+primary_backup_check() {
+    require_root "$@"
+    local group="${1:-}" id primary_ids backup_ids forwarding_ids primary_count=0 backup_count=0 ingress_count=0 forwarding_count=0
+    local fail_count=0 warn_count=0 ok_count=0 active_profile="" primary_id="" recommended_backup="" nft_text nft_issues=0
+    local service active rc status et_rc available_backup_count=0
+    if [[ -z "$group" ]]; then
+        if [[ "$(profile_group_count)" -eq 0 ]]; then
+            print_no_group_message
+            return 0
+        fi
+        die_user "用法：primary-backup-check GROUP"
+    fi
+
+    pb_check_item() {
+        local state="$1" message="$2"
+        case "$state" in
+            OK) ok_count=$((ok_count + 1)) ;;
+            WARN) warn_count=$((warn_count + 1)) ;;
+            FAIL) fail_count=$((fail_count + 1)) ;;
+        esac
+        printf '[%s] %s\n' "$state" "$message"
+    }
+
+    printf 'Primary/backup real-machine check: %s\n' "$group"
+    if ! group_exists "$group"; then
+        pb_check_item FAIL "GROUP does not exist. Existing groups: $(list_existing_groups_for_message)"
+        printf '主备组状态：not-ready\n'
+        return 1
+    fi
+    pb_check_item OK "GROUP exists."
+
+    primary_ids="$(list_group_primary_profiles "$group")"
+    backup_ids="$(list_group_backup_profiles "$group")"
+    forwarding_ids="$(list_group_forwarding_profiles "$group")"
+    primary_count="$(printf '%s\n' "$primary_ids" | awk 'NF{c++} END{print c+0}')"
+    backup_count="$(printf '%s\n' "$backup_ids" | awk 'NF{c++} END{print c+0}')"
+    ingress_count="$(list_group_ingress_profiles "$group" | awk 'NF{c++} END{print c+0}')"
+    forwarding_count="$(printf '%s\n' "$forwarding_ids" | awk 'NF{c++} END{print c+0}')"
+    active_profile="$(printf '%s\n' "$forwarding_ids" | awk 'NF{print; exit}')"
+    primary_id="$(printf '%s\n' "$primary_ids" | awk 'NF{print; exit}')"
+
+    [[ "$ingress_count" -ge 2 ]] && pb_check_item OK "GROUP has at least 2 ingress Profiles (${ingress_count})." || pb_check_item FAIL "GROUP has fewer than 2 ingress Profiles (${ingress_count})."
+    [[ "$primary_count" -eq 1 ]] && pb_check_item OK "Exactly one primary: ${primary_id}." || pb_check_item FAIL "Primary count must be 1, current=${primary_count}."
+    [[ "$backup_count" -ge 1 ]] && pb_check_item OK "Backup count=${backup_count}." || pb_check_item FAIL "No backup Profile."
+    [[ "$forwarding_count" -eq 1 ]] && pb_check_item OK "Exactly one FORWARD_ENABLED=true ingress Profile: ${active_profile}." || pb_check_item FAIL "FORWARD_ENABLED=true ingress count must be 1, current=${forwarding_count}."
+
+    if [[ -n "$active_profile" ]]; then
+        load_profile "$active_profile" >/dev/null 2>&1 || true
+        [[ "${ENABLED:-true}" == "true" ]] && pb_check_item OK "Current forwarding Profile ${active_profile} is enabled." || pb_check_item FAIL "Current forwarding Profile ${active_profile} is disabled."
+    fi
+
+    for id in $(list_group_backup_profiles "$group"); do
+        load_profile "$id" >/dev/null 2>&1 || continue
+        if [[ "${ENABLED:-true}" == "true" ]]; then
+            pb_check_item OK "Backup ${id} is enabled."
+        else
+            pb_check_item WARN "Backup ${id} is cold standby (ENABLED=false); enable it before switching."
+        fi
+        if [[ "${HEALTH_STATUS:-unknown}" == "down" ]]; then
+            pb_check_item FAIL "Backup ${id} is down; do not switch to this backup."
+        else
+            available_backup_count=$((available_backup_count + 1))
+        fi
+        if [[ "${ENABLED:-true}" == "true" && "${FORWARD_ENABLED:-true}" == "false" ]]; then
+            pb_check_item OK "Backup ${id} can run as hot standby with FORWARD_ENABLED=false."
+        fi
+    done
+
+    for id in $(printf '%s\n%s\n' "$primary_ids" "$backup_ids" | awk 'NF' | sort -u); do
+        load_profile "$id" >/dev/null 2>&1 || continue
+        service="$(profile_service_name "$id")"
+        active="$(profile_service_status "$service")"
+        if [[ "$active" == "active" ]]; then
+            pb_check_item OK "Service ${service} is active."
+        elif [[ "$active" == "unknown" ]]; then
+            pb_check_item WARN "Service ${service} cannot be checked."
+        else
+            pb_check_item WARN "Service ${service} is not active (${active})."
+        fi
+        set +e
+        check_et_ip_present >/dev/null 2>&1
+        et_rc=$?
+        set -e
+        case "$et_rc" in
+            0) pb_check_item OK "ET IP exists for ${id}: ${ET_IPV4:-unknown}." ;;
+            2) pb_check_item WARN "Cannot check ET IP for ${id}." ;;
+            *) pb_check_item WARN "ET IP missing for ${id}: ${ET_IPV4:-unknown}." ;;
+        esac
+        [[ "${HEALTH_STATUS:-unknown}" == "down" ]] && pb_check_item WARN "Health status is down for ${id}: ${LAST_HEALTH_REASON:-未检查}."
+    done
+
+    if nft_text="$(nft_table_text 2>/dev/null)"; then
+        while IFS= read -r id; do
+            [[ -n "$id" ]] || continue
+            load_profile "$id" >/dev/null 2>&1 || continue
+            if [[ "${ENABLED:-true}" == "true" && "${FORWARD_ENABLED:-true}" == "true" ]]; then
+                nft_text_has_profile_rule "$nft_text" || nft_issues=$((nft_issues + 1))
+            else
+                nft_text_has_profile_rule "$nft_text" && nft_issues=$((nft_issues + 1))
+            fi
+        done <<<"$(list_group_ingress_profiles "$group")"
+        [[ "$nft_issues" -eq 0 ]] && pb_check_item OK "nftables only contains current forwarding rules for this group." || pb_check_item FAIL "nftables rules differ from this group Profile state; run verify-nft-profiles."
+    else
+        pb_check_item WARN "Cannot read nftables project table or ${NFT_FILE}."
+    fi
+
+    if [[ -n "$primary_id" ]]; then
+        load_profile "$primary_id" >/dev/null 2>&1 || true
+        if [[ "${HEALTH_STATUS:-unknown}" == "down" ]]; then
+            recommended_backup="$(first_healthy_backup_in_group "$group" || true)"
+            if [[ -n "$recommended_backup" ]]; then
+                pb_check_item WARN "Primary down but backup ${recommended_backup} healthy."
+                printf '建议：bash install.sh switch-dry-run %s %s\n' "$group" "$recommended_backup"
+                printf '执行：bash install.sh switch-line %s %s\n' "$group" "$recommended_backup"
+            fi
+        fi
+    fi
+    [[ "$available_backup_count" -gt 0 ]] || pb_check_item FAIL "No available backup; current group is not a complete primary/backup group."
+
+    printf '\nOK=%s WARN=%s FAIL=%s\n' "$ok_count" "$warn_count" "$fail_count"
+    if [[ "$fail_count" -gt 0 ]]; then
+        printf '主备组状态：not-ready\n'
+        return 1
+    elif [[ "$warn_count" -gt 0 ]]; then
+        printf '主备组状态：warning\n'
+        return 0
+    fi
+    printf '主备组状态：ready\n'
+}
+
+primary_backup_runbook() {
+    require_root "$@"
+    local group="${1:-}" members forwarding primary backups recommended_backup
+    [[ -n "$group" ]] || die_user "用法：primary-backup-runbook GROUP"
+    group_exists "$group" || die_user "线路组 ${group} 不存在。已有 group：$(list_existing_groups_for_message)"
+    members="$(list_group_ingress_profiles "$group" | join_profile_list)"
+    forwarding="$(list_group_forwarding_profiles "$group" | join_profile_list)"
+    primary="$(list_group_primary_profiles "$group" | join_profile_list)"
+    backups="$(list_group_backup_profiles "$group" | join_profile_list)"
+    recommended_backup="$(first_available_backup_in_group "$group" || true)"
+    [[ -n "$recommended_backup" ]] || recommended_backup="BACKUP_PROFILE"
+
+    cat <<EOF
+Primary/backup runbook: ${group}
+
+Current group members:
+  ${members}
+Current business profile:
+  ${forwarding}
+Primary:
+  ${primary}
+Backup:
+  ${backups}
+
+Recommended checks:
+  bash install.sh primary-backup-check ${group}
+  bash install.sh health-report --group ${group}
+  bash install.sh verify-nft-profiles
+
+Before switch:
+  bash install.sh health-all
+  bash install.sh health-report
+  bash install.sh validate-primary-backup ${group}
+  bash install.sh switch-dry-run ${group} ${recommended_backup}
+
+Formal switch:
+  bash install.sh switch-line ${group} ${recommended_backup}
+
+After switch verification:
+  bash install.sh verify-nft-profiles
+  bash install.sh show-group ${group}
+  bash install.sh show-port-map --all
+
+Switch back:
+  bash install.sh switch-line ${group} $(primary_profile_in_group "$group" || printf 'PRIMARY_PROFILE')
+
+Rollback helper:
+  bash install.sh switch-rollback-last
+EOF
+}
+
+primary_backup_summary() {
+    require_root "$@"
+    local group primary forwarding backup_count hot_count cold_count ready_state action recommended_backup
+    printf '%-16s %-18s %-18s %-7s %-5s %-5s %-10s %s\n' "GROUP" "PRIMARY" "ACTIVE" "BACKUP" "HOT" "COLD" "HEALTH" "RECOMMENDED ACTION"
+    while IFS= read -r group; do
+        [[ -n "$group" ]] || continue
+        primary="$(list_group_primary_profiles "$group" | join_profile_list)"
+        forwarding="$(list_group_forwarding_profiles "$group" | join_profile_list)"
+        backup_count="$(list_group_backup_profiles "$group" | awk 'NF{c++} END{print c+0}')"
+        hot_count="$(group_hot_standby_count "$group")"
+        cold_count="$(group_cold_standby_count "$group")"
+        ready_state="$(group_ready_state "$group")"
+        recommended_backup="$(first_healthy_backup_in_group "$group" || true)"
+        case "$ready_state" in
+            ready) action="monitor / dry-run before switch" ;;
+            warning)
+                if [[ -n "$recommended_backup" ]]; then
+                    action="switch-dry-run ${group} ${recommended_backup}"
+                else
+                    action="review warnings"
+                fi
+                ;;
+            *) action="primary-backup-check ${group}" ;;
+        esac
+        printf '%-16s %-18s %-18s %-7s %-5s %-5s %-10s %s\n' "$group" "$primary" "$forwarding" "$backup_count" "$hot_count" "$cold_count" "$ready_state" "$action"
+    done < <(profile_groups)
+}
+
+group_abnormal() {
+    local group="$1" id primary_count=0 backup_count=0 forwarding_count=0 profile_count=0 down_count=0 status abnormal=1
+    for id in $(profile_ids); do
+        load_profile "$id" >/dev/null 2>&1 || continue
+        [[ "${LINE_GROUP:-}" == "$group" ]] || continue
+        profile_count=$((profile_count + 1))
+        [[ "${LINE_ROLE:-standalone}" == "primary" ]] && primary_count=$((primary_count + 1))
+        [[ "${LINE_ROLE:-standalone}" == "backup" ]] && backup_count=$((backup_count + 1))
+        [[ "${ROLE:-}" == "panel-ingress" && "${ENABLED:-true}" == "true" && "${FORWARD_ENABLED:-true}" == "true" ]] && forwarding_count=$((forwarding_count + 1))
+        status="${HEALTH_STATUS:-unknown}"
+        [[ "$status" == "down" ]] && down_count=$((down_count + 1))
+        if [[ "${LINE_ROLE:-standalone}" == "primary" && ( "$status" == "down" || "$status" == "warning" ) ]]; then
+            abnormal=0
+        fi
+        if [[ "${LINE_ROLE:-standalone}" == "backup" && "$status" == "down" ]]; then
+            abnormal=0
+        fi
+    done
+    [[ "$primary_count" -eq 1 && "$backup_count" -gt 0 && "$forwarding_count" -eq 1 ]] || abnormal=0
+    [[ "$profile_count" -gt 0 && "$down_count" -eq "$profile_count" ]] && abnormal=0
+    return "$abnormal"
+}
+
+print_group_advice() {
+    local group="$1" id primary_count=0 backup_count=0 forwarding_count=0 profile_count=0 down_count=0 status backup_id
+    for id in $(profile_ids); do
+        load_profile "$id" >/dev/null 2>&1 || continue
+        [[ "${LINE_GROUP:-}" == "$group" ]] || continue
+        profile_count=$((profile_count + 1))
+        [[ "${LINE_ROLE:-standalone}" == "primary" ]] && primary_count=$((primary_count + 1))
+        [[ "${LINE_ROLE:-standalone}" == "backup" ]] && backup_count=$((backup_count + 1))
+        [[ "${ROLE:-}" == "panel-ingress" && "${ENABLED:-true}" == "true" && "${FORWARD_ENABLED:-true}" == "true" ]] && forwarding_count=$((forwarding_count + 1))
+        [[ "${HEALTH_STATUS:-unknown}" == "down" ]] && down_count=$((down_count + 1))
+    done
+
+    [[ "$primary_count" -gt 0 ]] || printf '[WARN] 线路组 %s 没有 primary。\n' "$group"
+    [[ "$backup_count" -gt 0 ]] || printf '[WARN] 线路组 %s 没有 backup。\n' "$group"
+    [[ "$primary_count" -le 1 ]] || printf '[WARN] 线路组 %s 存在多个 primary。\n' "$group"
+    if [[ "$forwarding_count" -eq 0 ]]; then
+        printf '[WARN] 线路组 %s 没有任何 FORWARD_ENABLED=true 的入口 Profile。\n' "$group"
+    elif [[ "$forwarding_count" -gt 1 ]]; then
+        printf '[WARN] 线路组 %s 有多个 FORWARD_ENABLED=true 的入口 Profile。\n' "$group"
+    fi
+
+    for id in $(profile_ids); do
+        load_profile "$id" >/dev/null 2>&1 || continue
+        [[ "${LINE_GROUP:-}" == "$group" ]] || continue
+        status="${HEALTH_STATUS:-unknown}"
+        if [[ "${LINE_ROLE:-standalone}" == "primary" && "$status" == "warning" ]]; then
+            printf '[WARN] primary %s 健康状态为 warning：%s\n' "$id" "${LAST_HEALTH_REASON:-未检查}"
+        elif [[ "${LINE_ROLE:-standalone}" == "primary" && "$status" == "down" ]]; then
+            printf '[WARN] primary %s 健康状态为 down：%s\n' "$id" "${LAST_HEALTH_REASON:-未检查}"
+            backup_id="$(first_healthy_backup_in_group "$group" || true)"
+            [[ -n "$backup_id" ]] && printf '[WARN] primary %s down，backup %s healthy。可运行：bash install.sh switch-line %s %s\n' "$id" "$backup_id" "$group" "$backup_id"
+        elif [[ "${LINE_ROLE:-standalone}" == "backup" && "$status" == "down" ]]; then
+            printf '[WARN] backup %s down，备用线路当前不可用：%s\n' "$id" "${LAST_HEALTH_REASON:-未检查}"
+        fi
+    done
+
+    if [[ "$profile_count" -gt 0 && "$down_count" -eq "$profile_count" ]]; then
+        printf '[WARN] 线路组 %s 所有线路都是 down。先不要切换，请检查 CNIX 面板、EasyTier listener、业务端口和 nftables。\n' "$group"
+    fi
+}
+
+list_groups() {
+    require_root "$@"
+    local group id count primary_count forwarding_count
+    printf 'GROUP\tPROFILES\tPRIMARY\tFORWARDING\n'
+    while IFS= read -r group; do
+        [[ -n "$group" ]] || continue
+        count=0
+        primary_count=0
+        forwarding_count=0
+        for id in $(profile_ids); do
+            load_profile "$id" || continue
+            [[ "${LINE_GROUP:-}" == "$group" ]] || continue
+            count=$((count + 1))
+            [[ "${LINE_ROLE:-standalone}" == "primary" ]] && primary_count=$((primary_count + 1))
+            [[ "${ROLE:-}" == "panel-ingress" && "${ENABLED:-true}" == "true" && "${FORWARD_ENABLED:-true}" == "true" ]] && forwarding_count=$((forwarding_count + 1))
+        done
+        printf '%s\t%s\t%s\t%s\n' "$group" "$count" "$primary_count" "$forwarding_count"
+    done < <(profile_groups)
+}
+
+show_group() {
+    require_root "$@"
+    local group="${1:-}" id forwarding primary backups enabled_label forward_label cnix listener remote_port found=0
+    local hot_count=0 cold_count=0 history_line history_display recommended_target=""
+    [[ -n "$group" ]] || die_user "用法：show-group GROUP"
+    if ! group_exists "$group"; then
+        printf '[ERROR] 线路组 %s 不存在。\n' "$group"
+        printf '已有 group：%s\n' "$(list_existing_groups_for_message)"
+        return 1
+    fi
+    forwarding="$(list_group_forwarding_profiles "$group" | join_profile_list)"
+    primary="$(list_group_primary_profiles "$group" | join_profile_list)"
+    backups="$(list_group_backup_profiles "$group" | join_profile_list)"
+    printf 'GROUP: %s\n' "$group"
+    printf 'CURRENT FORWARDING PROFILE: %s\n' "$forwarding"
+    printf 'PRIMARY PROFILE: %s\n' "$primary"
+    printf 'BACKUP PROFILES: %s\n' "$backups"
+    for id in $(list_group_backup_profiles "$group"); do
+        load_profile "$id" >/dev/null 2>&1 || continue
+        if [[ "${ENABLED:-true}" == "true" && "${FORWARD_ENABLED:-true}" == "false" ]]; then
+            hot_count=$((hot_count + 1))
+        elif [[ "${ENABLED:-true}" == "false" ]]; then
+            cold_count=$((cold_count + 1))
+        fi
+    done
+    printf 'HOT STANDBY COUNT: %s\n' "$hot_count"
+    printf 'COLD STANDBY COUNT: %s\n' "$cold_count"
+    printf '\nPROFILE_ID | LINE_ROLE | PRIORITY | ENABLED | FORWARD | HEALTH | LOCAL_PORT | CNIX_ENTRY | LISTENER_PORT | REMOTE_PORT\n'
+    printf '%s\n' '--- | --- | --- | --- | --- | --- | --- | --- | --- | ---'
+    for id in $(sorted_profile_ids); do
+        load_profile "$id" || { printf '%s | - | - | off | off | down | - | - | - | -\n' "$id"; continue; }
+        [[ "${LINE_GROUP:-}" == "$group" ]] || continue
+        found=1
+        enabled_label="$(enabled_display "${ENABLED:-true}")"
+        forward_label="$(forward_display "${ROLE:-}" "${ENABLED:-true}" "${FORWARD_ENABLED:-true}")"
+        if [[ -n "${CNIX_ENTRY_HOST:-}" && -n "${CNIX_ENTRY_PORT:-}" ]]; then
+            cnix="${CNIX_ENTRY_HOST}:${CNIX_ENTRY_PORT}"
+        else
+            cnix="-"
+        fi
+        listener="${ET_LISTENER_PORT:-${LISTENER_PORT:-}}"
+        remote_port="${REMOTE_PORT:-${SERVICE_PORT:-}}"
+        printf '%s | %s | %s | %s | %s | %s | %s | %s | %s | %s\n' \
+            "$id" "${LINE_ROLE:-standalone}" "${LINE_PRIORITY:-100}" "$enabled_label" "$forward_label" \
+            "${HEALTH_STATUS:-unknown}" "${LOCAL_PORT:-}" "$cnix" "${listener:-}" "${remote_port:-}"
+    done
+    [[ "$found" -eq 1 ]] || die_user "线路组 ${group} 不存在或没有 Profile。"
+
+    printf '\nPort mapping summary:\n'
+    for id in $(list_group_ingress_profiles "$group"); do
+        load_profile "$id" >/dev/null 2>&1 || continue
+        printf '  %s: %s\n' "$id" "$(profile_four_port_summary)"
+    done
+
+    printf '\nLatest switch history:\n'
+    history_line="$(last_switch_history_for_group "$group" || true)"
+    if [[ -n "$history_line" ]]; then
+        printf '  %s\n' "$history_line"
+    else
+        printf '  none\n'
+    fi
+
+    printf '\n组状态建议：\n'
+    print_group_advice "$group"
+    recommended_target="$(first_healthy_backup_in_group "$group" || true)"
+    [[ -n "$recommended_target" ]] || recommended_target="$(list_group_backup_profiles "$group" | awk 'NF{print; exit}')"
+    printf '\nRecommended commands:\n'
+    printf '  bash install.sh health-all\n'
+    printf '  bash install.sh health-report --group %s\n' "$group"
+    printf '  bash install.sh validate-primary-backup %s\n' "$group"
+    if [[ -n "$recommended_target" ]]; then
+        printf '  bash install.sh switch-dry-run %s %s\n' "$group" "$recommended_target"
+        printf '  bash install.sh switch-line %s %s\n' "$group" "$recommended_target"
+    else
+        printf '  # add a backup Profile before switch-dry-run / switch-line\n'
+    fi
+}
+
+set_line_group() {
+    require_root "$@"
+    local profile_id="${1:-}" group="${2:-}"
+    [[ -n "$profile_id" && -n "$group" ]] || die_user "用法：set-line-group PROFILE_ID GROUP"
+    load_profile_or_die "$profile_id"
+    LINE_GROUP="$group"
+    save_profile_env "$profile_id"
+    log_ok "已设置线路组：${profile_id} -> ${LINE_GROUP}"
+}
+
+set_line_priority() {
+    require_root "$@"
+    local profile_id="${1:-}" priority="${2:-}"
+    [[ -n "$profile_id" && -n "$priority" ]] || die_user "用法：set-line-priority PROFILE_ID PRIORITY"
+    validate_line_priority "$priority" || die_user "LINE_PRIORITY 必须是数字。"
+    load_profile_or_die "$profile_id"
+    LINE_PRIORITY="$priority"
+    save_profile_env "$profile_id"
+    log_ok "已设置线路优先级：${profile_id} -> ${LINE_PRIORITY}"
+}
+
+set_line_role() {
+    require_root "$@"
+    local profile_id="${1:-}" role="${2:-}" id answer target_group existing_primary=""
+    [[ -n "$profile_id" && -n "$role" ]] || die_user "用法：set-primary|set-backup|set-standalone PROFILE_ID"
+    validate_line_role "$role" || die_user "LINE_ROLE 只能是 primary、backup 或 standalone。"
+    load_profile_or_die "$profile_id"
+    if [[ "$role" == "standalone" ]]; then
+        LINE_ROLE="standalone"
+        LINE_GROUP=""
+        save_profile_env "$profile_id"
+        log_ok "已设置为独立线路：${profile_id}"
+        return 0
+    fi
+    [[ -n "${LINE_GROUP:-}" ]] || die_user "请先运行 set-line-group ${profile_id} GROUP。"
+    target_group="$LINE_GROUP"
+    if [[ "$role" == "primary" ]]; then
+        for id in $(profile_ids); do
+            [[ "$id" == "$profile_id" ]] && continue
+            load_profile "$id" || continue
+            [[ "${LINE_GROUP:-}" == "$target_group" && "${LINE_ROLE:-standalone}" == "primary" ]] || continue
+            existing_primary="${existing_primary}${id} "
+        done
+        load_profile_or_die "$profile_id"
+        if [[ -n "$existing_primary" ]]; then
+            if is_interactive_input; then
+                answer="$(prompt_yes_no "同组已有 primary：${existing_primary}，是否降级为 backup" "true")" || answer="false"
+                [[ "$answer" == "true" ]] || die_user "已取消设置 primary。"
+                for id in $existing_primary; do
+                    load_profile "$id" || continue
+                    LINE_ROLE="backup"
+                    save_profile_env "$id"
+                done
+                load_profile_or_die "$profile_id"
+            else
+                die_user "同组已有 primary：${existing_primary}。请在交互模式确认降级，或先 set-backup 旧 primary。"
+            fi
+        fi
+    fi
+    LINE_ROLE="$role"
+    save_profile_env "$profile_id"
+    log_ok "已设置线路角色：${profile_id} -> ${LINE_ROLE}"
+}
+
+set_primary() {
+    set_line_role "${1:-}" primary
+}
+
+set_backup() {
+    set_line_role "${1:-}" backup
+}
+
+set_standalone() {
+    set_line_role "${1:-}" standalone
+}
+
+read_exact_confirmation() {
+    local prompt="$1" expected="$2" answer
+    is_interactive_input || return 2
+    printf '%s' "$prompt" >&2
+    IFS= read -r answer || return 1
+    [[ "$answer" == "$expected" ]]
+}
+
+validate_switch_target() {
+    local group="$1" target="$2" saved_forward
+    [[ -n "$group" && -n "$target" ]] || die_user "用法：switch-line GROUP TARGET_PROFILE_ID"
+    load_profile_or_die "$target"
+    [[ "${LINE_GROUP:-}" == "$group" ]] || die_user "目标 Profile 不属于线路组 ${group}。"
+    [[ "${ROLE:-}" == "panel-ingress" ]] || die_user "switch-line 目标必须是 panel-ingress Profile。"
+    [[ "${ENABLED:-true}" == "true" ]] || die_user "目标 Profile 已禁用，请先 enable-profile ${target}。"
+    saved_forward="${FORWARD_ENABLED:-true}"
+    FORWARD_ENABLED="true"
+    validate_profile_config "$target"
+    FORWARD_ENABLED="$saved_forward"
+}
+
+validate_switch_dry_run_target() {
+    local group="$1" target="$2"
+    [[ -n "$group" && -n "$target" ]] || die_user "用法：switch-dry-run GROUP TARGET_PROFILE_ID"
+    group_exists "$group" || die_user "线路组 ${group} 不存在。已有 group：$(list_existing_groups_for_message)"
+    load_profile_or_die "$target"
+    [[ "${LINE_GROUP:-}" == "$group" ]] || die_user "目标 Profile 不属于线路组 ${group}。"
+    [[ "${ROLE:-}" == "panel-ingress" ]] || die_user "switch-dry-run 目标必须是 panel-ingress Profile。"
+}
+
+record_switch_event() {
+    local profile_id="$1" stamp="$2" note="$3"
+    load_profile "$profile_id" || return 1
+    LAST_SWITCH_AT="$stamp"
+    SWITCH_NOTE="$note"
+    save_profile_env "$profile_id"
+}
+
+ensure_single_forward_enabled_in_group() {
+    local group="$1" target="$2" stamp="$3" note="$4" id desired
+    for id in $(list_group_ingress_profiles "$group"); do
+        load_profile "$id" || continue
+        if [[ "$id" == "$target" ]]; then
+            desired="true"
+        else
+            desired="false"
+        fi
+        if [[ "${FORWARD_ENABLED:-true}" != "$desired" ]]; then
+            FORWARD_ENABLED="$desired"
+            save_profile_env "$id"
+        fi
+        record_switch_event "$id" "$stamp" "$note" || true
+    done
+}
+
+switch_dry_run() {
+    require_root "$@"
+    local group="${1:-}" target="${2:-}" forwarding_profiles to_disable target_status target_summary
+    local id before_summary after_summary enabled_state health_note
+    validate_switch_dry_run_target "$group" "$target"
+
+    forwarding_profiles="$(list_group_forwarding_profiles "$group")"
+    to_disable="$(printf '%s\n' "$forwarding_profiles" | grep -vx "$target" || true)"
+
+    printf 'Switch dry-run (no changes)\n'
+    printf 'GROUP: %s\n' "$group"
+    printf 'TARGET_PROFILE: %s\n' "$target"
+    printf '\nCurrent FORWARD_ENABLED=true profiles in group:\n'
+    printf '  %s\n' "$(printf '%s\n' "$forwarding_profiles" | join_profile_list)"
+
+    printf '\nTarget profile:\n'
+    load_profile_or_die "$target"
+    enabled_state="${ENABLED:-true}"
+    target_status="${HEALTH_STATUS:-unknown}"
+    target_summary="$(profile_four_port_summary)"
+    printf '  PROFILE=%s ENABLED=%s FORWARD=%s HEALTH=%s\n' "$target" "$enabled_state" "${FORWARD_ENABLED:-true}" "$target_status"
+    printf '  PORTS=%s\n' "$target_summary"
+    if [[ "$enabled_state" != "true" ]]; then
+        printf '[WARN] Target is cold standby (ENABLED=false). Enable it before real switch-line.\n'
+    fi
+
+    printf '\nChanges that would happen:\n'
+    if [[ -n "$to_disable" ]]; then
+        while IFS= read -r id; do
+            [[ -n "$id" ]] || continue
+            printf '  - %s: FORWARD_ENABLED true -> false\n' "$id"
+        done <<<"$to_disable"
+    else
+        printf '  - No other forwarding profile needs to be disabled.\n'
+    fi
+    printf '  - %s: FORWARD_ENABLED -> true\n' "$target"
+    printf '  - Other LINE_GROUP impact: 不会影响其他组\n'
+    printf '  - Would run: bash install.sh apply-nft-all\n'
+
+    printf '\nTarget health:\n'
+    printf '  HEALTH_STATUS=%s\n' "$target_status"
+    health_note="${LAST_HEALTH_REASON:-未检查}"
+    printf '  REASON=%s\n' "$health_note"
+    if [[ "$target_status" == "down" ]]; then
+        printf '[WARN] Target is down. Real switch-line will require typing SWITCH.\n'
+    fi
+
+    printf '\nBefore / after port summary:\n'
+    printf 'BEFORE:\n'
+    for id in $(list_group_ingress_profiles "$group"); do
+        load_profile "$id" || continue
+        before_summary="$(profile_four_port_summary)"
+        printf '  %s forward=%s ports=%s\n' "$id" "${FORWARD_ENABLED:-true}" "$before_summary"
+    done
+    printf 'AFTER:\n'
+    for id in $(list_group_ingress_profiles "$group"); do
+        load_profile "$id" || continue
+        after_summary="$(profile_four_port_summary)"
+        if [[ "$id" == "$target" ]]; then
+            printf '  %s forward=true ports=%s\n' "$id" "$after_summary"
+        else
+            printf '  %s forward=false ports=%s\n' "$id" "$after_summary"
+        fi
+    done
+
+    printf '\nDry-run guarantee: no Profile files were written, apply-nft-all was not executed, LAST_SWITCH_AT and SWITCH_NOTE were not changed.\n'
+}
+
+set_forward() {
+    require_root "$@"
+    local profile_id="${1:-}" value="${2:-}" normalized group other_forwarding other_count old_forward answer
+    [[ -n "$profile_id" && -n "$value" ]] || die_user "用法：set-forward PROFILE_ID on|off"
+    case "${value,,}" in
+        on|true|1|yes) normalized="true" ;;
+        off|false|0|no) normalized="false" ;;
+        *) die_user "set-forward 只能使用 on 或 off。" ;;
+    esac
+    load_profile_or_die "$profile_id"
+    if [[ "${ROLE:-}" != "panel-ingress" ]]; then
+        die_user "set-forward on 只适用于 panel-ingress Profile；landing Profile 不生成入口转发规则。"
+    fi
+    group="${LINE_GROUP:-}"
+    old_forward="${FORWARD_ENABLED:-true}"
+
+    if [[ "$normalized" == "true" ]]; then
+        if [[ -n "$group" ]]; then
+            other_forwarding="$(list_group_forwarding_profiles "$group" | grep -vx "$profile_id" || true)"
+            other_count="$(grep -c '^[^[:space:]]' <<<"$other_forwarding" || true)"
+            if [[ "${other_count:-0}" -gt 0 ]]; then
+                printf '[WARN] 线路组 %s 已有其他入口 Profile 正在转发：%s\n' "$group" "$(printf '%s\n' "$other_forwarding" | join_profile_list)"
+                printf '[WARN] set-forward on 不会自动关闭其他线路；主备切换建议使用：bash install.sh switch-line %s %s\n' "$group" "$profile_id"
+            fi
+        fi
+        load_profile_or_die "$profile_id"
+        FORWARD_ENABLED="true"
+        validate_profile_config "$profile_id"
+    else
+        if [[ "$old_forward" == "true" && -n "$group" ]]; then
+            other_forwarding="$(list_group_forwarding_profiles "$group" | grep -vx "$profile_id" || true)"
+            other_count="$(grep -c '^[^[:space:]]' <<<"$other_forwarding" || true)"
+            if [[ "${other_count:-0}" -eq 0 ]]; then
+                if read_exact_confirmation "关闭后该线路组将无业务转发。确认请输入 OFF：" "OFF"; then
+                    :
+                else
+                    die_user "已取消关闭业务转发。"
+                fi
+            fi
+        fi
+        load_profile_or_die "$profile_id"
+    fi
+
+    FORWARD_ENABLED="$normalized"
+    save_profile_env "$profile_id"
+    apply_nft_all || true
+    log_ok "已设置业务转发：${profile_id} -> ${normalized}"
+    show_port_map "$profile_id" || true
+    [[ -n "$group" ]] && show_group "$group" || true
+}
+
+switch_line() {
+    require_root "$@"
+    local group="${1:-}" target="${2:-}" target_status answer now note health_output rc
+    local forwarding_profiles forwarding_count ingress_count only_forwarding
+    local from_profiles from_health to_health
+    [[ -n "$group" && -n "$target" ]] || die_user "用法：switch-line GROUP TARGET_PROFILE_ID"
+    validate_switch_target "$group" "$target"
+
+    ingress_count="$(list_group_ingress_profiles "$group" | awk 'NF{c++} END{print c+0}')"
+    forwarding_profiles="$(list_group_forwarding_profiles "$group")"
+    from_profiles="$(printf '%s\n' "$forwarding_profiles" | join_profile_list)"
+    from_health="$(group_health_for_profiles "$forwarding_profiles")"
+    forwarding_count="$(grep -c '^[^[:space:]]' <<<"$forwarding_profiles" || true)"
+    only_forwarding="$(printf '%s\n' "$forwarding_profiles" | awk 'NF{print; exit}')"
+
+    if [[ "${ingress_count:-0}" -le 1 ]]; then
+        printf '[WARN] 线路组 %s 只有一条 ingress Profile，切换意义有限，但允许继续。\n' "$group"
+    fi
+    if [[ "${forwarding_count:-0}" -gt 1 ]]; then
+        printf '[WARN] 线路组 %s 当前有多个 FORWARD_ENABLED=true 的入口 Profile：%s\n' "$group" "$(printf '%s\n' "$forwarding_profiles" | join_profile_list)"
+        printf '[WARN] 本次切换会收敛为只保留目标 Profile 转发：%s\n' "$target"
+    fi
+    if [[ "${forwarding_count:-0}" -eq 1 && "$only_forwarding" == "$target" ]]; then
+        printf 'Profile %s 已经是线路组 %s 当前业务线路，未重复操作。\n' "$target" "$group"
+        show_port_map "$target" || true
+        return 0
+    fi
+
+    printf '切换前端口映射：\n'
+    show_port_map --all || true
+
+    printf '\n切换前健康检查：\n'
+    set +e
+    health_output="$(run_line_health_check "$target" false 2>&1)"
+    rc=$?
+    set -e
+    printf '%s\n' "$health_output"
+    target_status="$(grep -E '^HEALTH_STATUS=' <<<"$health_output" | tail -n 1 | cut -d= -f2- || true)"
+    target_status="${target_status:-unknown}"
+    [[ "$rc" -eq 0 ]] || printf '[WARN] 目标线路健康检查命令返回非 0（%s），按 %s 继续判断。\n' "$rc" "$target_status"
+    if [[ "$target_status" == "down" ]]; then
+        if read_exact_confirmation "目标线路健康状态异常，继续切换可能导致业务中断。确认切换请输入 SWITCH：" "SWITCH"; then
+            :
+        else
+            append_switch_history "$(utc_now)" "$group" "$from_profiles" "$target" "local" "manual" "$from_health" "$target_status" "cancelled" "target down; SWITCH not confirmed" || true
+            die_user "已取消切换。"
+        fi
+    fi
+
+    now="$(utc_now)"
+    note="manual switch group ${group} to ${target}; target_health=${target_status}"
+    ensure_single_forward_enabled_in_group "$group" "$target" "$now" "$note"
+
+    if ! apply_nft_all; then
+        append_switch_history "$now" "$group" "$from_profiles" "$target" "local" "manual" "$from_health" "$target_status" "failed" "${note}; apply_nft_all=failed" || true
+        return 1
+    fi
+    to_health="$target:${target_status}"
+    append_switch_history "$now" "$group" "$from_profiles" "$target" "local" "manual" "$from_health" "$to_health" "success" "${note}; apply_nft_all=success" || true
+    if declare -F send_switch_notification >/dev/null 2>&1; then
+        send_switch_notification "$group" "$from_profiles" "$target" "$target_status" || true
+    fi
+
+    load_profile_or_die "$target"
+    printf '\n切换完成：%s\n' "$target"
+    printf '客户端入口：公网入口 VPS:%s\n' "${LOCAL_PORT:-未配置}"
+    printf '转发目标：%s:%s\n' "${LANDING_ET_IP:-未配置}" "${REMOTE_PORT:-未配置}"
+    printf '\n切换后端口映射：\n'
+    show_port_map --all || true
+    printf '\n线路组状态：\n'
+    show_group "$group" || true
+}
+
+switch_to() {
+    require_root "$@"
+    local profile_id="${1:-}" group
+    [[ -n "$profile_id" ]] || die_user "用法：switch-to PROFILE_ID"
+    load_profile_or_die "$profile_id"
+    group="${LINE_GROUP:-}"
+    [[ -n "$group" ]] || die_user "目标 Profile 未设置 LINE_GROUP，无法按组切换。"
+    switch_line "$group" "$profile_id"
+}
+
+health_report() {
+    require_root "$@"
+    local group_filter="" id service active et_ip nft_label enabled_label forward_label group_display health role_label
+    local total=0 forwarding_lines=0 healthy=0 warning=0 down=0 unknown=0 groups_total=0 groups_ready=0 groups_warning=0 groups_not_ready=0
+    local group issue backup_id groups_with_issues=0 ready_state
+    if [[ "${1:-}" == "--group" ]]; then
+        group_filter="${2:-}"
+        [[ -n "$group_filter" ]] || die_user "用法：health-report --group GROUP"
+    elif [[ -n "${1:-}" ]]; then
+        group_filter="$1"
+    fi
+
+    printf '%-18s %-14s %-8s %-10s %-5s %-3s %-7s %-8s %-15s %-8s %-8s %s\n' \
+        "PROFILE" "GROUP" "ROLE" "LINE" "PRI" "EN" "FWD" "SVC" "IP" "NFT" "HEALTH" "REASON"
+    printf '%-18s %-14s %-8s %-10s %-5s %-3s %-7s %-8s %-15s %-8s %-8s %s\n' \
+        "------------------" "--------------" "--------" "----------" "-----" "---" "-------" "--------" "---------------" "--------" "--------" "------"
+
+    for id in $(sorted_profile_ids); do
+        if ! load_profile "$id"; then
+            [[ -z "$group_filter" ]] || continue
+            printf '%-18s %-14s %-8s %-10s %-5s %-3s %-7s %-8s %-15s %-8s %-8s %s\n' \
+                "$id" "-" "-" "-" "-" "off" "off" "unknown" "-" "unknown" "down" "cannot read Profile"
+            total=$((total + 1))
+            down=$((down + 1))
+            continue
+        fi
+        [[ -z "$group_filter" || "${LINE_GROUP:-}" == "$group_filter" ]] || continue
+        service="$(profile_service_name "$id")"
+        active="$(profile_service_status "$service")"
+        et_ip="${ET_IPV4:-}"
+        et_ip="${et_ip%%/*}"
+        nft_label="$(nft_profile_rule_label "$id")"
+        enabled_label="$(enabled_display "${ENABLED:-true}")"
+        forward_label="$(forward_display "${ROLE:-}" "${ENABLED:-true}" "${FORWARD_ENABLED:-true}")"
+        group_display="${LINE_GROUP:-standalone}"
+        health="${HEALTH_STATUS:-unknown}"
+        case "${ROLE:-}" in
+            panel-ingress) role_label="ingress" ;;
+            panel-landing) role_label="landing" ;;
+            *) role_label="${ROLE:-unknown}" ;;
+        esac
+        [[ "$forward_label" == "active" ]] && forwarding_lines=$((forwarding_lines + 1))
+        case "$health" in
+            healthy) healthy=$((healthy + 1)) ;;
+            warning) warning=$((warning + 1)) ;;
+            down) down=$((down + 1)) ;;
+            *) unknown=$((unknown + 1)) ;;
+        esac
+        total=$((total + 1))
+        printf '%-18s %-14s %-8s %-10s %-5s %-3s %-7s %-8s %-15s %-8s %-8s %s\n' \
+            "$id" "$group_display" "$role_label" "${LINE_ROLE:-standalone}" "${LINE_PRIORITY:-100}" \
+            "$enabled_label" "$forward_label" "${active:-unknown}" "${et_ip:-}" "$nft_label" \
+            "$health" "${LAST_HEALTH_REASON:-未检查}"
+    done
+
+    while IFS= read -r group; do
+        [[ -n "$group" ]] || continue
+        [[ -z "$group_filter" || "$group" == "$group_filter" ]] || continue
+        groups_total=$((groups_total + 1))
+        ready_state="$(group_ready_state "$group")"
+        case "$ready_state" in
+            ready) groups_ready=$((groups_ready + 1)) ;;
+            warning) groups_warning=$((groups_warning + 1)) ;;
+            *) groups_not_ready=$((groups_not_ready + 1)) ;;
+        esac
+    done < <(profile_groups)
+
+    printf '\nSummary:\n'
+    printf 'profiles total: %s\n' "$total"
+    printf 'groups total: %s\n' "$groups_total"
+    printf 'forwarding lines: %s\n' "$forwarding_lines"
+    printf 'healthy / warning / down / unknown: %s / %s / %s / %s\n' "$healthy" "$warning" "$down" "$unknown"
+    printf 'groups ready / warning / not-ready: %s / %s / %s\n' "$groups_ready" "$groups_warning" "$groups_not_ready"
+
+    printf '\nGroup issues:\n'
+    while IFS= read -r group; do
+        [[ -n "$group" ]] || continue
+        [[ -z "$group_filter" || "$group" == "$group_filter" ]] || continue
+        if [[ "$(group_issue_count "$group")" -gt 0 ]]; then
+            groups_with_issues=$((groups_with_issues + 1))
+            while IFS= read -r issue; do
+                [[ -n "$issue" ]] || continue
+                printf '  - %s: %s\n' "$group" "${issue%%:*}"
+                if [[ "$issue" == primary\ down\ but\ backup\ healthy:* ]]; then
+                    backup_id="${issue#*:}"
+                    printf '    bash install.sh switch-dry-run %s %s\n' "$group" "$backup_id"
+                    printf '    bash install.sh switch-line %s %s\n' "$group" "$backup_id"
+                elif [[ "$issue" == backup\ down:* ]]; then
+                    backup_id="${issue#*:}"
+                    printf '    backup %s is not a safe switch target now\n' "$backup_id"
+                fi
+            done < <(group_issue_lines "$group")
+        fi
+    done < <(profile_groups)
+    [[ "$groups_with_issues" -gt 0 ]] || printf '  - none\n'
+}
+
+switch_history() {
+    require_root "$@"
+    local group_filter="" limit=20 history_file row_count
+    while (($#)); do
+        case "$1" in
+            --limit)
+                shift
+                [[ -n "${1:-}" ]] || die_user "用法：switch-history [GROUP] [--limit N]"
+                limit="$1"
+                ;;
+            --limit=*)
+                limit="${1#--limit=}"
+                ;;
+            --*)
+                die_user "未知 switch-history 参数：$1"
+                ;;
+            *)
+                [[ -z "$group_filter" ]] || die_user "用法：switch-history [GROUP] [--limit N]"
+                group_filter="$1"
+                ;;
+        esac
+        shift || true
+    done
+    [[ "$limit" =~ ^[0-9]+$ && "$limit" -gt 0 ]] || die_user "--limit 必须是正整数。"
+
+    ensure_switch_history_file
+    history_file="$(switch_history_path)"
+    row_count="$(awk -F '\t' -v g="$group_filter" 'NR>1 && (g=="" || $2==g) {c++} END{print c+0}' "$history_file")"
+    if [[ "$row_count" -eq 0 ]]; then
+        printf 'No switch history found%s.\n' "$([[ -n "$group_filter" ]] && printf ' for %s' "$group_filter" || true)"
+        printf 'TIME\tGROUP\tFROM\tTO\tRESULT\tFROM_HEALTH\tTO_HEALTH\tNOTE\n'
+        return 0
+    fi
+
+    printf 'Recent switch history%s (last %s):\n' "$([[ -n "$group_filter" ]] && printf ' for %s' "$group_filter" || true)" "$limit"
+    awk -F '\t' -v g="$group_filter" -v limit="$limit" '
+        NR>1 && (g=="" || $2==g) {
+            rows[++n]=sprintf("%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s", $1, $2, $3, $4, $9, $7, $8, $10)
+        }
+        END {
+            print "TIME\tGROUP\tFROM\tTO\tRESULT\tFROM_HEALTH\tTO_HEALTH\tNOTE"
+            start=n-limit+1
+            if (start < 1) start=1
+            for (i=start; i<=n; i++) print rows[i]
+        }
+    ' "$history_file"
+}
+
+latest_success_switch_history() {
+    local history_file
+    history_file="$(switch_history_path)"
+    [[ -r "$history_file" ]] || return 1
+    awk -F '\t' 'NR>1 && $9=="success" {line=$0} END{if (line) print line}' "$history_file"
+}
+
+switch_rollback_last() {
+    require_root "$@"
+    local line stamp group from_profile to_profile operator reason from_health to_health result note
+    local target target_count target_health
+    ensure_switch_history_file
+    line="$(latest_success_switch_history || true)"
+    [[ -n "$line" ]] || die_user "没有可用于回切的成功切换历史。"
+    IFS=$'\t' read -r stamp group from_profile to_profile operator reason from_health to_health result note <<<"$line"
+    target_count="$(printf '%s\n' "$from_profile" | awk 'NF{print NF; found=1} END{if (!found) print 0}')"
+    [[ "$target_count" -eq 1 && "$from_profile" != "-" ]] || die_user "最近一次成功切换记录无法唯一确定回切目标：${from_profile:-empty}"
+    target="$from_profile"
+    load_profile_or_die "$target"
+    [[ "${LINE_GROUP:-}" == "$group" ]] || die_user "回切目标 ${target} 不属于历史记录中的线路组 ${group}。"
+
+    printf '最近一次成功切换：%s group=%s from=%s to=%s\n' "$stamp" "$group" "$from_profile" "$to_profile"
+    printf '将要回切到 Profile：%s\n' "$target"
+    printf '本命令只基于最近审计记录辅助回切，确认前不会修改配置。\n'
+    if ! read_exact_confirmation "确认回切请输入 ROLLBACK：" "ROLLBACK"; then
+        die_user "已取消回切。"
+    fi
+
+    load_profile_or_die "$target"
+    target_health="${HEALTH_STATUS:-unknown}"
+    if [[ "$target_health" == "down" ]]; then
+        printf '[WARN] 回切目标 %s 当前 health=down：%s\n' "$target" "${LAST_HEALTH_REASON:-未检查}"
+        if ! read_exact_confirmation "目标 health=down，继续回切请输入 SWITCH：" "SWITCH"; then
+            die_user "已取消回切。"
+        fi
+    fi
+
+    switch_line "$group" "$target"
+}
+
+group_expected_nft_rules_after_switch() {
+    local group="$1" target="$2" saved_forward id
+    for id in $(list_group_ingress_profiles "$group"); do
+        [[ "$id" == "$target" ]] || continue
+        load_profile "$id" >/dev/null 2>&1 || continue
+        saved_forward="${FORWARD_ENABLED:-true}"
+        FORWARD_ENABLED="true"
+        profile_expected_nft_rules
+        FORWARD_ENABLED="$saved_forward"
+    done | sort -u || true
+    return 0
+}
+
+switch_dry_run() {
+    require_root "$@"
+    local group="${1:-}" target="${2:-}" forwarding_profiles to_disable target_status target_summary enabled_state health_note
+    local id before_summary after_summary nft_text current_rules expected_rules primary_count backup_count forwarding_count
+    local risk_count=0 target_port="" expected_target_rules conflict_profiles="" conflict_id
+    if [[ -z "$group" || -z "$target" ]]; then
+        if [[ "$(profile_group_count)" -eq 0 ]]; then
+            print_no_group_message
+            return 0
+        fi
+    fi
+    validate_switch_dry_run_target "$group" "$target"
+
+    forwarding_profiles="$(list_group_forwarding_profiles "$group")"
+    to_disable="$(printf '%s\n' "$forwarding_profiles" | grep -vx "$target" || true)"
+    primary_count="$(list_group_primary_profiles "$group" | awk 'NF{c++} END{print c+0}')"
+    backup_count="$(list_group_backup_profiles "$group" | awk 'NF{c++} END{print c+0}')"
+    forwarding_count="$(printf '%s\n' "$forwarding_profiles" | awk 'NF{c++} END{print c+0}')"
+    nft_text="$(nft_table_text 2>/dev/null || true)"
+    current_rules="$(group_actual_nft_rules "$group" "$nft_text")"
+    expected_rules="$(group_expected_nft_rules_after_switch "$group" "$target")"
+
+    printf 'Switch dry-run (no changes)\n'
+    printf 'GROUP: %s\n' "$group"
+    printf 'Current active profile: %s\n' "$(printf '%s\n' "$forwarding_profiles" | join_profile_list)"
+    printf 'Target profile: %s\n' "$target"
+
+    printf '\nCurrent nftables rules for this group:\n'
+    if [[ -n "$nft_text" ]]; then
+        print_rule_list "$current_rules"
+    else
+        printf '  - unavailable (no runtime table and no readable %s)\n' "$NFT_FILE"
+    fi
+
+    printf '\nExpected nftables rules after switch:\n'
+    print_rule_list "$expected_rules"
+
+    printf '\nProfiles that would be set FORWARD_ENABLED=false:\n'
+    if [[ -n "$to_disable" ]]; then
+        while IFS= read -r id; do
+            [[ -n "$id" ]] && printf '  - %s\n' "$id"
+        done <<<"$to_disable"
+    else
+        printf '  - none\n'
+    fi
+
+    printf '\nProfile that would be set FORWARD_ENABLED=true:\n'
+    printf '  - %s\n' "$target"
+
+    load_profile_or_die "$target"
+    enabled_state="${ENABLED:-true}"
+    target_status="${HEALTH_STATUS:-unknown}"
+    health_note="${LAST_HEALTH_REASON:-未检查}"
+    target_summary="$(profile_four_port_summary)"
+    target_port="${LOCAL_PORT:-}"
+    expected_target_rules="$(profile_expected_nft_rules)"
+    printf '\nTarget health:\n'
+    printf '  HEALTH_STATUS=%s\n' "$target_status"
+    printf '  REASON=%s\n' "$health_note"
+    printf '\nTarget four-port mapping:\n'
+    printf '  %s\n' "$target_summary"
+
+    if [[ -n "$target_port" ]]; then
+        for conflict_id in $(profile_ids); do
+            [[ "$conflict_id" != "$target" ]] || continue
+            load_profile "$conflict_id" >/dev/null 2>&1 || continue
+            [[ "${LINE_GROUP:-}" != "$group" ]] || continue
+            [[ "${ROLE:-}" == "panel-ingress" && "${ENABLED:-true}" == "true" && "${FORWARD_ENABLED:-true}" == "true" ]] || continue
+            [[ "${LOCAL_PORT:-}" == "$target_port" ]] || continue
+            conflict_profiles="${conflict_profiles:+$conflict_profiles }$conflict_id"
+        done
+    fi
+
+    printf '\nBefore / after port summary:\n'
+    printf 'BEFORE:\n'
+    for id in $(list_group_ingress_profiles "$group"); do
+        load_profile "$id" || continue
+        before_summary="$(profile_four_port_summary)"
+        printf '  %s forward=%s ports=%s\n' "$id" "${FORWARD_ENABLED:-true}" "$before_summary"
+    done
+    printf 'AFTER:\n'
+    for id in $(list_group_ingress_profiles "$group"); do
+        load_profile "$id" || continue
+        after_summary="$(profile_four_port_summary)"
+        if [[ "$id" == "$target" ]]; then
+            printf '  %s forward=true ports=%s\n' "$id" "$after_summary"
+        else
+            printf '  %s forward=false ports=%s\n' "$id" "$after_summary"
+        fi
+    done
+
+    printf '\nRisk hints:\n'
+    if [[ "$target_status" == "down" ]]; then
+        printf '  - target down\n'
+        risk_count=$((risk_count + 1))
+    fi
+    if [[ "$backup_count" -eq 0 ]]; then
+        printf '  - no backup\n'
+        risk_count=$((risk_count + 1))
+    fi
+    if [[ "$forwarding_count" -gt 1 ]]; then
+        printf '  - multiple forwarding\n'
+        risk_count=$((risk_count + 1))
+    fi
+    if [[ "$primary_count" -eq 0 ]]; then
+        printf '  - no primary\n'
+        risk_count=$((risk_count + 1))
+    fi
+    if [[ -n "$conflict_profiles" ]]; then
+        printf '  - local port conflict: %s also uses LOCAL_PORT=%s\n' "$conflict_profiles" "$target_port"
+        risk_count=$((risk_count + 1))
+    fi
+    if [[ -z "$expected_target_rules" ]]; then
+        printf '  - target missing nft mapping\n'
+        risk_count=$((risk_count + 1))
+    fi
+    [[ "$risk_count" -gt 0 ]] || printf '  - none\n'
+
+    if [[ "$enabled_state" != "true" ]]; then
+        printf '[WARN] Target is cold standby (ENABLED=false). Enable it before real switch-line.\n'
+    fi
+    printf '\nDry-run guarantee: 本命令不修改配置、不重启服务、不应用 nftables。\n'
+    printf 'Dry-run guarantee: no Profile files were written, apply-nft-all was not executed, LAST_SWITCH_AT and SWITCH_NOTE were not changed.\n'
+}
+
+show_group() {
+    require_root "$@"
+    local group="${1:-}" id forwarding primary backups enabled_label forward_label cnix listener remote_port found=0
+    local hot_count=0 cold_count=0 history_line recommended_target="" ready_state nft_text current_rules expected_rules
+    if [[ -z "$group" ]]; then
+        print_no_group_message
+        return 0
+    fi
+    if ! group_exists "$group"; then
+        printf '[ERROR] 线路组 %s 不存在。\n' "$group"
+        printf '已有 group：%s\n' "$(list_existing_groups_for_message)"
+        if [[ "$(profile_group_count)" -eq 0 ]]; then
+            print_no_group_message
+        fi
+        return 1
+    fi
+    forwarding="$(list_group_forwarding_profiles "$group" | join_profile_list)"
+    primary="$(list_group_primary_profiles "$group" | join_profile_list)"
+    backups="$(list_group_backup_profiles "$group" | join_profile_list)"
+    ready_state="$(group_ready_state "$group")"
+    recommended_target="$(first_healthy_backup_in_group "$group" || true)"
+    [[ -n "$recommended_target" ]] || recommended_target="$(first_available_backup_in_group "$group" || true)"
+
+    printf 'GROUP: %s\n' "$group"
+    printf 'GROUP READY: %s\n' "$ready_state"
+    printf 'CURRENT BUSINESS PROFILE: %s\n' "$forwarding"
+    printf 'CURRENT FORWARDING PROFILE: %s\n' "$forwarding"
+    printf 'PRIMARY PROFILE: %s\n' "$primary"
+    printf 'BACKUP PROFILES: %s\n' "$backups"
+    printf 'RECOMMENDED BACKUP: %s\n' "${recommended_target:--}"
+    for id in $(list_group_backup_profiles "$group"); do
+        load_profile "$id" >/dev/null 2>&1 || continue
+        if [[ "${ENABLED:-true}" == "true" && "${FORWARD_ENABLED:-true}" == "false" ]]; then
+            hot_count=$((hot_count + 1))
+        elif [[ "${ENABLED:-true}" == "false" ]]; then
+            cold_count=$((cold_count + 1))
+        fi
+    done
+    printf 'HOT STANDBY COUNT: %s\n' "$hot_count"
+    printf 'COLD STANDBY COUNT: %s\n' "$cold_count"
+    printf '\nPROFILE_ID | LINE_ROLE | PRIORITY | ENABLED | FORWARD | HEALTH | LOCAL_PORT | CNIX_ENTRY | LISTENER_PORT | REMOTE_PORT\n'
+    printf '%s\n' '--- | --- | --- | --- | --- | --- | --- | --- | --- | ---'
+    for id in $(sorted_profile_ids); do
+        load_profile "$id" || { printf '%s | - | - | off | off | down | - | - | - | -\n' "$id"; continue; }
+        [[ "${LINE_GROUP:-}" == "$group" ]] || continue
+        found=1
+        enabled_label="$(enabled_display "${ENABLED:-true}")"
+        forward_label="$(forward_display "${ROLE:-}" "${ENABLED:-true}" "${FORWARD_ENABLED:-true}")"
+        if [[ -n "${CNIX_ENTRY_HOST:-}" && -n "${CNIX_ENTRY_PORT:-}" ]]; then
+            cnix="${CNIX_ENTRY_HOST}:${CNIX_ENTRY_PORT}"
+        else
+            cnix="-"
+        fi
+        listener="${ET_LISTENER_PORT:-${LISTENER_PORT:-}}"
+        remote_port="${REMOTE_PORT:-${SERVICE_PORT:-}}"
+        printf '%s | %s | %s | %s | %s | %s | %s | %s | %s | %s\n' \
+            "$id" "${LINE_ROLE:-standalone}" "${LINE_PRIORITY:-100}" "$enabled_label" "$forward_label" \
+            "${HEALTH_STATUS:-unknown}" "${LOCAL_PORT:-}" "$cnix" "${listener:-}" "${remote_port:-}"
+    done
+    [[ "$found" -eq 1 ]] || die_user "线路组 ${group} 不存在或没有 Profile。"
+
+    printf '\nCurrent group nftables rules:\n'
+    nft_text="$(nft_table_text 2>/dev/null || true)"
+    if [[ -n "$nft_text" ]]; then
+        current_rules="$(group_actual_nft_rules "$group" "$nft_text")"
+        print_rule_list "$current_rules"
+    else
+        printf '  - unavailable (no runtime table and no readable %s)\n' "$NFT_FILE"
+    fi
+
+    printf '\nExpected group nftables rules from current Profiles:\n'
+    expected_rules="$(group_expected_nft_rules "$group")"
+    print_rule_list "$expected_rules"
+
+    printf '\nLatest switch history:\n'
+    history_line="$(last_switch_history_for_group "$group" || true)"
+    if [[ -n "$history_line" ]]; then
+        printf '  %s\n' "$history_line"
+    else
+        printf '  none\n'
+    fi
+
+    printf '\nGroup advice:\n'
+    print_group_advice "$group"
+    printf '\nRecommended operations:\n'
+    printf '  health: bash install.sh health-report --group %s\n' "$group"
+    printf '  health: bash install.sh primary-backup-check %s\n' "$group"
+    if [[ -n "$recommended_target" ]]; then
+        printf '  dry-run: bash install.sh switch-dry-run %s %s\n' "$group" "$recommended_target"
+        printf '  switch: bash install.sh switch-line %s %s\n' "$group" "$recommended_target"
+    else
+        printf '  switch: add a backup Profile before switch-dry-run / switch-line\n'
+    fi
+    printf '  rollback: bash install.sh switch-rollback-last\n'
+}
+
+history_sanitize_field() {
+    local value="${1:-}"
+    value="${value//$'\t'/ }"
+    value="${value//$'\r'/ }"
+    value="${value//$'\n'/ }"
+    printf '%s\n' "$value"
+}
+
+ensure_state_file() {
+    local path="$1" header="$2"
+    ensure_profile_dirs
+    install -d -m 700 "$STATE_DIR"
+    if [[ ! -e "$path" ]]; then
+        printf '%s\n' "$header" >"$path"
+    fi
+    chmod 600 "$path"
+}
+
+ensure_health_history_file() {
+    ensure_state_file "$HEALTH_HISTORY_FILE" "timestamp	profile_id	line_group	health_status	service_status	et_ip_status	nft_status	reason"
+}
+
+append_health_history() {
+    local profile_id="$1" health_status="$2" reason="$3" stamp group service service_status nft_status et_ip_status et_rc
+    ensure_health_history_file || return 1
+    stamp="$(utc_now)"
+    if load_profile "$profile_id" >/dev/null 2>&1; then
+        group="${LINE_GROUP:-}"
+        service="$(profile_service_name "$profile_id")"
+        service_status="$(profile_service_status "$service")"
+        nft_status="$(nft_profile_rule_label "$profile_id")"
+        set +e
+        check_et_ip_present >/dev/null 2>&1
+        et_rc=$?
+        set -e
+        case "$et_rc" in
+            0) et_ip_status="present" ;;
+            2) et_ip_status="unknown" ;;
+            *) et_ip_status="missing" ;;
+        esac
+    else
+        group=""
+        service_status="unknown"
+        et_ip_status="unknown"
+        nft_status="unknown"
+    fi
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+        "$(history_sanitize_field "$stamp")" \
+        "$(history_sanitize_field "$profile_id")" \
+        "$(history_sanitize_field "$group")" \
+        "$(history_sanitize_field "$health_status")" \
+        "$(history_sanitize_field "$service_status")" \
+        "$(history_sanitize_field "$et_ip_status")" \
+        "$(history_sanitize_field "$nft_status")" \
+        "$(history_sanitize_field "$reason")" >>"$HEALTH_HISTORY_FILE"
+    chmod 600 "$HEALTH_HISTORY_FILE"
+}
+
+health_history() {
+    require_root "$@"
+    local profile_filter="" group_filter="" limit=50 history_file row_count
+    while (($#)); do
+        case "$1" in
+            --group)
+                shift
+                [[ -n "${1:-}" ]] || die_user "用法：health-history [PROFILE_ID|--group GROUP] [--limit N]"
+                group_filter="$1"
+                ;;
+            --limit)
+                shift
+                [[ -n "${1:-}" ]] || die_user "用法：health-history [PROFILE_ID|--group GROUP] [--limit N]"
+                limit="$1"
+                ;;
+            --limit=*)
+                limit="${1#--limit=}"
+                ;;
+            --*)
+                die_user "未知 health-history 参数：$1"
+                ;;
+            *)
+                [[ -z "$profile_filter" ]] || die_user "用法：health-history [PROFILE_ID|--group GROUP] [--limit N]"
+                profile_filter="$1"
+                ;;
+        esac
+        shift || true
+    done
+    [[ "$limit" =~ ^[0-9]+$ && "$limit" -gt 0 ]] || die_user "--limit 必须是正整数。"
+    ensure_health_history_file
+    history_file="$HEALTH_HISTORY_FILE"
+    row_count="$(awk -F '\t' -v p="$profile_filter" -v g="$group_filter" 'NR>1 && (p=="" || $2==p) && (g=="" || $3==g) {c++} END{print c+0}' "$history_file")"
+    if [[ "$row_count" -eq 0 ]]; then
+        printf 'No health history found.\n'
+        printf 'TIME\tPROFILE\tGROUP\tHEALTH\tSERVICE\tET_IP\tNFT\tREASON\n'
+        return 0
+    fi
+    printf 'Recent health history (last %s):\n' "$limit"
+    awk -F '\t' -v p="$profile_filter" -v g="$group_filter" -v limit="$limit" '
+        NR>1 && (p=="" || $2==p) && (g=="" || $3==g) {
+            rows[++n]=sprintf("%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s", $1, $2, $3, $4, $5, $6, $7, $8)
+        }
+        END {
+            print "TIME\tPROFILE\tGROUP\tHEALTH\tSERVICE\tET_IP\tNFT\tREASON"
+            start=n-limit+1
+            if (start < 1) start=1
+            for (i=start; i<=n; i++) print rows[i]
+        }
+    ' "$history_file"
+}
+
+clear_health_history() {
+    require_root "$@"
+    if read_exact_confirmation "确认清空健康历史请输入 CLEAR：" "CLEAR"; then
+        ensure_health_history_file
+        printf 'timestamp\tprofile_id\tline_group\thealth_status\tservice_status\tet_ip_status\tnft_status\treason\n' >"$HEALTH_HISTORY_FILE"
+        chmod 600 "$HEALTH_HISTORY_FILE"
+        log_ok "已清空健康历史：${HEALTH_HISTORY_FILE}"
+    else
+        die_user "已取消清空健康历史。"
+    fi
+}
+
+health_all() {
+    require_root "$@"
+    local id output rc status reason total=0 healthy=0 warning=0 down=0 unknown=0
+    for id in $(profile_ids); do
+        load_profile "$id" || { printf '[WARN] 无法读取 Profile：%s\n' "$id"; continue; }
+        [[ "${ENABLED:-true}" == "true" && "${HEALTH_CHECK_ENABLED:-true}" == "true" ]] || continue
+        printf '\n===== Profile %s =====\n' "$id"
+        set +e
+        output="$(run_line_health_check "$id" true 2>&1)"
+        rc=$?
+        set -e
+        printf '%s\n' "$output"
+        total=$((total + 1))
+        status="$(grep -E '^HEALTH_STATUS=' <<<"$output" | tail -n 1 | cut -d= -f2- || true)"
+        status="${status:-unknown}"
+        reason="$(grep -E '^LAST_HEALTH_REASON=' <<<"$output" | tail -n 1 | cut -d= -f2- || true)"
+        reason="${reason:-未检查}"
+        if ! append_health_history "$id" "$status" "$reason"; then
+            printf '[WARN] 写入 health-history 失败，已继续。\n'
+        fi
+        if [[ "$rc" -ne 0 ]]; then
+            unknown=$((unknown + 1))
+            printf '[WARN] health %s 失败（退出码 %s），已继续检查后续 Profile。\n' "$id" "$rc"
+        else
+            case "$status" in
+                healthy) healthy=$((healthy + 1)) ;;
+                warning) warning=$((warning + 1)) ;;
+                down) down=$((down + 1)) ;;
+                *) unknown=$((unknown + 1)) ;;
+            esac
+        fi
+    done
+    printf '\n汇总：total=%s healthy=%s warning=%s down=%s unknown=%s\n' "$total" "$healthy" "$warning" "$down" "$unknown"
+}
+
+mask_notify_token() {
+    local token="${1:-}" len prefix suffix
+    [[ -n "$token" ]] || { printf '(empty)\n'; return 0; }
+    len="${#token}"
+    if [[ "$len" -le 10 ]]; then
+        printf '***\n'
+    else
+        prefix="${token:0:6}"
+        suffix="${token: -4}"
+        printf '%s***%s\n' "$prefix" "$suffix"
+    fi
+}
+
+set_notify_defaults() {
+    NOTIFY_ENABLED="${NOTIFY_ENABLED:-false}"
+    NOTIFY_PROVIDER="${NOTIFY_PROVIDER:-telegram}"
+    TG_BOT_TOKEN="${TG_BOT_TOKEN:-}"
+    TG_CHAT_ID="${TG_CHAT_ID:-}"
+    NOTIFY_ON_HEALTH_CHANGE="${NOTIFY_ON_HEALTH_CHANGE:-true}"
+    NOTIFY_ON_DOWN="${NOTIFY_ON_DOWN:-true}"
+    NOTIFY_ON_RECOVERY="${NOTIFY_ON_RECOVERY:-true}"
+    NOTIFY_ON_SWITCH="${NOTIFY_ON_SWITCH:-true}"
+    NOTIFY_ON_NFT_MISMATCH="${NOTIFY_ON_NFT_MISMATCH:-true}"
+    NOTIFY_MIN_INTERVAL_SECONDS="${NOTIFY_MIN_INTERVAL_SECONDS:-300}"
+}
+
+load_notify_config() {
+    set_notify_defaults
+    if [[ -r "$NOTIFY_ENV_FILE" ]]; then
+        # shellcheck source=/dev/null
+        source "$NOTIFY_ENV_FILE"
+        set_notify_defaults
+    fi
+}
+
+save_notify_config() {
+    local tmp
+    ensure_profile_dirs
+    install -d -m 700 "$CONFIG_DIR"
+    tmp="$(make_tmp_file "ix-transit-fabric.notify")"
+    {
+        printf 'NOTIFY_ENABLED=%s\n' "${NOTIFY_ENABLED:-false}"
+        printf 'NOTIFY_PROVIDER=%s\n' "${NOTIFY_PROVIDER:-telegram}"
+        printf 'TG_BOT_TOKEN=%s\n' "$(quote_env_value "${TG_BOT_TOKEN:-}")"
+        printf 'TG_CHAT_ID=%s\n' "$(quote_env_value "${TG_CHAT_ID:-}")"
+        printf 'NOTIFY_ON_HEALTH_CHANGE=%s\n' "${NOTIFY_ON_HEALTH_CHANGE:-true}"
+        printf 'NOTIFY_ON_DOWN=%s\n' "${NOTIFY_ON_DOWN:-true}"
+        printf 'NOTIFY_ON_RECOVERY=%s\n' "${NOTIFY_ON_RECOVERY:-true}"
+        printf 'NOTIFY_ON_SWITCH=%s\n' "${NOTIFY_ON_SWITCH:-true}"
+        printf 'NOTIFY_ON_NFT_MISMATCH=%s\n' "${NOTIFY_ON_NFT_MISMATCH:-true}"
+        printf 'NOTIFY_MIN_INTERVAL_SECONDS=%s\n' "${NOTIFY_MIN_INTERVAL_SECONDS:-300}"
+    } >"$tmp"
+    install -m 0600 "$tmp" "$NOTIFY_ENV_FILE"
+    rm -f -- "$tmp"
+}
+
+ensure_notify_config_file() {
+    load_notify_config
+    [[ -e "$NOTIFY_ENV_FILE" ]] || save_notify_config
+    chmod 600 "$NOTIFY_ENV_FILE"
+}
+
+notify_config() {
+    require_root "$@"
+    local answer
+    ensure_notify_config_file
+    load_notify_config
+    if is_interactive_input; then
+        printf 'Telegram bot token（留空保持不变）：' >&2
+        IFS= read -r answer || answer=""
+        [[ -n "$answer" ]] && TG_BOT_TOKEN="$answer"
+        printf 'Telegram chat id（留空保持不变）：' >&2
+        IFS= read -r answer || answer=""
+        [[ -n "$answer" ]] && TG_CHAT_ID="$answer"
+        printf '最小通知间隔秒数（当前 %s，留空保持不变）：' "${NOTIFY_MIN_INTERVAL_SECONDS:-300}" >&2
+        IFS= read -r answer || answer=""
+        [[ -n "$answer" ]] && NOTIFY_MIN_INTERVAL_SECONDS="$answer"
+        save_notify_config
+        log_ok "已保存通知配置：${NOTIFY_ENV_FILE}"
+    else
+        printf 'Notification config: %s\n' "$NOTIFY_ENV_FILE"
+        printf 'Use an interactive shell to edit it safely, or edit the file directly with mode 600.\n'
+    fi
+    notify_status
+}
+
+notify_enable() {
+    require_root "$@"
+    ensure_notify_config_file
+    load_notify_config
+    NOTIFY_ENABLED="true"
+    save_notify_config
+    log_ok "已启用通知。"
+}
+
+notify_disable() {
+    require_root "$@"
+    ensure_notify_config_file
+    load_notify_config
+    NOTIFY_ENABLED="false"
+    save_notify_config
+    log_ok "已禁用通知。"
+}
+
+notify_status() {
+    require_root "$@"
+    ensure_notify_config_file
+    load_notify_config
+    printf 'NOTIFY_ENABLED=%s\n' "${NOTIFY_ENABLED:-false}"
+    printf 'NOTIFY_PROVIDER=%s\n' "${NOTIFY_PROVIDER:-telegram}"
+    printf 'TG_BOT_TOKEN=%s\n' "$(mask_notify_token "${TG_BOT_TOKEN:-}")"
+    printf 'TG_CHAT_ID=%s\n' "$([[ -n "${TG_CHAT_ID:-}" ]] && printf 'configured' || printf '(empty)')"
+    printf 'NOTIFY_ON_HEALTH_CHANGE=%s\n' "${NOTIFY_ON_HEALTH_CHANGE:-true}"
+    printf 'NOTIFY_ON_DOWN=%s\n' "${NOTIFY_ON_DOWN:-true}"
+    printf 'NOTIFY_ON_RECOVERY=%s\n' "${NOTIFY_ON_RECOVERY:-true}"
+    printf 'NOTIFY_ON_SWITCH=%s\n' "${NOTIFY_ON_SWITCH:-true}"
+    printf 'NOTIFY_ON_NFT_MISMATCH=%s\n' "${NOTIFY_ON_NFT_MISMATCH:-true}"
+    printf 'NOTIFY_MIN_INTERVAL_SECONDS=%s\n' "${NOTIFY_MIN_INTERVAL_SECONDS:-300}"
+}
+
+send_notification() {
+    local message="$1" force_send="${2:-false}" output token
+    load_notify_config
+    [[ "$force_send" == "true" || "${NOTIFY_ENABLED:-false}" == "true" ]] || return 0
+    [[ "${NOTIFY_PROVIDER:-telegram}" == "telegram" ]] || { log_warn "通知 provider 暂不支持：${NOTIFY_PROVIDER:-}"; return 0; }
+    [[ -n "${TG_BOT_TOKEN:-}" && -n "${TG_CHAT_ID:-}" ]] || { log_warn "Telegram 通知未配置完整，跳过发送。"; return 0; }
+    command_exists curl || { log_warn "curl 不存在，无法发送 Telegram 通知。"; return 0; }
+    token="${TG_BOT_TOKEN:-}"
+    set +e
+    output="$(curl -fsS -X POST "https://api.telegram.org/bot${token}/sendMessage" \
+        --data-urlencode "chat_id=${TG_CHAT_ID}" \
+        --data-urlencode "text=${message}" >/dev/null 2>&1)"
+    rc=$?
+    set -e
+    if [[ "$rc" -ne 0 ]]; then
+        output="${output//$token/$(mask_notify_token "$token")}"
+        log_warn "通知发送失败（curl exit=${rc}）：${output:-no detail}"
+    fi
+}
+
+notify_test() {
+    require_root "$@"
+    ensure_notify_config_file
+    send_notification "ix-transit-fabric health alert
+hostname: $(hostname 2>/dev/null || printf unknown)
+time: $(utc_now)
+summary: test notification
+suggested command: bash install.sh health-report" true
+    log_ok "notify-test 已执行。"
+}
+
+ensure_notify_state_files() {
+    ensure_state_file "$LAST_NOTIFY_FILE" "profile_id	last_notify_at"
+    ensure_state_file "$LAST_HEALTH_STATUS_FILE" "profile_id	health_status	updated_at"
+}
+
+last_state_value() {
+    local file="$1" key="$2" field="${3:-2}"
+    [[ -r "$file" ]] || return 1
+    awk -F '\t' -v k="$key" -v f="$field" 'NR>1 && $1==k {v=$f} END{if (v!="") print v}' "$file"
+}
+
+upsert_state_line() {
+    local file="$1" key="$2" value1="$3" value2="${4:-}" tmp
+    ensure_state_file "$file" "profile_id	value	updated_at"
+    tmp="$(make_tmp_file "ix-transit-fabric.state")"
+    awk -F '\t' -v k="$key" 'BEGIN{OFS="\t"} NR==1{print; next} $1!=k{print}' "$file" >"$tmp"
+    if [[ -n "$value2" ]]; then
+        printf '%s\t%s\t%s\n' "$(history_sanitize_field "$key")" "$(history_sanitize_field "$value1")" "$(history_sanitize_field "$value2")" >>"$tmp"
+    else
+        printf '%s\t%s\n' "$(history_sanitize_field "$key")" "$(history_sanitize_field "$value1")" >>"$tmp"
+    fi
+    install -m 0600 "$tmp" "$file"
+    rm -f -- "$tmp"
+}
+
+should_notify_health_change() {
+    local profile_id="$1" new_status="$2" force_notify="${3:-false}" old_status last_notify now min_interval elapsed
+    load_notify_config
+    [[ "${NOTIFY_ENABLED:-false}" == "true" ]] || return 1
+    ensure_notify_state_files
+    old_status="$(last_state_value "$LAST_HEALTH_STATUS_FILE" "$profile_id" 2 || true)"
+    last_notify="$(last_state_value "$LAST_NOTIFY_FILE" "$profile_id" 2 || true)"
+    now="$(date +%s)"
+    min_interval="${NOTIFY_MIN_INTERVAL_SECONDS:-300}"
+    if [[ -n "$last_notify" && "$last_notify" =~ ^[0-9]+$ && "$force_notify" != "true" ]]; then
+        elapsed=$((now - last_notify))
+        [[ "$elapsed" -ge "$min_interval" ]] || return 1
+    fi
+    [[ "$force_notify" == "true" ]] && return 0
+    if [[ -z "$old_status" ]]; then
+        [[ "$new_status" == "down" && "${NOTIFY_ON_DOWN:-true}" == "true" ]] && return 0
+        [[ "$new_status" == "warning" && "${NOTIFY_ON_HEALTH_CHANGE:-true}" == "true" ]] && return 0
+        return 1
+    fi
+    [[ "$old_status" == "$new_status" ]] && return 1
+    if [[ "$new_status" == "healthy" && "${NOTIFY_ON_RECOVERY:-true}" == "true" ]]; then
+        return 0
+    fi
+    if [[ "$new_status" == "down" && "${NOTIFY_ON_DOWN:-true}" == "true" ]]; then
+        return 0
+    fi
+    [[ "${NOTIFY_ON_HEALTH_CHANGE:-true}" == "true" ]]
+}
+
+record_last_health_status() {
+    local profile_id="$1" status="$2"
+    ensure_notify_state_files
+    upsert_state_line "$LAST_HEALTH_STATUS_FILE" "$profile_id" "$status" "$(utc_now)"
+}
+
+record_last_notify() {
+    local profile_id="$1"
+    ensure_notify_state_files
+    upsert_state_line "$LAST_NOTIFY_FILE" "$profile_id" "$(date +%s)"
+}
+
+notification_suggestion_for_profile() {
+    local profile_id="$1" group backup_id
+    load_profile "$profile_id" >/dev/null 2>&1 || return 0
+    group="${LINE_GROUP:-}"
+    [[ -n "$group" ]] || return 0
+    if [[ "${LINE_ROLE:-standalone}" == "primary" && "${HEALTH_STATUS:-unknown}" == "down" ]]; then
+        backup_id="$(first_healthy_backup_in_group "$group" || true)"
+        if [[ -n "$backup_id" ]]; then
+            printf 'suggested command:\n'
+            printf 'bash install.sh switch-dry-run %s %s\n' "$group" "$backup_id"
+            printf 'bash install.sh switch-line %s %s\n' "$group" "$backup_id"
+        fi
+    fi
+}
+
+send_monitor_notifications() {
+    local force_notify="${1:-false}" id status reason group message suggestion
+    load_notify_config
+    [[ "${NOTIFY_ENABLED:-false}" == "true" ]] || return 0
+    for id in $(profile_ids); do
+        load_profile "$id" >/dev/null 2>&1 || continue
+        status="${HEALTH_STATUS:-unknown}"
+        reason="${LAST_HEALTH_REASON:-未检查}"
+        group="${LINE_GROUP:-}"
+        if should_notify_health_change "$id" "$status" "$force_notify"; then
+            suggestion="$(notification_suggestion_for_profile "$id")"
+            message="ix-transit-fabric health alert
+hostname: $(hostname 2>/dev/null || printf unknown)
+time: $(utc_now)
+summary: profile health ${status}
+affected group: ${group:-standalone}
+affected profile: ${id}
+health status: ${status}
+reason: ${reason}
+${suggestion:-suggested command: bash install.sh health-report}"
+            send_notification "$message"
+            record_last_notify "$id"
+        fi
+        record_last_health_status "$id" "$status"
+    done
+}
+
+send_switch_notification() {
+    local group="$1" from_profile="$2" to_profile="$3" target_status="$4"
+    load_notify_config
+    [[ "${NOTIFY_ENABLED:-false}" == "true" && "${NOTIFY_ON_SWITCH:-true}" == "true" ]] || return 0
+    send_notification "ix-transit-fabric health alert
+hostname: $(hostname 2>/dev/null || printf unknown)
+time: $(utc_now)
+summary: manual switch completed
+affected group: ${group}
+affected profile: ${to_profile}
+health status: ${target_status}
+from: ${from_profile}
+suggested command: bash install.sh verify-nft-profiles"
+}
+
+monitor_interval_minutes() {
+    if [[ -r "$MONITOR_INTERVAL_FILE" ]]; then
+        awk 'NR==1 && $1 ~ /^[0-9]+$/ {print $1; found=1} END{if (!found) print 5}' "$MONITOR_INTERVAL_FILE"
+    else
+        printf '5\n'
+    fi
+}
+
+render_monitor_systemd_files() {
+    local interval script_path tmp_service tmp_timer
+    ensure_profile_dirs
+    install -d -m 700 "$STATE_DIR"
+    interval="$(monitor_interval_minutes)"
+    script_path="$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || printf '%s' "${BASH_SOURCE[0]}")"
+    tmp_service="$(make_tmp_file "ix-transit-monitor.service")"
+    tmp_timer="$(make_tmp_file "ix-transit-monitor.timer")"
+    {
+        printf '[Unit]\n'
+        printf 'Description=ix-transit-fabric monitor run once\n\n'
+        printf '[Service]\n'
+        printf 'Type=oneshot\n'
+        printf 'ExecStart=/bin/bash %s monitor-run-once\n' "$script_path"
+    } >"$tmp_service"
+    {
+        printf '[Unit]\n'
+        printf 'Description=ix-transit-fabric monitor timer\n\n'
+        printf '[Timer]\n'
+        printf 'OnBootSec=2min\n'
+        printf 'OnUnitActiveSec=%smin\n' "$interval"
+        printf 'AccuracySec=30s\n'
+        printf 'Persistent=true\n\n'
+        printf '[Install]\n'
+        printf 'WantedBy=timers.target\n'
+    } >"$tmp_timer"
+    install -m 0644 "$tmp_service" "$MONITOR_SERVICE_FILE"
+    install -m 0644 "$tmp_timer" "$MONITOR_TIMER_FILE"
+    rm -f -- "$tmp_service" "$tmp_timer"
+}
+
+monitor_set_interval() {
+    require_root "$@"
+    local minutes="${1:-}"
+    [[ "$minutes" =~ ^[0-9]+$ && "$minutes" -gt 0 ]] || die_user "用法：monitor-set-interval MINUTES"
+    ensure_profile_dirs
+    install -d -m 700 "$STATE_DIR"
+    printf '%s\n' "$minutes" >"$MONITOR_INTERVAL_FILE"
+    chmod 600 "$MONITOR_INTERVAL_FILE"
+    if command_exists systemctl; then
+        render_monitor_systemd_files
+        systemctl daemon-reload || true
+        if systemctl is-enabled "$MONITOR_TIMER_NAME" >/dev/null 2>&1; then
+            systemctl restart "$MONITOR_TIMER_NAME" || true
+        fi
+    fi
+    log_ok "已设置监控间隔：${minutes} 分钟"
+}
+
+monitor_config() {
+    require_root "$@"
+    printf 'monitor interval minutes: %s\n' "$(monitor_interval_minutes)"
+    printf 'service file: %s\n' "$MONITOR_SERVICE_FILE"
+    printf 'timer file: %s\n' "$MONITOR_TIMER_FILE"
+    printf 'default state: disabled until monitor-enable is run\n'
+}
+
+monitor_enable() {
+    require_root "$@"
+    ensure_systemctl
+    render_monitor_systemd_files
+    systemctl daemon-reload
+    systemctl enable --now "$MONITOR_TIMER_NAME"
+    log_ok "已启用定时健康检查：${MONITOR_TIMER_NAME}"
+}
+
+monitor_disable() {
+    require_root "$@"
+    ensure_systemctl
+    systemctl disable --now "$MONITOR_TIMER_NAME" >/dev/null 2>&1 || true
+    log_ok "已禁用定时健康检查：${MONITOR_TIMER_NAME}"
+}
+
+monitor_status() {
+    require_root "$@"
+    local enabled active next_run last_run last_result summary timer_text active_text notify_text health_count switch_count
+    if command_exists systemctl; then
+        enabled="$(systemctl is-enabled "$MONITOR_TIMER_NAME" 2>/dev/null || printf disabled)"
+        active="$(systemctl is-active "$MONITOR_TIMER_NAME" 2>/dev/null || printf inactive)"
+        next_run="$(systemctl list-timers "$MONITOR_TIMER_NAME" --no-pager --no-legend 2>/dev/null | awk '{print $1" "$2" "$3" "$4; exit}')"
+    else
+        enabled="systemctl-unavailable"
+        active="systemctl-unavailable"
+        next_run="-"
+    fi
+    case "$enabled" in
+        enabled) timer_text="已启用" ;;
+        disabled) timer_text="未启用" ;;
+        systemctl-unavailable) timer_text="未安装（systemctl 不可用）" ;;
+        *) timer_text="未安装或未启用（${enabled}）" ;;
+    esac
+    case "$active" in
+        active) active_text="运行中" ;;
+        inactive) active_text="未运行" ;;
+        systemctl-unavailable) active_text="未安装（systemctl 不可用）" ;;
+        *) active_text="$active" ;;
+    esac
+    if [[ -r "$MONITOR_LAST_RUN_FILE" ]]; then
+        last_run="$(awk -F '\t' 'NR==1{print $1}' "$MONITOR_LAST_RUN_FILE")"
+        last_result="$(awk -F '\t' 'NR==1{print $2}' "$MONITOR_LAST_RUN_FILE")"
+        summary="$(awk -F '\t' 'NR==1{print $3}' "$MONITOR_LAST_RUN_FILE")"
+    else
+        last_run="-"
+        last_result="-"
+        summary="-"
+    fi
+    load_notify_config
+    notify_text="$([[ "${NOTIFY_ENABLED:-false}" == "true" ]] && printf enabled || printf disabled)"
+    health_count=0
+    switch_count=0
+    [[ -r "$HEALTH_HISTORY_FILE" ]] && health_count="$(awk 'NR>1{c++} END{print c+0}' "$HEALTH_HISTORY_FILE")"
+    [[ -r "$(switch_history_path)" ]] && switch_count="$(awk 'NR>1{c++} END{print c+0}' "$(switch_history_path)")"
+    printf 'monitor timer：%s\n' "$timer_text"
+    printf 'timer active：%s\n' "$active_text"
+    printf 'next run：%s\n' "${next_run:-unknown}"
+    printf 'last run：%s\n' "$last_run"
+    printf 'last result：%s\n' "$last_result"
+    printf 'latest health summary：%s\n' "$summary"
+    printf 'notify：%s\n' "$notify_text"
+    printf 'health history：%s 条\n' "$health_count"
+    printf 'switch history：%s 条\n' "$switch_count"
+}
+
+monitor_logs() {
+    require_root "$@"
+    command_exists journalctl || die_user "journalctl 不可用。"
+    journalctl -u "$MONITOR_SERVICE_NAME" -n 100 --no-pager 2>/dev/null | sed -E 's#bot[0-9]+:[A-Za-z0-9_-]+#bot***#g'
+}
+
+monitor_run_once() {
+    require_root "$@"
+    local force_notify="false" arg rc=0 verify_rc=0 total=0 healthy=0 warning=0 down=0 unknown=0 summary
+    for arg in "$@"; do
+        case "$arg" in
+            --force-notify) force_notify="true" ;;
+            --repair) die_user "本版本不实现 --repair；monitor-run-once 只读，不自动修复。" ;;
+            *) die_user "未知 monitor-run-once 参数：$arg" ;;
+        esac
+    done
+    printf 'ix-transit-fabric monitor-run-once\n'
+    printf 'This monitor is read-only: no switch-line, no service restart, no apply-nft-all.\n'
+    set +e
+    health_all
+    rc=$?
+    set -e
+    printf '\n===== health-report =====\n'
+    health_report || true
+    printf '\n===== validate-primary-backup =====\n'
+    local group
+    while IFS= read -r group; do
+        [[ -n "$group" ]] || continue
+        validate_primary_backup "$group" || true
+    done < <(profile_groups)
+    printf '\n===== verify-nft-profiles =====\n'
+    set +e
+    verify_nft_profiles_core
+    verify_rc=$?
+    set -e
+    for id in $(profile_ids); do
+        load_profile "$id" >/dev/null 2>&1 || continue
+        total=$((total + 1))
+        case "${HEALTH_STATUS:-unknown}" in
+            healthy) healthy=$((healthy + 1)) ;;
+            warning) warning=$((warning + 1)) ;;
+            down) down=$((down + 1)) ;;
+            *) unknown=$((unknown + 1)) ;;
+        esac
+    done
+    summary="profiles=${total} healthy=${healthy} warning=${warning} down=${down} unknown=${unknown} nft_verify=${verify_rc}"
+    ensure_profile_dirs
+    install -d -m 700 "$STATE_DIR"
+    printf '%s\t%s\t%s\n' "$(utc_now)" "$([[ "$rc" -eq 0 && "$verify_rc" -eq 0 ]] && printf success || printf warning)" "$summary" >"$MONITOR_LAST_RUN_FILE"
+    chmod 600 "$MONITOR_LAST_RUN_FILE"
+    load_notify_config
+    if [[ "${NOTIFY_ENABLED:-false}" != "true" ]]; then
+        printf '\nnotify disabled：本次只记录本地健康状态，不发送通知。\n'
+    fi
+    send_monitor_notifications "$force_notify" || true
+    printf '\nMonitor summary: %s\n' "$summary"
+    return 0
+}
+
+nft_text_has_dnat_rule() {
+    local text="$1" proto="$2" local_port="$3" landing_ip="$4" remote_port="$5"
+    [[ -n "$local_port" && -n "$landing_ip" && -n "$remote_port" ]] || return 1
+    grep -Eq "${proto}[[:space:]]+dport[[:space:]]+${local_port}([[:space:]]+counter([[:space:]]+packets[[:space:]]+[0-9]+[[:space:]]+bytes[[:space:]]+[0-9]+)?)?[[:space:]]+dnat[[:space:]]+to[[:space:]]+${landing_ip}:${remote_port}" <<<"$text"
+}
+
+nft_dnat_rules_from_text() {
+    local text="$1"
+    grep -E '^[[:space:]]*(tcp|udp)[[:space:]]+dport[[:space:]]+[0-9]+([[:space:]]+counter([[:space:]]+packets[[:space:]]+[0-9]+[[:space:]]+bytes[[:space:]]+[0-9]+)?)?[[:space:]]+dnat[[:space:]]+to[[:space:]]+' <<<"$text" 2>/dev/null |
+        sed -E 's/^[[:space:]]+//; s/[[:space:]]+counter( packets [0-9]+ bytes [0-9]+)?//g; s/[[:space:]]+/ /g' | sort -u
+}
+
+render_nft_all_file() {
+    local output="$1" table_name="$2" id
+    {
+        printf 'table ip %s {\n' "$table_name"
+        printf '    chain prerouting {\n'
+        printf '        type nat hook prerouting priority dstnat; policy accept;\n\n'
+        for id in $(profile_ids); do
+            load_profile "$id" || continue
+            [[ "${ROLE:-}" == "panel-ingress" && "${ENABLED:-true}" == "true" && "${FORWARD_ENABLED:-true}" == "true" ]] || continue
+            printf '        # profile: %s\n' "$id"
+            if [[ "${FORWARD_PROTO:-both}" == "tcp" || "${FORWARD_PROTO:-both}" == "both" ]]; then
+                printf '        tcp dport %s counter dnat to %s:%s\n' "$LOCAL_PORT" "$LANDING_ET_IP" "$REMOTE_PORT"
+            fi
+            if [[ "${FORWARD_PROTO:-both}" == "udp" || "${FORWARD_PROTO:-both}" == "both" ]]; then
+                printf '        udp dport %s counter dnat to %s:%s\n' "$LOCAL_PORT" "$LANDING_ET_IP" "$REMOTE_PORT"
+            fi
+            printf '\n'
+        done
+        printf '    }\n\n'
+        printf '    chain postrouting {\n'
+        printf '        type nat hook postrouting priority srcnat; policy accept;\n\n'
+        for id in $(profile_ids); do
+            load_profile "$id" || continue
+            [[ "${ROLE:-}" == "panel-ingress" && "${ENABLED:-true}" == "true" && "${FORWARD_ENABLED:-true}" == "true" ]] || continue
+            printf '        # profile: %s\n' "$id"
+            if [[ "${FORWARD_PROTO:-both}" == "tcp" || "${FORWARD_PROTO:-both}" == "both" ]]; then
+                printf '        ip daddr %s tcp dport %s counter masquerade\n' "$LANDING_ET_IP" "$REMOTE_PORT"
+            fi
+            if [[ "${FORWARD_PROTO:-both}" == "udp" || "${FORWARD_PROTO:-both}" == "both" ]]; then
+                printf '        ip daddr %s udp dport %s counter masquerade\n' "$LANDING_ET_IP" "$REMOTE_PORT"
+            fi
+            printf '\n'
+        done
+        printf '    }\n'
+        printf '}\n'
+    } >"$output"
+}
+
+human_bytes() {
+    local bytes="${1:-0}" unit="B" value
+    if [[ "$bytes" -ge 1073741824 ]]; then
+        unit="GiB"; value="$(awk -v b="$bytes" 'BEGIN{printf "%.2f", b/1073741824}')"
+    elif [[ "$bytes" -ge 1048576 ]]; then
+        unit="MiB"; value="$(awk -v b="$bytes" 'BEGIN{printf "%.2f", b/1048576}')"
+    elif [[ "$bytes" -ge 1024 ]]; then
+        unit="KiB"; value="$(awk -v b="$bytes" 'BEGIN{printf "%.2f", b/1024}')"
+    else
+        value="$bytes"
+    fi
+    printf '%s %s\n' "$value" "$unit"
+}
+
+profile_counter_from_text() {
+    local text="$1" packets=0 bytes=0 found=0 line proto_pattern
+    [[ "${ROLE:-}" == "panel-ingress" ]] || { printf -- "-\t-\tmissing\n"; return 0; }
+    [[ -n "${LOCAL_PORT:-}" && -n "${LANDING_ET_IP:-}" && -n "${REMOTE_PORT:-}" ]] || { printf -- "-\t-\tmissing\n"; return 0; }
+    while IFS= read -r line; do
+        [[ -n "$line" ]] || continue
+        if grep -Eq "(tcp|udp)[[:space:]]+dport[[:space:]]+${LOCAL_PORT}[[:space:]].*dnat[[:space:]]+to[[:space:]]+${LANDING_ET_IP}:${REMOTE_PORT}" <<<"$line"; then
+            if grep -Eq 'counter[[:space:]]+packets[[:space:]]+[0-9]+[[:space:]]+bytes[[:space:]]+[0-9]+' <<<"$line"; then
+                packets=$((packets + $(sed -E 's/.*counter packets ([0-9]+) bytes ([0-9]+).*/\1/' <<<"$line")))
+                bytes=$((bytes + $(sed -E 's/.*counter packets ([0-9]+) bytes ([0-9]+).*/\2/' <<<"$line")))
+                found=1
+            fi
+        fi
+    done <<<"$text"
+    if [[ "$found" -eq 1 ]]; then
+        printf '%s\t%s\tok\n' "$packets" "$bytes"
+    else
+        printf -- "-\t-\tmissing\n"
+    fi
+}
+
+traffic_report() {
+    require_root "$@"
+    local group_filter="" id text packets bytes state human
+    if [[ "${1:-}" == "--group" ]]; then
+        group_filter="${2:-}"
+        [[ -n "$group_filter" ]] || die_user "用法：traffic-report [--group GROUP]"
+    elif [[ -n "${1:-}" ]]; then
+        die_user "用法：traffic-report [--group GROUP]"
+    fi
+    text="$(nft_table_text 2>/dev/null || true)"
+    printf 'PROFILE_ID\tGROUP\tLOCAL_PORT\tREMOTE_PORT\tFORWARD_ENABLED\tPACKETS\tBYTES\tHUMAN_READABLE\n'
+    if [[ -z "$text" ]]; then
+        printf '# nftables project table unavailable; run on ingress host after apply-nft-all.\n'
+    fi
+    for id in $(sorted_profile_ids); do
+        load_profile "$id" >/dev/null 2>&1 || continue
+        [[ "${ROLE:-}" == "panel-ingress" ]] || continue
+        [[ -z "$group_filter" || "${LINE_GROUP:-}" == "$group_filter" ]] || continue
+        IFS=$'\t' read -r packets bytes state <<<"$(profile_counter_from_text "$text")"
+        if [[ "$state" == "ok" ]]; then
+            human="$(human_bytes "$bytes")"
+        else
+            human="counter missing; run bash install.sh apply-nft-all"
+        fi
+        printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$id" "${LINE_GROUP:-}" "${LOCAL_PORT:-}" "${REMOTE_PORT:-}" "${FORWARD_ENABLED:-true}" "$packets" "$bytes" "$human"
+    done
+    printf '\nNote: nftables counter only counts project forwarding rule hits on the ingress host; it is not cloud billing traffic.\n'
+}
+
+traffic_status() {
+    require_root "$@"
+    local profile_id="${1:-}"
+    if [[ -n "$profile_id" ]]; then
+        load_profile_or_die "$profile_id"
+        printf 'Traffic status for %s\n' "$profile_id"
+        if [[ -n "${LINE_GROUP:-}" ]]; then
+            traffic_report --group "$LINE_GROUP" | awk -F '\t' -v p="$profile_id" 'NR==1 || $1==p || /^#|^Note:/ {print}'
+        else
+            traffic_report | awk -F '\t' -v p="$profile_id" 'NR==1 || $1==p || /^#|^Note:/ {print}'
+        fi
+    else
+        traffic_report
+    fi
+}
+
+traffic_reset() {
+    require_root "$@"
+    local profile_id="${1:-}"
+    [[ -n "$profile_id" ]] || die_user "用法：traffic-reset PROFILE_ID"
+    load_profile_or_die "$profile_id"
+    printf '当前版本只支持 traffic-reset-all；单 Profile 精确重置将在未来版本设计。\n'
+    printf '如需重置项目表所有 counter：bash install.sh traffic-reset-all\n'
+    return 1
+}
+
+traffic_reset_all() {
+    require_root "$@"
+    apply_nft_all
+    log_ok "已通过重新应用项目 nftables 表重置全部 Profile counter。"
+}
+
+nft_mismatch_status() {
+    set +e
+    verify_nft_profiles_core >/dev/null 2>&1
+    local rc=$?
+    set -e
+    [[ "$rc" -eq 0 ]] && printf 'no' || printf 'yes'
+}
+
+traffic_counter_status() {
+    local text
+    text="$(nft_table_text 2>/dev/null || true)"
+    grep -q 'counter' <<<"$text" && printf 'yes' || printf 'no'
+}
+
+notify_enabled_status() {
+    load_notify_config
+    printf '%s\n' "${NOTIFY_ENABLED:-false}"
+}
+
+monitor_timer_enabled_status() {
+    if command_exists systemctl; then
+        case "$(systemctl is-enabled "$MONITOR_TIMER_NAME" 2>/dev/null || printf not-found)" in
+            enabled) printf '已启用\n' ;;
+            disabled) printf '未启用\n' ;;
+            *) printf '未安装\n' ;;
+        esac
+    else
+        printf '未安装'
+    fi
+}
+
+health_report() {
+    require_root "$@"
+    local group_filter="" id service active et_ip nft_label enabled_label forward_label group_display health role_label
+    local total=0 forwarding_lines=0 healthy=0 warning=0 down=0 unknown=0 groups_total=0 groups_ready=0 groups_warning=0 groups_not_ready=0
+    local group issue backup_id groups_with_issues=0 ready_state last_monitor="-" group_count
+    if [[ "${1:-}" == "--group" ]]; then
+        group_filter="${2:-}"
+        [[ -n "$group_filter" ]] || die_user "用法：health-report --group GROUP"
+    elif [[ -n "${1:-}" ]]; then
+        group_filter="$1"
+    fi
+
+    printf '%-18s %-14s %-8s %-10s %-5s %-3s %-7s %-8s %-15s %-8s %-8s %s\n' \
+        "PROFILE" "GROUP" "ROLE" "LINE" "PRI" "EN" "FWD" "SVC" "IP" "NFT" "HEALTH" "REASON"
+    printf '%-18s %-14s %-8s %-10s %-5s %-3s %-7s %-8s %-15s %-8s %-8s %s\n' \
+        "------------------" "--------------" "--------" "----------" "-----" "---" "-------" "--------" "---------------" "--------" "--------" "------"
+    for id in $(sorted_profile_ids); do
+        if ! load_profile "$id"; then
+            [[ -z "$group_filter" ]] || continue
+            printf '%-18s %-14s %-8s %-10s %-5s %-3s %-7s %-8s %-15s %-8s %-8s %s\n' \
+                "$id" "-" "-" "-" "-" "off" "off" "unknown" "-" "unknown" "down" "cannot read Profile"
+            total=$((total + 1)); down=$((down + 1)); continue
+        fi
+        [[ -z "$group_filter" || "${LINE_GROUP:-}" == "$group_filter" ]] || continue
+        service="$(profile_service_name "$id")"
+        active="$(profile_service_status "$service")"
+        et_ip="${ET_IPV4:-}"; et_ip="${et_ip%%/*}"
+        nft_label="$(nft_profile_rule_label "$id")"
+        enabled_label="$(enabled_display "${ENABLED:-true}")"
+        forward_label="$(forward_display "${ROLE:-}" "${ENABLED:-true}" "${FORWARD_ENABLED:-true}")"
+        group_display="${LINE_GROUP:-standalone}"
+        health="${HEALTH_STATUS:-unknown}"
+        case "${ROLE:-}" in panel-ingress) role_label="ingress" ;; panel-landing) role_label="landing" ;; *) role_label="${ROLE:-unknown}" ;; esac
+        [[ "$forward_label" == "active" ]] && forwarding_lines=$((forwarding_lines + 1))
+        case "$health" in healthy) healthy=$((healthy + 1)) ;; warning) warning=$((warning + 1)) ;; down) down=$((down + 1)) ;; *) unknown=$((unknown + 1)) ;; esac
+        total=$((total + 1))
+        printf '%-18s %-14s %-8s %-10s %-5s %-3s %-7s %-8s %-15s %-8s %-8s %s\n' \
+            "$id" "$group_display" "$role_label" "${LINE_ROLE:-standalone}" "${LINE_PRIORITY:-100}" \
+            "$enabled_label" "$forward_label" "${active:-unknown}" "${et_ip:-}" "$nft_label" "$health" "${LAST_HEALTH_REASON:-未检查}"
+    done
+    group_count="$(profile_group_count)"
+    while IFS= read -r group; do
+        [[ -n "$group" ]] || continue
+        [[ -z "$group_filter" || "$group" == "$group_filter" ]] || continue
+        groups_total=$((groups_total + 1))
+        ready_state="$(group_ready_state "$group")"
+        case "$ready_state" in ready) groups_ready=$((groups_ready + 1)) ;; warning) groups_warning=$((groups_warning + 1)) ;; *) groups_not_ready=$((groups_not_ready + 1)) ;; esac
+    done < <(profile_groups || true)
+    [[ -r "$MONITOR_LAST_RUN_FILE" ]] && last_monitor="$(awk -F '\t' 'NR==1{print $1}' "$MONITOR_LAST_RUN_FILE")"
+    printf '\nSummary:\n'
+    printf 'profiles total: %s\n' "$total"
+    printf 'groups total: %s\n' "$groups_total"
+    printf 'forwarding lines: %s\n' "$forwarding_lines"
+    printf 'healthy / warning / down / unknown: %s / %s / %s / %s\n' "$healthy" "$warning" "$down" "$unknown"
+    printf 'groups ready / warning / not-ready: %s / %s / %s\n' "$groups_ready" "$groups_warning" "$groups_not_ready"
+    printf 'last monitor time: %s\n' "$last_monitor"
+    printf 'monitor timer：%s\n' "$(monitor_timer_enabled_status)"
+    printf 'notify：%s\n' "$([[ "$(notify_enabled_status)" == "true" ]] && printf enabled || printf disabled)"
+    printf 'nft mismatch: %s\n' "$(nft_mismatch_status)"
+    printf 'traffic counter exists: %s\n' "$(traffic_counter_status)"
+    printf '\nGroup issues:\n'
+    if [[ "$group_count" -eq 0 ]]; then
+        print_no_group_message
+    else
+        while IFS= read -r group; do
+            [[ -n "$group" ]] || continue
+            [[ -z "$group_filter" || "$group" == "$group_filter" ]] || continue
+            if [[ "$(group_issue_count "$group")" -gt 0 ]]; then
+                groups_with_issues=$((groups_with_issues + 1))
+                while IFS= read -r issue; do
+                    [[ -n "$issue" ]] || continue
+                    printf '  - %s: %s\n' "$group" "${issue%%:*}"
+                    if [[ "$issue" == primary\ down\ but\ backup\ healthy:* ]]; then
+                        backup_id="${issue#*:}"
+                        printf '    bash install.sh switch-dry-run %s %s\n' "$group" "$backup_id"
+                        printf '    bash install.sh switch-line %s %s\n' "$group" "$backup_id"
+                    elif [[ "$issue" == backup\ down:* ]]; then
+                        backup_id="${issue#*:}"
+                        printf '    backup %s is not a safe switch target now\n' "$backup_id"
+                    fi
+                done < <(group_issue_lines "$group" || true)
+            fi
+        done < <(profile_groups || true)
+        [[ "$groups_with_issues" -gt 0 ]] || printf '  - none\n'
+    fi
+}
+
+group_last_health_check() {
+    local group="$1" id last=""
+    for id in $(list_group_ingress_profiles "$group"); do
+        load_profile "$id" >/dev/null 2>&1 || continue
+        [[ -n "${LAST_HEALTH_CHECK_AT:-}" && "${LAST_HEALTH_CHECK_AT}" > "$last" ]] && last="$LAST_HEALTH_CHECK_AT"
+    done
+    printf '%s\n' "${last:--}"
+}
+
+primary_backup_summary() {
+    require_root "$@"
+    local group primary forwarding backup_count hot_count cold_count ready_state action recommended_backup last_check notify_hint
+    if [[ "$(profile_group_count)" -eq 0 ]]; then
+        print_no_group_message
+        return 0
+    fi
+    printf '%-16s %-18s %-18s %-7s %-5s %-5s %-10s %-20s %-16s %s\n' "GROUP" "PRIMARY" "ACTIVE" "BACKUP" "HOT" "COLD" "HEALTH" "LAST_CHECK" "NOTIFY" "SUGGESTED ACTION"
+    while IFS= read -r group; do
+        [[ -n "$group" ]] || continue
+        primary="$(list_group_primary_profiles "$group" | join_profile_list)"
+        forwarding="$(list_group_forwarding_profiles "$group" | join_profile_list)"
+        backup_count="$(list_group_backup_profiles "$group" | awk 'NF{c++} END{print c+0}')"
+        hot_count="$(group_hot_standby_count "$group")"
+        cold_count="$(group_cold_standby_count "$group")"
+        ready_state="$(group_ready_state "$group")"
+        recommended_backup="$(first_healthy_backup_in_group "$group" || true)"
+        last_check="$(group_last_health_check "$group")"
+        notify_hint="$([[ "$(notify_enabled_status)" == "true" ]] && printf monitor-notify || printf notify-disabled)"
+        case "$ready_state" in
+            ready) action="monitor / dry-run before switch" ;;
+            warning) [[ -n "$recommended_backup" ]] && action="switch-dry-run ${group} ${recommended_backup}" || action="review warnings" ;;
+            *) action="primary-backup-check ${group}" ;;
+        esac
+        printf '%-16s %-18s %-18s %-7s %-5s %-5s %-10s %-20s %-16s %s\n' "$group" "$primary" "$forwarding" "$backup_count" "$hot_count" "$cold_count" "$ready_state" "$last_check" "$notify_hint" "$action"
+    done < <(profile_groups || true)
+}
+
+self_check_line() {
+    local status="$1" item="$2" detail="${3:-}"
+    if [[ -n "$detail" ]]; then
+        printf '[%s] %s: %s\n' "$status" "$item" "$detail"
+    else
+        printf '[%s] %s\n' "$status" "$item"
+    fi
+}
+
+self_check_command() {
+    local cmd="$1" required="${2:-true}"
+    if command_exists "$cmd"; then
+        self_check_line OK "command ${cmd}" "$(command -v "$cmd" 2>/dev/null || printf found)"
+    elif [[ "$required" == "true" ]]; then
+        self_check_line WARN "command ${cmd}" "missing"
+    else
+        self_check_line INFO "command ${cmd}" "optional missing"
+    fi
+}
+
+self_check_timer_detail() {
+    local enabled="$1" active="$2"
+    case "$enabled" in
+        enabled) printf '已启用，active=%s\n' "$active" ;;
+        disabled) printf '未启用\n' ;;
+        not-found|masked|static|indirect|generated|transient|bad|unknown|"") printf '未安装\n' ;;
+        *) printf '%s，active=%s\n' "$enabled" "$active" ;;
+    esac
+}
+
+self_check() {
+    local id profile_count=0 switch_size=0 health_size=0 notify_mode config_mode profiles_mode et_path timer_enabled timer_active
+    local running_instances legacy_enabled legacy_active landing_count ingress_count other_count role_hint
+    local backup_count=0 backup_latest=""
+    printf 'ix-transit-fabric self-check\n'
+    printf 'version: %s\n' "$SCRIPT_VERSION"
+    printf 'read-only: no switch-line, no service restart, no apply-nft-all\n'
+    self_check_line "$([[ "${EUID:-$(id -u)}" -eq 0 ]] && printf OK || printf WARN)" "root" "$([[ "${EUID:-$(id -u)}" -eq 0 ]] && printf yes || printf no)"
+
+    printf '\nRequired commands:\n'
+    for cmd in bash systemctl nft ip ss sed awk grep; do
+        self_check_command "$cmd" true
+    done
+    if command_exists curl || command_exists wget; then
+        self_check_line OK "curl/wget" "available"
+    else
+        self_check_line WARN "curl/wget" "missing; downloads or Telegram notify may fail"
+    fi
+    if detect_nc_cmd >/dev/null 2>&1; then
+        self_check_line OK "nc/ncat" "$(detect_nc_cmd)"
+    else
+        self_check_line INFO "nc/ncat" "missing; TCP probes will be skipped; run: bash install.sh install-netcat; Debian/Ubuntu package: netcat-openbsd"
+    fi
+
+    printf '\nRuntime:\n'
+    et_path="$(detect_easytier_binary 2>/dev/null || true)"
+    [[ -n "$et_path" ]] && self_check_line OK "EasyTier" "$et_path" || self_check_line WARN "EasyTier" "not installed; run: bash install.sh install-easytier"
+    [[ -d "$CONFIG_DIR" ]] && config_mode="$(path_mode "$CONFIG_DIR")" || config_mode="missing"
+    [[ -d "$PROFILES_DIR" ]] && profiles_mode="$(path_mode "$PROFILES_DIR")" || profiles_mode="missing"
+    self_check_line "$([[ -d "$CONFIG_DIR" ]] && printf OK || printf WARN)" "config dir" "${CONFIG_DIR} mode=${config_mode}"
+    self_check_line "$([[ -d "$PROFILES_DIR" ]] && printf OK || printf WARN)" "profiles dir" "${PROFILES_DIR} mode=${profiles_mode}"
+    if [[ -e "$NOTIFY_ENV_FILE" ]]; then
+        notify_mode="$(path_mode "$NOTIFY_ENV_FILE")"
+        [[ "$notify_mode" == "600" ]] && self_check_line OK "notify.env" "mode=600" || self_check_line WARN "notify.env" "mode=${notify_mode}; recommended 600"
+    else
+        self_check_line INFO "notify.env" "not configured"
+    fi
+    [[ -e "$ENV_FILE" ]] && self_check_line INFO "legacy single-line config" "exists: ${ENV_FILE}" || self_check_line OK "legacy single-line config" "not present"
+    if [[ -d "$PROFILES_DIR" ]]; then
+        profile_count="$(profile_ids | awk 'NF{c++} END{print c+0}')"
+    fi
+    [[ "$profile_count" -gt 0 ]] && self_check_line OK "profiles" "${profile_count}" || self_check_line WARN "profiles" "none"
+    read -r landing_count ingress_count other_count < <(profile_role_counts)
+    self_check_line INFO "landing Profile count" "${landing_count:-0}"
+    self_check_line INFO "ingress Profile count" "${ingress_count:-0}"
+    case "${landing_count:-0}:${ingress_count:-0}" in
+        0:0) role_hint="no Profile yet; create a landing or ingress Profile first" ;;
+        *:0) role_hint="当前机器是落地侧，不负责入口 nftables 转发" ;;
+        0:*) role_hint="当前机器是入口侧，负责 LOCAL_PORT -> LANDING_ET_IP:REMOTE_PORT" ;;
+        *) role_hint="当前机器同时承担落地和入口角色" ;;
+    esac
+    self_check_line INFO "current host role" "$role_hint"
+    [[ -e "$PROFILE_SERVICE_TEMPLATE" ]] && self_check_line OK "profile systemd template" "$PROFILE_SERVICE_TEMPLATE" || self_check_line WARN "profile systemd template" "missing"
+    if command_exists systemctl; then
+        running_instances="$(systemctl list-units 'ix-transit-easytier@*.service' --state=running --no-legend --no-pager 2>/dev/null | awk '{print $1}' | paste -sd ',' -)"
+        self_check_line INFO "running profile instances" "${running_instances:-none}"
+        if [[ -e "$SYSTEMD_SERVICE" ]]; then
+            legacy_active="$(systemctl is-active "$SERVICE_NAME" 2>/dev/null || printf unknown)"
+            legacy_enabled="$(systemctl is-enabled "$SERVICE_NAME" 2>/dev/null || printf unknown)"
+            self_check_line INFO "legacy service" "${SERVICE_NAME} active=${legacy_active} enabled=${legacy_enabled}; compatibility residue, ignored by Profile mode"
+        else
+            self_check_line OK "legacy service" "not present"
+        fi
+    else
+        self_check_line WARN "running profile instances" "systemctl unavailable"
+        [[ -e "$SYSTEMD_SERVICE" ]] && self_check_line INFO "legacy service" "exists: ${SYSTEMD_SERVICE}; compatibility residue, ignored by Profile mode" || self_check_line OK "legacy service" "not present"
+    fi
+    if command_exists nft && nft list table ip "$NFT_TABLE" >/dev/null 2>&1; then
+        self_check_line OK "nftables project table" "table ip ${NFT_TABLE}"
+    else
+        self_check_line INFO "nftables project table" "not found or nft unavailable"
+    fi
+    self_check_line INFO "dangerous command scan" "run bash tests/smoke.sh in the repository"
+    if command_exists systemctl; then
+        timer_enabled="$(systemctl is-enabled "$MONITOR_TIMER_NAME" 2>/dev/null || printf not-found)"
+        timer_active="$(systemctl is-active "$MONITOR_TIMER_NAME" 2>/dev/null || printf inactive)"
+        self_check_line INFO "monitor timer" "$(self_check_timer_detail "$timer_enabled" "$timer_active")"
+    else
+        self_check_line INFO "monitor timer" "未安装"
+    fi
+    load_notify_config
+    self_check_line INFO "notify" "enabled=${NOTIFY_ENABLED:-false} provider=${NOTIFY_PROVIDER:-telegram}"
+    [[ -e "$SWITCH_HISTORY_FILE" ]] && switch_size="$(wc -c <"$SWITCH_HISTORY_FILE" 2>/dev/null || printf 0)"
+    [[ -e "$HEALTH_HISTORY_FILE" ]] && health_size="$(wc -c <"$HEALTH_HISTORY_FILE" 2>/dev/null || printf 0)"
+    self_check_line INFO "switch-history size" "${switch_size} bytes"
+    self_check_line INFO "health-history size" "${health_size} bytes"
+    if [[ -d "$BACKUP_DIR" ]]; then
+        backup_count="$(find "$BACKUP_DIR" -type f 2>/dev/null | awk 'END{print NR+0}' || true)"
+        backup_latest="$(find "$BACKUP_DIR" -type f -printf '%T@ %p\n' 2>/dev/null | sort -nr | awk 'NR==1{sub(/^[^ ]+ /,""); print; exit}' || true)"
+        self_check_line INFO "backup files" "${backup_count:-0} files${backup_latest:+; latest=${backup_latest}}"
+    else
+        self_check_line INFO "backup files" "0 files"
+    fi
+
+    printf '\nSuggestions:\n'
+    [[ "$profile_count" -gt 0 ]] || printf '  - Add a landing and ingress Profile before production use.\n'
+    detect_nc_cmd >/dev/null 2>&1 || printf '  - For TCP port diagnostics, run: bash install.sh install-netcat\n'
+    [[ -n "$et_path" ]] || printf '  - EasyTier is required before starting a line: bash install.sh install-easytier\n'
+    printf '  - For issue reports, run: bash install.sh export-diagnostic\n'
+    printf '  - For full static checks, run: bash tests/smoke.sh\n'
+}
+
+redact_diagnostic_stream() {
+    sed -E \
+        -e 's/(ET_NETWORK_SECRET=)[^[:space:]]+/\1***REDACTED***/g' \
+        -e 's/(TG_BOT_TOKEN=)[^[:space:]]+/\1***REDACTED***/g' \
+        -e 's/IXTF1:[A-Za-z0-9._~+\/=-]+/IXTF1:***REDACTED***/g' \
+        -e 's#bot[0-9]+:[A-Za-z0-9_-]+#bot***REDACTED***#g'
+}
+
+diagnostic_section() {
+    local title="$1"
+    printf '\n===== %s =====\n' "$title"
+}
+
+diagnostic_notify_status() {
+    load_notify_config
+    printf 'NOTIFY_ENABLED=%s\n' "${NOTIFY_ENABLED:-false}"
+    printf 'NOTIFY_PROVIDER=%s\n' "${NOTIFY_PROVIDER:-telegram}"
+    printf 'TG_BOT_TOKEN=%s\n' "$(mask_notify_token "${TG_BOT_TOKEN:-}")"
+    printf 'TG_CHAT_ID=%s\n' "$([[ -n "${TG_CHAT_ID:-}" ]] && printf 'configured' || printf '(empty)')"
+    printf 'NOTIFY_ON_HEALTH_CHANGE=%s\n' "${NOTIFY_ON_HEALTH_CHANGE:-true}"
+    printf 'NOTIFY_ON_DOWN=%s\n' "${NOTIFY_ON_DOWN:-true}"
+    printf 'NOTIFY_ON_RECOVERY=%s\n' "${NOTIFY_ON_RECOVERY:-true}"
+    printf 'NOTIFY_ON_SWITCH=%s\n' "${NOTIFY_ON_SWITCH:-true}"
+    printf 'NOTIFY_ON_NFT_MISMATCH=%s\n' "${NOTIFY_ON_NFT_MISMATCH:-true}"
+    printf 'NOTIFY_MIN_INTERVAL_SECONDS=%s\n' "${NOTIFY_MIN_INTERVAL_SECONDS:-300}"
+}
+
+diagnostic_tsv_tail() {
+    local file="$1" limit="$2" empty_message="$3"
+    [[ -r "$file" ]] || { printf '%s\n' "$empty_message"; return 0; }
+    awk -F '\t' -v limit="$limit" '
+        NR==1 {header=$0; next}
+        {rows[++n]=$0}
+        END {
+            if (header != "") print header
+            if (n == 0) {
+                print "(empty)"
+                exit
+            }
+            start=n-limit+1
+            if (start < 1) start=1
+            for (i=start; i<=n; i++) print rows[i]
+        }
+    ' "$file"
+}
+
+export_diagnostic() {
+    require_root "$@"
+    local stamp output tmp unit
+    stamp="$(date +%Y%m%d-%H%M%S)"
+    output="${IXTF_DIAGNOSTIC_DIR:-/tmp}/ix-transit-diagnostic-${stamp}.txt"
+    tmp="$(make_tmp_file "ix-transit-diagnostic")"
+    {
+        diagnostic_section "version"
+        printf 'ix-transit-fabric %s\n' "$SCRIPT_VERSION"
+        printf 'hostname: %s\n' "$(hostname 2>/dev/null || printf unknown)"
+        printf 'date: %s\n' "$(date -Is 2>/dev/null || utc_now)"
+
+        diagnostic_section "self-check"
+        self_check 2>&1 || true
+
+        diagnostic_section "status-all"
+        status_all 2>&1 || true
+
+        diagnostic_section "health-report"
+        health_report 2>&1 || true
+
+        diagnostic_section "primary-backup-summary"
+        primary_backup_summary 2>&1 || true
+
+        diagnostic_section "verify-nft-profiles"
+        verify_nft_profiles_core 2>&1 || true
+
+        diagnostic_section "monitor-status"
+        monitor_status 2>&1 || true
+
+        diagnostic_section "notify-status"
+        diagnostic_notify_status 2>&1 || true
+
+        diagnostic_section "traffic-report"
+        traffic_report 2>&1 || true
+
+        diagnostic_section "recent switch-history"
+        diagnostic_tsv_tail "$(switch_history_path)" 20 "No switch history found." 2>&1 || true
+
+        diagnostic_section "recent health-history"
+        diagnostic_tsv_tail "$HEALTH_HISTORY_FILE" 50 "No health history found." 2>&1 || true
+
+        diagnostic_section "show-port-map --all"
+        show_port_map --all 2>&1 || true
+
+        diagnostic_section "nftables project table"
+        show_nft 2>&1 || true
+
+        diagnostic_section "systemd unit summary"
+        if command_exists systemctl; then
+            for unit in "$SERVICE_NAME" "$MONITOR_SERVICE_NAME" "$MONITOR_TIMER_NAME"; do
+                printf '%s active=%s enabled=%s\n' "$unit" \
+                    "$(systemctl is-active "$unit" 2>/dev/null || printf unknown)" \
+                    "$(systemctl is-enabled "$unit" 2>/dev/null || printf unknown)"
+            done
+        else
+            printf 'systemctl unavailable\n'
+        fi
+    } | redact_diagnostic_stream >"$tmp"
+    install -m 0600 "$tmp" "$output"
+    rm -f -- "$tmp"
+    printf '%s\n' "$output"
+}
+
+trim_tsv_keep() {
+    local file="$1" keep="$2" tmp total start
+    [[ -e "$file" ]] || return 0
+    [[ "$keep" =~ ^[0-9]+$ && "$keep" -gt 0 ]] || return 1
+    tmp="$(make_tmp_file "ix-transit-fabric.trim")"
+    total="$(awk 'NR>1{c++} END{print c+0}' "$file")"
+    if [[ "$total" -le "$keep" ]]; then
+        rm -f -- "$tmp"
+        return 0
+    fi
+    start=$((total - keep + 2))
+    awk -v start="$start" 'NR==1 || NR>=start {print}' "$file" >"$tmp"
+    install -m 0600 "$tmp" "$file"
+    rm -f -- "$tmp"
+}
+
+cleanup_history() {
+    require_root "$@"
+    local keep_health=1000 keep_switch=200
+    while (($#)); do
+        case "$1" in
+            --keep-health)
+                shift
+                keep_health="${1:-}"
+                ;;
+            --keep-switch)
+                shift
+                keep_switch="${1:-}"
+                ;;
+            *)
+                die_user "用法：cleanup-history [--keep-health N] [--keep-switch N]"
+                ;;
+        esac
+        [[ -n "${1:-}" ]] || die_user "cleanup-history 参数缺少数值。"
+        shift || true
+    done
+    [[ "$keep_health" =~ ^[0-9]+$ && "$keep_health" -gt 0 ]] || die_user "--keep-health 必须是正整数。"
+    [[ "$keep_switch" =~ ^[0-9]+$ && "$keep_switch" -gt 0 ]] || die_user "--keep-switch 必须是正整数。"
+    trim_tsv_keep "$HEALTH_HISTORY_FILE" "$keep_health"
+    trim_tsv_keep "$(switch_history_path)" "$keep_switch"
+    log_ok "已清理历史：health 保留 ${keep_health} 条，switch 保留 ${keep_switch} 条。"
+}
+
+cleanup_state() {
+    require_root "$@"
+    cleanup_history
+    rm -f -- "$MONITOR_LAST_RUN_FILE"
+    if [[ -n "${IXTF_TMPDIR:-}" && -d "${IXTF_TMPDIR:-}" ]]; then
+        find "$IXTF_TMPDIR" -maxdepth 1 -type f -name 'ix-transit-fabric.*' -mtime +1 -delete 2>/dev/null || true
+    fi
+    log_ok "已清理 state 中可重建的监控结果和旧临时文件；未删除 profiles、codes、notify.env 或 backups。"
+}
+
+doctor_group_warnings() {
+    local group
+    while IFS= read -r group; do
+        [[ -n "$group" ]] || continue
+        printf '\n===== Group %s =====\n' "$group"
+        print_group_advice "$group"
+    done < <(profile_groups)
+}
+
+doctor_profile() {
+    require_root "$@"
+    local profile_id service rc active enabled ip_forward
+    profile_id="$(resolve_profile_id "${1:-}")"
+    load_profile_or_die "$profile_id"
+    service="$(profile_service_name "$profile_id")"
+
+    printf 'ix-transit-fabric Profile 诊断\n'
+    printf 'Profile：%s\n' "$profile_id"
+    printf '配置文件：%s\n' "$(profile_env_path "$profile_id")"
+    printf '配置文件权限：%s\n' "$(path_mode "$(profile_env_path "$profile_id")")"
+    validate_profile_config "$profile_id"
+    printf '配置校验：通过\n'
+
+    printf '\n配置摘要：\n'
+    print_config_summary loaded || true
+
+    printf '\nProfile 服务：%s\n' "$service"
+    if command_exists systemctl; then
+        active="$(systemctl is-active "$service" 2>/dev/null || true)"
+        enabled="$(systemctl is-enabled "$service" 2>/dev/null || true)"
+        printf 'systemd 状态：%s（开机自启：%s）\n' "${active:-未知}" "${enabled:-未知}"
+    else
+        printf 'systemd 状态：systemctl 不可用\n'
+    fi
+
+    printf '\nEasyTier 详细状态：\n'
+    status_easytier_detailed "$service"
+
+    case "${ROLE:-}" in
+        panel-landing)
+            printf '\n落地机检查：\n'
+            printf 'EasyTier listener：%s/%s\n' "$(proto_display "${ET_LISTENER_PROTO:-}")" "${ET_LISTENER_PORT:-}"
+            set +e
+            check_listener_proto_port "${ET_LISTENER_PROTO:-tcp}" "${ET_LISTENER_PORT:-0}"
+            rc=$?
+            set -e
+            case "$rc" in
+                0) printf 'listener 监听：已检测到\n' ;;
+                2) printf 'listener 监听：ss 命令不可用\n' ;;
+                *) printf '[WARN] listener 未检测到，请检查 Profile 服务和 logs-profile。\n' ;;
+            esac
+            check_business_core || true
+            ;;
+        panel-ingress)
+            printf '\n入口机检查：\n'
+            printf '业务转发：%s\n' "$([[ "${FORWARD_ENABLED:-true}" == "true" ]] && printf 已配置 || printf 未配置)"
+            if command_exists sysctl; then
+                ip_forward="$(sysctl -n net.ipv4.ip_forward 2>/dev/null || printf 未知)"
+                printf 'ip_forward：%s\n' "$ip_forward"
+                if [[ "${FORWARD_ENABLED:-true}" == "true" && "$ip_forward" != "1" ]]; then
+                    printf '[WARN] ip_forward 未开启，请运行 install-panel-ingress 或 sysctl --system。\n'
+                fi
+            fi
+            if [[ "${FORWARD_ENABLED:-true}" == "true" ]]; then
+                status_nft
+                if command_exists ss; then
+                    if ss -lntup 2>/dev/null | grep -Eq "[:.]${LOCAL_PORT:-0}[[:space:]]"; then
+                        printf '[WARN] LOCAL_PORT %s 已被本机进程监听，可能和 nft DNAT 冲突。\n' "${LOCAL_PORT:-}"
+                    else
+                        printf 'LOCAL_PORT 本机监听冲突：未检测到\n'
+                    fi
+                fi
+            fi
+            check_business_core || true
+            ;;
+    esac
+}
+
+status_all() {
+    require_root "$@"
+    local verbose="${1:-}" id service active enabled_label forward_label health total=0 enabled_count=0 forwarding_count=0
+    local healthy=0 warning=0 down=0 unknown=0 groups_count abnormal_groups=0 group
+    [[ "$verbose" == "--verbose" || -z "$verbose" ]] || die_user "用法：status-all [--verbose]"
+    printf 'PROFILE_ID\tROLE\tGROUP\tLINE_ROLE\tENABLED\tFORWARD\tSERVICE\tHEALTH\tLAST_CHECK\n'
+    for id in $(sorted_profile_ids); do
+        total=$((total + 1))
+        if ! load_profile "$id"; then
+            unknown=$((unknown + 1))
+            printf '%s\t-\t-\t-\toff\toff\tunknown\tunknown\t-\n' "$id"
+            continue
+        fi
+        service="$(profile_service_name "$id")"
+        active="$(profile_service_status "$service")"
+        enabled_label="$(enabled_display "${ENABLED:-true}")"
+        forward_label="$(forward_display "${ROLE:-}" "${ENABLED:-true}" "${FORWARD_ENABLED:-true}")"
+        [[ "${ENABLED:-true}" == "true" ]] && enabled_count=$((enabled_count + 1))
+        [[ "$forward_label" == "active" ]] && forwarding_count=$((forwarding_count + 1))
+        health="${HEALTH_STATUS:-unknown}"
+        case "$health" in
+            healthy) healthy=$((healthy + 1)) ;;
+            warning) warning=$((warning + 1)) ;;
+            down) down=$((down + 1)) ;;
+            *) unknown=$((unknown + 1)) ;;
+        esac
+        printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+            "$id" "${ROLE:-}" "${LINE_GROUP:-}" "${LINE_ROLE:-standalone}" "$enabled_label" "$forward_label" \
+            "${active:-unknown}" "$health" "${LAST_HEALTH_CHECK_AT:--}"
+    done
+    groups_count="$(profile_groups | awk 'NF{c++} END{print c+0}')"
+    while IFS= read -r group; do
+        [[ -n "$group" ]] || continue
+        if group_abnormal "$group"; then
+            abnormal_groups=$((abnormal_groups + 1))
+        fi
+    done < <(profile_groups)
+    printf '\n汇总：Profiles=%s enabled=%s forwarding=%s healthy=%s warning=%s down=%s unknown=%s groups=%s abnormal_groups=%s\n' \
+        "$total" "$enabled_count" "$forwarding_count" "$healthy" "$warning" "$down" "$unknown" "$groups_count" "$abnormal_groups"
+    if [[ "$verbose" == "--verbose" ]]; then
+        printf '\nGroup details:\n'
+        doctor_group_warnings
+        printf '\nnftables read-only check:\n'
+        verify_nft_profiles_core || true
+    fi
+    return 0
+}
+
+doctor_all() {
+    require_root "$@"
+    local id profile_count=0 enabled_count=0 forwarding_count=0 healthy=0 warning=0 down=0 unknown=0 rc status output reason
+    local group_issue_total=0 group issue backup_id service active enabled_label forward_label status_row group_count issue_count
+    local -a health_rows=()
+    printf 'ix-transit-fabric doctor-all\n'
+    printf 'This command is read-only and never performs automatic switching.\n'
+
+    printf '\n===== Profile level issues =====\n'
+    for id in $(sorted_profile_ids); do
+        printf '\n--- Profile %s ---\n' "$id"
+        set +e
+        output="$(run_line_health_check "$id" false 2>&1)"
+        rc=$?
+        set -e
+        printf '%s\n' "$output"
+        profile_count=$((profile_count + 1))
+        if load_profile "$id" >/dev/null 2>&1; then
+            [[ "${ENABLED:-true}" == "true" ]] && enabled_count=$((enabled_count + 1))
+            forward_label="$(forward_display "${ROLE:-}" "${ENABLED:-true}" "${FORWARD_ENABLED:-true}")"
+            [[ "$forward_label" == "active" ]] && forwarding_count=$((forwarding_count + 1))
+        fi
+        status="$(grep -E '^HEALTH_STATUS=' <<<"$output" | tail -n 1 | cut -d= -f2- || true)"
+        status="${status:-unknown}"
+        reason="$(grep -E '^LAST_HEALTH_REASON=' <<<"$output" | tail -n 1 | cut -d= -f2- || true)"
+        reason="${reason:-未检查}"
+        health_rows+=("${id}"$'\t'"${status}"$'\t'"${reason}")
+        if [[ "$rc" -ne 0 ]]; then
+            unknown=$((unknown + 1))
+            printf '[WARN] Profile diagnostic failed for %s (exit=%s); continuing.\n' "$id" "$rc"
+        else
+            case "$status" in
+                healthy) healthy=$((healthy + 1)) ;;
+                warning) warning=$((warning + 1)) ;;
+                down) down=$((down + 1)) ;;
+                *) unknown=$((unknown + 1)) ;;
+            esac
+        fi
+    done
+
+    printf '\n===== Group level issues =====\n'
+    group_count="$(profile_group_count)"
+    if [[ "$group_count" -eq 0 ]]; then
+        print_no_group_message
+    else
+        while IFS= read -r group; do
+            [[ -n "$group" ]] || continue
+            printf '\n--- Group %s ---\n' "$group"
+            issue_count="$(group_issue_count "$group")"
+            if [[ "$issue_count" -eq 0 ]]; then
+                printf '[OK] no group issue detected\n'
+                continue
+            fi
+            while IFS= read -r issue; do
+                [[ -n "$issue" ]] || continue
+                group_issue_total=$((group_issue_total + 1))
+                printf '[WARN] %s\n' "${issue%%:*}"
+                if [[ "$issue" == primary\ down\ but\ backup\ healthy:* ]]; then
+                    backup_id="${issue#*:}"
+                    printf '建议：bash install.sh switch-dry-run %s %s\n' "$group" "$backup_id"
+                    printf '执行：bash install.sh switch-line %s %s\n' "$group" "$backup_id"
+                fi
+            done < <(group_issue_lines "$group" || true)
+        done < <(profile_groups || true)
+    fi
+
+    printf '\n===== Group role hints =====\n'
+    while IFS= read -r id; do
+        [[ -n "$id" ]] || continue
+        load_profile "$id" >/dev/null 2>&1 || continue
+        if [[ -n "${LINE_GROUP:-}" && "${LINE_ROLE:-standalone}" == "standalone" ]]; then
+            printf '[WARN] %s 设置了 LINE_GROUP=%s，但 LINE_ROLE=standalone；该 Profile 不参与主备切换。\n' "$id" "$LINE_GROUP"
+        elif [[ -z "${LINE_GROUP:-}" && "${LINE_ROLE:-standalone}" != "standalone" ]]; then
+            printf '[WARN] %s 设置了 LINE_ROLE=%s，但 LINE_GROUP 为空；主备角色缺少 LINE_GROUP。\n' "$id" "${LINE_ROLE:-standalone}"
+        fi
+    done < <(profile_ids || true)
+    if [[ "$group_count" -eq 0 ]]; then
+        printf '[OK] standalone Profile 不需要 LINE_GROUP。\n'
+    fi
+
+    printf '\n===== nftables rule issues =====\n'
+    verify_nft_profiles_core || true
+
+    printf '\n===== service issues =====\n'
+    for id in $(sorted_profile_ids); do
+        load_profile "$id" >/dev/null 2>&1 || { printf '[WARN] %s: cannot read Profile for service check\n' "$id"; continue; }
+        service="$(profile_service_name "$id")"
+        if command_exists systemctl; then
+            active="$(systemctl is-active "$service" 2>/dev/null || true)"
+            enabled_label="$(systemctl is-enabled "$service" 2>/dev/null || true)"
+            printf '%s\t%s\t%s\n' "$id" "${active:-unknown}" "${enabled_label:-unknown}"
+        else
+            printf '%s\tsystemctl-unavailable\tunknown\n' "$id"
+        fi
+    done
+
+    printf '\n===== health status issues =====\n'
+    for status_row in "${health_rows[@]}"; do
+        IFS=$'\t' read -r id status reason <<<"$status_row"
+        case "${status:-unknown}" in
+            healthy) ;;
+            *) printf '[WARN] %s health=%s reason=%s\n' "$id" "${status:-unknown}" "${reason:-未检查}" ;;
+        esac
+    done
+
+    printf '\nSummary:\n'
+    printf 'profile_count=%s\n' "$profile_count"
+    printf 'enabled_count=%s\n' "$enabled_count"
+    printf 'forwarding_count=%s\n' "$forwarding_count"
+    printf 'healthy=%s warning=%s down=%s unknown=%s\n' "$healthy" "$warning" "$down" "$unknown"
+    printf 'group_issue_count=%s\n' "$group_issue_total"
+    printf 'Automatic switching: disabled. Run switch-dry-run first, then switch-line only after manual confirmation.\n'
+}
+
+restart_all() {
+    require_root "$@"
+    local id
+    for id in $(profile_ids); do
+        load_profile "$id" || continue
+        [[ "${ENABLED:-true}" == "true" ]] || continue
+        restart_profile "$id" || true
+    done
+}
+
+migrate_single_profile() {
+    require_root "$@"
+    ensure_profile_dirs
+    [[ -f "$ENV_FILE" ]] || die_user "未找到旧单线路配置：${ENV_FILE}"
+    [[ ! -f "$(profile_env_path default)" ]] || die_user "default profile 已存在。"
+    load_env || die_user "无法读取旧单线路配置。"
+    PROFILE_ID="default"
+    PROFILE_NAME="default"
+    ENABLED="true"
+    normalize_profile_compat_vars
+    save_profile_env default
+    if [[ "$ROLE" == "panel-landing" ]]; then
+        save_profile_code_file default "$(generate_landing_code)"
+    fi
+    log_ok "已迁移旧单线路配置为 default profile。"
+}
+
+status() {
+    require_root "$@"
+    if [[ -d "$PROFILES_DIR" && "$(profile_count)" != "0" ]]; then
+        status_profile "$(resolve_profile_id "")"
+        return 0
+    fi
+    print_config_summary || true
+    printf '\n'
+    status_easytier
+    if [[ "${ROLE:-}" == "panel-ingress" ]]; then
+        if [[ "${FORWARD_ENABLED:-true}" == "true" ]]; then
+            status_nft
+            if command_exists sysctl; then
+                printf 'IPv4 转发：%s\n' "$(sysctl -n net.ipv4.ip_forward 2>/dev/null || printf '未知')"
+            else
+                printf 'IPv4 转发：sysctl 不可用\n'
+            fi
+        else
+            printf '业务转发：未配置\n'
+        fi
+    fi
+    printf '\n提示：运行 bash install.sh doctor 获取详细诊断。\n'
+    printf '提示：运行 bash install.sh logs 查看日志。\n'
+    printf '提示：运行 bash install.sh show-nft 查看本项目 nftables 规则。\n'
+}
+
+path_mode() {
+    local path="$1"
+    if [[ -e "$path" ]]; then
+        stat -c '%a' "$path" 2>/dev/null || printf '未知'
+    else
+        printf '不存在'
+    fi
+}
+
+check_ss_port() {
+    local proto="$1"
+    local port="$2"
+    command_exists ss || return 2
+    if [[ "$proto" == "tcp" ]]; then
+        ss -lntp 2>/dev/null | grep -Eq "[:.]${port}[[:space:]]"
+    else
+        ss -lnup 2>/dev/null | grep -Eq "[:.]${port}[[:space:]]"
+    fi
+}
+
+check_listener_proto_port() {
+    local proto="$1"
+    local port="$2"
+    local rc tcp_rc udp_rc
+    if [[ "$proto" == "both" ]]; then
+        set +e
+        check_ss_port tcp "$port"
+        tcp_rc=$?
+        check_ss_port udp "$port"
+        udp_rc=$?
+        set -e
+        if [[ "$tcp_rc" -eq 2 || "$udp_rc" -eq 2 ]]; then
+            return 2
+        fi
+        [[ "$tcp_rc" -eq 0 && "$udp_rc" -eq 0 ]]
+        return $?
+    fi
+
+    set +e
+    check_ss_port "$proto" "$port"
+    rc=$?
+    set -e
+    return "$rc"
+}
+
+check_easytier_version_compat() {
+    local landing_version="${1:-}"
+    local et_path local_version answer
+    [[ -n "$landing_version" ]] || return 0
+
+    et_path="$(detect_easytier_binary 2>/dev/null || true)"
+    if [[ -z "$et_path" ]]; then
+        log_warn "本机未找到 EasyTier，后续将按需安装。"
+        return 0
+    fi
+
+    local_version="$(get_easytier_version "$et_path")"
+    [[ "$local_version" == "$landing_version" ]] && return 0
+
+    cat >&2 <<EOF
+[WARN] 落地机 EasyTier 版本：${landing_version}
+[WARN] 本机 EasyTier 版本：${local_version}
+[WARN] 建议运行 update-easytier 保持一致。
+EOF
+    if [[ "${EUID}" -ne 0 ]]; then
+        log_warn "当前不是 root，无法自动更新 EasyTier；请稍后用 root 运行 bash install.sh update-easytier。"
+    elif is_interactive_input; then
+        answer="$(prompt_yes_no "是否现在更新 EasyTier" "true")" || answer="false"
+        if [[ "$answer" == "true" ]]; then
+            update_easytier
+        else
+            log_warn "已继续使用当前 EasyTier 版本；doctor 会继续提示版本不一致。"
+        fi
+    fi
+}
+
+doctor() {
+    local et_path et_version active ip_forward rc service_type active_since ts now age nc_cmd
+    if [[ -d "$PROFILES_DIR" && "$(profile_count)" != "0" ]]; then
+        local profile_id
+        profile_id="$(resolve_profile_id "${1:-}")"
+        run_line_health_check "$profile_id" false
+        printf '\n端口映射：\n'
+        show_port_map "$profile_id" || true
+        printf '\n提示：Profile 模式使用 systemd 实例 %s。\n' "$(profile_service_name "$profile_id")"
+        return 0
+    fi
+    printf 'ix-transit-fabric 诊断\n'
+    printf '是否 root：%s\n' "$([[ "${EUID}" -eq 0 ]] && printf 是 || printf 否)"
+    printf '配置文件：%s\n' "$([[ -f "$ENV_FILE" ]] && printf 存在 || printf 不存在)"
+    printf '配置目录权限：%s\n' "$(path_mode "$CONFIG_DIR")"
+    printf 'env 文件权限：%s\n' "$(path_mode "$ENV_FILE")"
+
+    if [[ -f "$ENV_FILE" && ! -r "$ENV_FILE" ]]; then
+        printf '[WARN] 配置文件存在但当前用户不可读，请使用 sudo 重新运行 doctor。\n'
+    fi
+
+    if load_env; then
+        printf '\n配置摘要：\n'
+        print_config_summary loaded || true
+    else
+        printf '\n[WARN] 未找到可读取的配置文件：%s。\n' "$ENV_FILE"
+    fi
+
+    et_path="$(detect_easytier_binary 2>/dev/null || true)"
+    et_version=""
+    if [[ -n "$et_path" ]]; then
+        et_version="$(get_easytier_version "$et_path")"
+        printf '\nEasyTier：已安装\n'
+        printf 'EasyTier 程序路径：%s\n' "$et_path"
+        printf 'EasyTier 版本：%s\n' "$et_version"
+    else
+        printf '\nEasyTier：未安装\n'
+        printf '[WARN] 请运行：bash install.sh install-easytier\n'
+        printf '[WARN] 国内机器下载失败时，请设置 IXTF_GITHUB_MIRRORS 或 IXTF_EASYTIER_DOWNLOAD_URL。\n'
+    fi
+
+    if [[ -n "${LANDING_EASYTIER_VERSION:-${CODE_EASYTIER_VERSION:-}}" && -n "$et_version" && "$et_version" != "${LANDING_EASYTIER_VERSION:-${CODE_EASYTIER_VERSION:-}}" ]]; then
+        printf '[WARN] EasyTier 版本不一致：落地机 %s，本机 %s。建议运行 bash install.sh update-easytier。\n' "${LANDING_EASYTIER_VERSION:-${CODE_EASYTIER_VERSION:-}}" "$et_version"
+    fi
+
+    printf 'systemd：%s\n' "$(command_exists systemctl && printf 可用 || printf 不可用)"
+    printf 'nft：%s\n' "$(command_exists nft && printf 可用 || printf 不可用)"
+
+    if command_exists systemctl; then
+        active="$(systemctl is-active "$SERVICE_NAME" 2>/dev/null || true)"
+        printf 'EasyTier 服务状态：%s\n' "${active:-未知}"
+        service_type="$(systemctl show "$SERVICE_NAME" -p Type --value 2>/dev/null || true)"
+        [[ -n "$service_type" ]] && printf 'EasyTier systemd Type：%s\n' "$service_type"
+        if [[ -n "$service_type" && "$service_type" != "simple" ]]; then
+            printf '[WARN] 如果 easytier-core 是前台常驻进程，systemd Type 建议使用 simple。请重新运行安装生成服务文件。\n'
+        fi
+        if [[ "$active" == "activating" ]]; then
+            active_since="$(systemctl show "$SERVICE_NAME" -p ActiveEnterTimestamp --value 2>/dev/null || true)"
+            ts="$(date -d "$active_since" +%s 2>/dev/null || printf '')"
+            now="$(date +%s)"
+            if [[ -n "$ts" ]]; then
+                age=$((now - ts))
+                printf '[WARN] EasyTier 服务仍在 activating（约 %s 秒）。建议运行：journalctl -u %s -n 80 --no-pager\n' "$age" "$SERVICE_NAME"
+            else
+                printf '[WARN] EasyTier 服务仍在 activating。建议运行：journalctl -u %s -n 80 --no-pager\n' "$SERVICE_NAME"
+            fi
+            printf '\n最近 20 行 EasyTier 日志摘要（已隐藏密钥）：\n'
+            print_recent_service_logs 20
+        fi
+        [[ "$active" == "active" ]] || printf '[WARN] EasyTier 服务未运行，请运行：systemctl restart %s\n' "$SERVICE_NAME"
+        analyze_recent_easytier_logs
+    fi
+
+    printf '\nEasyTier 详细状态：\n'
+    status_easytier_detailed
+
+    case "${ROLE:-}" in
+        panel-landing)
+            printf '\n落地机检查：\n'
+            printf 'EasyTier listener：%s/%s\n' "$(proto_display "${ET_LISTENER_PROTO:-}")" "${ET_LISTENER_PORT:-}"
+            set +e
+            check_listener_proto_port "${ET_LISTENER_PROTO:-tcp}" "${ET_LISTENER_PORT:-0}"
+            rc=$?
+            set -e
+            if [[ "$rc" -eq 0 ]]; then
+                printf 'listener 监听：已检测到\n'
+            elif [[ "$rc" -eq 2 ]]; then
+                printf 'listener 监听：ss 命令不可用\n'
+            else
+                printf 'listener 监听：未检测到\n'
+                printf '[WARN] landing listener 未监听，请检查 EasyTier 参数和 logs。\n'
+            fi
+            check_business_core || true
+            ;;
+        panel-ingress)
+            printf '\n入口机检查：\n'
+            if [[ "${FORWARD_ENABLED:-true}" != "true" ]]; then
+                printf '业务转发：未配置\n'
+                printf '[INFO] 可先确认 EasyTier 互通，再运行 bash install.sh configure-forward 配置业务转发。\n'
+            fi
+            if command_exists sysctl; then
+                ip_forward="$(sysctl -n net.ipv4.ip_forward 2>/dev/null || printf 未知)"
+                printf 'ip_forward：%s\n' "$ip_forward"
+                if [[ "${FORWARD_ENABLED:-true}" == "true" ]]; then
+                    [[ "$ip_forward" == "1" ]] || printf '[WARN] ip_forward 未开启，请重新运行 install-panel-ingress 或执行 sysctl --system。\n'
+                fi
+            fi
+
+            if [[ "${FORWARD_ENABLED:-true}" == "true" ]] && command_exists nft; then
+                if nft list table ip "$NFT_TABLE" >/dev/null 2>&1; then
+                    printf 'nftables 项目表：存在\n'
+                else
+                    printf 'nftables 项目表：不存在\n'
+                    printf '[WARN] nftables 表不存在，请重新运行 install-panel-ingress。\n'
+                fi
+            fi
+
+            if [[ "${FORWARD_ENABLED:-true}" == "true" ]] && command_exists ss; then
+                if ss -lntup 2>/dev/null | grep -Eq "[:.]${LOCAL_PORT:-0}[[:space:]]"; then
+                    printf '[WARN] LOCAL_PORT %s 已被本机进程监听，可能和 nft DNAT 冲突。\n' "${LOCAL_PORT:-}"
+                else
+                    printf 'LOCAL_PORT 本机监听冲突：未检测到\n'
+                fi
+            fi
+
+            if [[ "${CNIX_ENTRY_PROTO:-}" == "tcp" || "${CNIX_ENTRY_PROTO:-}" == "both" ]]; then
+                if nc_cmd="$(detect_nc_cmd 2>/dev/null)"; then
+                    if "$nc_cmd" -vz -w 3 "$CNIX_ENTRY_HOST" "$CNIX_ENTRY_PORT" >/dev/null 2>&1; then
+                        printf 'CNIX TCP 可达性：可达\n'
+                    else
+                        printf 'CNIX TCP 可达性：不可达\n'
+                        if [[ "${CNIX_ENTRY_PROTO:-}" == "both" ]]; then
+                            printf '[WARN] CNIX TCP 不通，但当前入口协议为 TCP/UDP，UDP 可能仍可用。UDP 探测不可靠。\n'
+                        else
+                            printf '[WARN] CNIX TCP 不通，请检查 CNIX 面板入口、协议、端口和安全组。\n'
+                        fi
+                    fi
+                else
+                    printf 'CNIX TCP 可达性：nc/ncat 不可用\n'
+                    suggest_install_nc
+                fi
+            fi
+
+            if [[ "${CNIX_ENTRY_PROTO:-}" == "udp" || "${CNIX_ENTRY_PROTO:-}" == "both" ]]; then
+                printf 'CNIX UDP 探测：跳过，UDP 探测不可靠；如果 CNIX 支持 UDP 且 TCP 不通，可尝试 TCP/UDP 或 UDP。\n'
+            fi
+
+            if command_exists ping && [[ -n "${LANDING_ET_IP:-}" ]]; then
+                if ping -c 1 -W 3 "$LANDING_ET_IP" >/dev/null 2>&1; then
+                    printf '落地机 EasyTier IP ping：成功\n'
+                else
+                    printf '[WARN] ping 落地机 EasyTier IP 失败，这只是排障线索，不代表一定不可用。\n'
+                    printf '[WARN] 请先确认 CNIX 面板出口是否填写 LISTENER_PORT，不要填写 REMOTE_PORT。\n'
+                fi
+            fi
+            check_business_core || true
+            ;;
+    esac
+
+    printf '\n更多命令：\n'
+    printf '  bash install.sh check-port\n'
+    printf '  bash install.sh check-business\n'
+    printf '  bash install.sh check-route\n'
+    printf '  bash install.sh show-port-map\n'
+    printf '  bash install.sh panel-guide\n'
+    printf '  bash install.sh show-nft\n'
+}
+
+logs() {
+    require_root "$@"
+    command_exists journalctl || die_user "未找到 journalctl。"
+
+    local secret=""
+    if load_env; then
+        secret="${ET_NETWORK_SECRET:-}"
+    fi
+
+    journalctl -u "$SERVICE_NAME" -n 80 --no-pager 2>&1 | while IFS= read -r line; do
+        if [[ -n "$secret" ]]; then
+            line="${line//$secret/[hidden]}"
+        fi
+        printf '%s\n' "$line"
+    done
+    analyze_recent_easytier_logs
+}
+
+check_wrapper() {
+    local mode service_exec
+    printf 'EasyTier 启动包装器检查\n'
+    printf 'wrapper 路径：%s\n' "$WRAPPER_FILE"
+
+    if [[ -f "$WRAPPER_FILE" ]]; then
+        mode="$(path_mode "$WRAPPER_FILE")"
+        printf 'wrapper 是否存在：是\n'
+        printf 'wrapper 权限：%s\n' "$mode"
+        case "$mode" in
+            700|750|755) printf 'wrapper 权限是否合理：是\n' ;;
+            *) printf '[WARN] wrapper 权限不常见，建议 700、750 或 755。\n' ;;
+        esac
+
+        if grep -q 'set -x' "$WRAPPER_FILE"; then
+            printf '[WARN] wrapper 包含 set -x，可能暴露敏感运行信息。\n'
+        else
+            printf 'wrapper set -x：未发现\n'
+        fi
+
+        if grep -Eq 'echo[[:space:]].*ET_NETWORK_SECRET|printf[[:space:]].*ET_NETWORK_SECRET' "$WRAPPER_FILE"; then
+            printf '[WARN] wrapper 可能直接输出 ET_NETWORK_SECRET。\n'
+        else
+            printf 'wrapper 直接输出密钥：未发现\n'
+        fi
+
+        if grep -q "$ENV_FILE" "$WRAPPER_FILE"; then
+            printf 'wrapper 引用 EnvironmentFile：是\n'
+        else
+            printf '[WARN] wrapper 未引用 %s。\n' "$ENV_FILE"
+        fi
+
+        if grep -q 'exec "$EASYTIER_BIN"' "$WRAPPER_FILE"; then
+            printf 'wrapper 前台运行 easytier-core：是\n'
+        else
+            printf '[WARN] wrapper 可能没有用 exec 前台运行 easytier-core。\n'
+        fi
+    else
+        printf 'wrapper 是否存在：否\n'
+        printf '[WARN] 请重新运行 install-panel-landing 或 install-panel-ingress 生成 wrapper。\n'
+    fi
+
+    if [[ -f "$SYSTEMD_SERVICE" ]]; then
+        service_exec="$(grep -E '^ExecStart=' "$SYSTEMD_SERVICE" | tail -n 1 || true)"
+        printf 'systemd ExecStart：%s\n' "${service_exec:-未找到}"
+        if [[ "$service_exec" == "ExecStart=${WRAPPER_FILE}" ]]; then
+            printf 'systemd 是否指向 wrapper：是\n'
+        else
+            printf '[WARN] systemd ExecStart 未指向 wrapper。\n'
+        fi
+    else
+        printf 'systemd 服务文件：不存在\n'
+    fi
+}
+
+check_port() {
+    local target="${1:-}" ss_output ip_forward nc_cmd
+    if [[ "$target" == "--all" ]]; then
+        local id
+        for id in $(profile_ids); do
+            printf '\n===== Profile %s =====\n' "$id"
+            check_port "$id" || true
+        done
+        return 0
+    fi
+    if [[ -n "$target" || ( -d "$PROFILES_DIR" && "$(profile_count)" != "0" ) ]]; then
+        local resolved
+        if ! resolved="$(resolve_profile_id_for_cmd "$target" check-port)"; then
+            return_or_exit 2 || return $?
+        fi
+        if ! load_profile "$resolved"; then
+            print_profile_selection_hint "$resolved" check-port
+            return_or_exit 2 || return $?
+        fi
+    else
+        load_env_or_warn || return 0
+    fi
+    normalize_profile_compat_vars
+
+    case "${ROLE:-}" in
+        panel-landing)
+            printf '落地机端口检查\n'
+            if [[ -z "${ET_LISTENER_PORT:-${LISTENER_PORT:-}}" ]]; then
+                printf '[WARN] Profile 缺少 LISTENER_PORT，请检查配置文件。\n'
+                return 0
+            fi
+            printf 'EasyTier listener：%s/%s\n' "$(proto_display "${ET_LISTENER_PROTO:-${LISTENER_PROTOS:-}}")" "${ET_LISTENER_PORT:-${LISTENER_PORT:-}}"
+            if ! command_exists ss; then
+                printf '[WARN] 未找到 ss 命令，无法检查监听端口。\n'
+                return 0
+            fi
+
+            case "${ET_LISTENER_PROTO:-tcp}" in
+                tcp)
+                    ss_output="$(ss -lntp 2>/dev/null | grep -E "[:.]${ET_LISTENER_PORT:-${LISTENER_PORT:-0}}[[:space:]]" || true)"
+                    ;;
+                udp)
+                    ss_output="$(ss -lnup 2>/dev/null | grep -E "[:.]${ET_LISTENER_PORT:-${LISTENER_PORT:-0}}[[:space:]]" || true)"
+                    ;;
+                both)
+                    ss_output="$({
+                        ss -lntp 2>/dev/null | grep -E "[:.]${ET_LISTENER_PORT:-${LISTENER_PORT:-0}}[[:space:]]" || true
+                        ss -lnup 2>/dev/null | grep -E "[:.]${ET_LISTENER_PORT:-${LISTENER_PORT:-0}}[[:space:]]" || true
+                    })"
+                    ;;
+                *)
+                    ss_output="$({
+                        ss -lntp 2>/dev/null | grep -E "[:.]${ET_LISTENER_PORT:-${LISTENER_PORT:-0}}[[:space:]]" || true
+                        ss -lnup 2>/dev/null | grep -E "[:.]${ET_LISTENER_PORT:-${LISTENER_PORT:-0}}[[:space:]]" || true
+                    })"
+                    ;;
+            esac
+
+            if [[ -n "$ss_output" ]]; then
+                printf '监听状态：已检测到\n'
+                printf '%s\n' "$ss_output"
+            else
+                printf '[WARN] 未检测到 EasyTier listener 端口监听。\n'
+            fi
+            if [[ -n "${PROFILE_ID:-}" && "${PROFILE_ID:-default}" != "default" ]]; then
+                panel_guide_profile "$PROFILE_ID" || true
+            else
+                panel_guide || true
+            fi
+            ;;
+        panel-ingress)
+            printf '入口机端口检查\n'
+            if [[ "${FORWARD_ENABLED:-true}" != "true" ]]; then
+                printf '业务转发：未配置\n'
+                printf '运行 bash install.sh configure-forward 后再检查 LOCAL_PORT 和 nftables。\n'
+                return 0
+            fi
+
+            if command_exists ss; then
+                ss_output="$(ss -lntup 2>/dev/null | grep -E "[:.]${LOCAL_PORT:-0}[[:space:]]" || true)"
+                if [[ -n "$ss_output" ]]; then
+                    printf '[WARN] LOCAL_PORT %s 已被本机进程监听，可能和 nft DNAT 冲突。\n' "$LOCAL_PORT"
+                    printf '%s\n' "$ss_output"
+                else
+                    printf 'LOCAL_PORT 本机监听冲突：未检测到\n'
+                fi
+            else
+                printf '[WARN] 未找到 ss 命令，无法检查 LOCAL_PORT。\n'
+            fi
+
+            status_nft
+
+            if command_exists sysctl; then
+                ip_forward="$(sysctl -n net.ipv4.ip_forward 2>/dev/null || printf 未知)"
+                printf 'ip_forward：%s\n' "$ip_forward"
+                [[ "$ip_forward" == "1" ]] || printf '[WARN] ip_forward 未开启。\n'
+            fi
+
+            if [[ "${FORWARD_PROTO:-both}" == "tcp" || "${FORWARD_PROTO:-both}" == "both" ]]; then
+                if nc_cmd="$(detect_nc_cmd 2>/dev/null)"; then
+                    if [[ -n "${LANDING_ET_IP:-}" && -n "${REMOTE_PORT:-}" ]] && "$nc_cmd" -vz -w 3 "$LANDING_ET_IP" "$REMOTE_PORT" >/dev/null 2>&1; then
+                        printf '落地机业务 TCP 可达性：可达\n'
+                    else
+                        printf '[WARN] TCP 检查失败：%s:%s。\n' "${LANDING_ET_IP:-LANDING_ET_IP}" "${REMOTE_PORT:-REMOTE_PORT}"
+                    fi
+                else
+                    printf '[WARN] nc/ncat 不可用，跳过 TCP 可达性探测。\n'
+                    suggest_install_nc
+                fi
+            fi
+
+            if [[ "${FORWARD_PROTO:-both}" == "udp" || "${FORWARD_PROTO:-both}" == "both" ]]; then
+                printf 'UDP 探测：跳过，UDP 可达性探测不可靠。\n'
+            fi
+            ;;
+        *)
+            printf '[WARN] 未知角色：%s\n' "${ROLE:-未设置}"
+            ;;
+    esac
+}
+
+check_business_core() {
+    local ss_output tcp_ok="false" udp_ok="false" business_port nc_cmd
+    case "${ROLE:-}" in
+        panel-landing)
+            printf '落地机业务端口检查\n'
+            business_port="${REMOTE_PORT:-${SERVICE_PORT:-}}"
+            if [[ -z "$business_port" ]]; then
+                printf '当前未配置业务端口，可在入口机 configure-forward 时填写。\n'
+                return 0
+            fi
+            printf 'REMOTE_PORT / 业务端口：%s\n' "$business_port"
+            if ! command_exists ss; then
+                printf '[WARN] 未找到 ss 命令，无法检查业务端口监听。\n'
+                return 0
+            fi
+            ss_output="$({
+                ss -lntup 2>/dev/null || true
+                ss -lnuap 2>/dev/null || true
+            } | grep -E "[:.]${business_port}[[:space:]]" || true)"
+            [[ -n "$ss_output" ]] && printf '%s\n' "$ss_output"
+            if ss -lntup 2>/dev/null | grep -Eq "[:.]${business_port}[[:space:]]"; then
+                tcp_ok="true"
+            fi
+            if ss -lnuap 2>/dev/null | grep -Eq "[:.]${business_port}[[:space:]]"; then
+                udp_ok="true"
+            fi
+            if [[ "$tcp_ok" == "true" || "$udp_ok" == "true" ]]; then
+                printf '香港业务服务端口监听：已检测到\n'
+            else
+                cat <<EOF
+[WARN] 香港业务服务端口未监听。
+[WARN] REMOTE_PORT 是 Xray/sing-box/Web 服务端口，不是 EasyTier listener 端口。
+[WARN] 请确保业务服务监听 0.0.0.0:${business_port} 或 EasyTier 虚拟 IP:${business_port}。
+[WARN] 如果只监听 127.0.0.1，入口机转发无法访问。
+EOF
+            fi
+            ;;
+        panel-ingress)
+            printf '入口机业务端口检查\n'
+            if [[ "${FORWARD_ENABLED:-true}" != "true" ]]; then
+                printf '业务转发：未配置。可运行 bash install.sh configure-forward。\n'
+                return 0
+            fi
+            if command_exists ping && [[ -n "${LANDING_ET_IP:-}" ]]; then
+                if ping -c 1 -W 3 "$LANDING_ET_IP" >/dev/null 2>&1; then
+                    printf '落地机 EasyTier IP ping：成功\n'
+                else
+                    printf '[WARN] EasyTier 到落地机可能未打通，先运行 doctor/check-route，不要直接判断业务端口失败。\n'
+                    printf '[WARN] 请先确认 CNIX 面板出口是否填写 LISTENER_PORT，不要填写 REMOTE_PORT。\n'
+                fi
+            fi
+            if [[ "${FORWARD_PROTO:-both}" == "tcp" || "${FORWARD_PROTO:-both}" == "both" ]]; then
+                if nc_cmd="$(detect_nc_cmd 2>/dev/null)"; then
+                    if "$nc_cmd" -vz -w 3 "$LANDING_ET_IP" "$REMOTE_PORT" >/dev/null 2>&1; then
+                        printf 'LANDING_ET_IP:REMOTE_PORT TCP 可达：是（%s:%s）\n' "$LANDING_ET_IP" "$REMOTE_PORT"
+                    else
+                        printf '[WARN] LANDING_ET_IP:REMOTE_PORT TCP 不可达：%s:%s。\n' "$LANDING_ET_IP" "$REMOTE_PORT"
+                        printf '[WARN] 请检查落地机业务服务是否监听 REMOTE_PORT。\n'
+                        printf '[WARN] REMOTE_PORT 不是 CNIX 面板出口端口。\n'
+                        printf '[WARN] 如果 Remnawave/VLESS 监听 %s，则入口机 nftables 应转发到 %s:%s。\n' "$REMOTE_PORT" "$LANDING_ET_IP" "$REMOTE_PORT"
+                    fi
+                else
+                    printf '[WARN] nc/ncat 不可用，跳过 TCP 业务可达性探测。\n'
+                    suggest_install_nc
+                fi
+            fi
+            if [[ "${FORWARD_PROTO:-both}" == "udp" || "${FORWARD_PROTO:-both}" == "both" ]]; then
+                printf 'UDP 业务探测：跳过，UDP 可达性探测不可靠。\n'
+            fi
+            ;;
+        *)
+            printf '[WARN] 未知角色：%s\n' "${ROLE:-未设置}"
+            ;;
+    esac
+}
+
+check_business() {
+    require_root "$@"
+    local target="${1:-}" id resolved
+    if [[ "$target" == "--all" ]]; then
+        for id in $(profile_ids); do
+            printf '\n===== Profile %s =====\n' "$id"
+            load_profile "$id" || { printf '[WARN] 无法读取 Profile：%s\n' "$id"; continue; }
+            check_business_core || true
+        done
+        return 0
+    fi
+    if [[ -n "$target" || ( -d "$PROFILES_DIR" && "$(profile_count)" != "0" ) ]]; then
+        if ! resolved="$(resolve_profile_id_for_cmd "$target" check-business)"; then
+            return_or_exit 2 || return $?
+        fi
+        if ! load_profile "$resolved"; then
+            print_profile_selection_hint "$resolved" check-business
+            return_or_exit 2 || return $?
+        fi
+    else
+        load_env_or_warn || return 0
+    fi
+    check_business_core
+}
+
+show_port_map() {
+    local target="" compact="" all="false" arg
+    while (($#)); do
+        arg="$1"
+        case "$arg" in
+            "")
+                ;;
+            --compact)
+                compact="--compact"
+                ;;
+            --all)
+                all="true"
+                ;;
+            --*)
+                printf '[ERROR] 未知 show-port-map 参数：%s\n' "$arg" >&2
+                printf '用法：\n' >&2
+                printf '  bash install.sh show-port-map [PROFILE_ID] [--compact]\n' >&2
+                printf '  bash install.sh show-port-map --all [--compact]\n' >&2
+                return_or_exit 2 || return $?
+                ;;
+            *)
+                if [[ -n "$target" ]]; then
+                    printf '[ERROR] show-port-map 只能指定一个 PROFILE_ID。\n' >&2
+                    printf '用法：\n' >&2
+                    printf '  bash install.sh show-port-map [PROFILE_ID] [--compact]\n' >&2
+                    printf '  bash install.sh show-port-map --all [--compact]\n' >&2
+                    return_or_exit 2 || return $?
+                fi
+                target="$arg"
+                ;;
+        esac
+        shift || true
+    done
+    if [[ "$all" == "true" ]]; then
+        if [[ -n "$target" ]]; then
+            printf '[ERROR] --all 不能同时指定 PROFILE_ID：%s\n' "$target" >&2
+            printf '用法：bash install.sh show-port-map --all [--compact]\n' >&2
+            return_or_exit 2 || return $?
+        fi
+        show_port_map_all "$compact"
+        return 0
+    fi
+    if [[ -n "$target" || -d "$PROFILES_DIR" ]]; then
+        local resolved
+        if ! resolved="$(resolve_profile_id_for_cmd "$target" show-port-map)"; then
+            return_or_exit 2 || return $?
+        fi
+        if ! load_profile "$resolved"; then
+            print_profile_selection_hint "$resolved" show-port-map
+            return_or_exit 2 || return $?
+        fi
+    else
+        load_env_or_warn || return 0
+    fi
+    if [[ "$compact" == "--compact" ]]; then
+        print_port_map_compact
+        return 0
+    fi
+    local local_display cnix_display listener_display remote_display
+    local_display="${LOCAL_PORT:-LOCAL_PORT}"
+    cnix_display="${CNIX_ENTRY_HOST:-CNIX_ENTRY_HOST}:${CNIX_ENTRY_PORT:-CNIX_ENTRY_PORT}"
+    listener_display="落地 VPS 公网 IP:${LISTENER_PORT:-${ET_LISTENER_PORT:-${CODE_LISTENER_PORT:-LISTENER_PORT}}}"
+    remote_display="${LANDING_ET_IP:-10.144.144.2}:${REMOTE_PORT:-${SERVICE_PORT:-REMOTE_PORT}}"
+    cat <<EOF
+Profile：${PROFILE_ID:-default}（${ROLE:-未设置}，enabled=${ENABLED:-true}）
+
+四端口映射：
+
+1. LOCAL_PORT / 客户端入口端口
+   用途：客户端连接入口 VPS。
+   示例：入口 VPS 公网 IP:${local_display}
+
+2. CNIX_ENTRY_PORT / CNIX 商家入口端口
+   用途：入口机 EasyTier peer 连接 CNIX 商家入口。
+   示例：${cnix_display}
+
+3. LISTENER_PORT / 落地机 EasyTier listener 端口
+   用途：填写到 CNIX 面板出口。
+   示例：${listener_display}
+   注意：这相当于 WG ListenPort。
+
+4. REMOTE_PORT / 落地机业务端口
+   用途：Remnawave / VLESS / Xray / sing-box 的真实服务端口。
+   示例：${remote_display}
+   注意：不要把这个端口填到 CNIX 面板出口。
+
+当前已保存值：
+EOF
+    case "${ROLE:-}" in
+        panel-landing)
+            printf '  LISTENER_PORT=%s\n' "${LISTENER_PORT:-${ET_LISTENER_PORT:-未配置}}"
+            printf '  REMOTE_PORT=%s\n' "${REMOTE_PORT:-${SERVICE_PORT:-未配置}}"
+            ;;
+        panel-ingress)
+            printf '  LOCAL_PORT=%s\n' "${LOCAL_PORT:-未配置}"
+            printf '  CNIX_ENTRY_PORT=%s\n' "${CNIX_ENTRY_PORT:-未配置}"
+            printf '  LISTENER_PORT=%s\n' "${CODE_LISTENER_PORT:-接入码未保存该值}"
+            printf '  REMOTE_PORT=%s\n' "${REMOTE_PORT:-未配置}"
+            ;;
+        *)
+            printf '  当前角色未知：%s\n' "${ROLE:-未设置}"
+            ;;
+    esac
+}
+
+show_port_map_all() {
+    require_root "$@"
+    local compact="${1:-}" id
+    for id in $(profile_ids); do
+        printf '\n===== Profile %s =====\n' "$id"
+        show_port_map "$id" "$compact"
+    done
+}
+
+show_port_map_compact() {
+    show_port_map --compact "${1:-}"
+}
+
+check_route() {
+    local target="${1:-}" et_ip route_output id
+    if [[ "$target" == "--all" ]]; then
+        for id in $(profile_ids); do
+            printf '\n===== Profile %s =====\n' "$id"
+            check_route "$id" || true
+        done
+        return 0
+    fi
+    if [[ -n "$target" || ( -d "$PROFILES_DIR" && "$(profile_count)" != "0" ) ]]; then
+        load_profile_or_die "$(resolve_profile_id "$target")"
+    else
+        load_env_or_warn || return 0
+    fi
+    et_ip="$(et_ip_addr)"
+
+    printf 'EasyTier 路由检查\n'
+    printf '当前角色：%s\n' "$ROLE"
+    printf '配置的 ET_IPV4：%s\n' "$ET_IPV4"
+
+    if command_exists ip; then
+        if ip addr show 2>/dev/null | grep -Fq "$et_ip"; then
+            printf 'ip addr 中是否存在 ET IP：是（%s）\n' "$et_ip"
+            ip addr show 2>/dev/null | grep -F "$et_ip" || true
+        else
+            printf '[WARN] ip addr 中未找到 ET IP：%s。\n' "$et_ip"
+        fi
+
+        if [[ "$ROLE" == "panel-ingress" && -n "${LANDING_ET_IP:-}" ]]; then
+            printf '到落地机 EasyTier IP 的路由：\n'
+            ip route get "$LANDING_ET_IP" 2>/dev/null || printf '[WARN] ip route get 未找到到 %s 的路由。\n' "$LANDING_ET_IP"
+            route_output="$(ip route 2>/dev/null | grep -F "$LANDING_ET_IP" || true)"
+            [[ -n "$route_output" ]] && printf '%s\n' "$route_output"
+        else
+            printf '请在入口机上尝试：ping %s\n' "$et_ip"
+        fi
+    else
+        printf '[WARN] 未找到 ip 命令，无法检查地址和路由。\n'
+    fi
+
+    if [[ "$ROLE" == "panel-ingress" ]]; then
+        if [[ "${FORWARD_ENABLED:-true}" != "true" ]]; then
+            printf '业务转发未配置；如需检查业务路由，请先运行 bash install.sh configure-forward。\n'
+            return 0
+        fi
+        if command_exists ping; then
+            if ping -c 1 -W 3 "$LANDING_ET_IP" >/dev/null 2>&1; then
+                printf 'ping 落地机 EasyTier IP：成功\n'
+            else
+                printf '[WARN] ping 落地机 EasyTier IP 失败。这只是排障线索，不代表一定不可用。\n'
+            fi
+        fi
+    fi
+}
+
+self_test() {
+    local passed=0 warning=0 failed=0 output rc
+
+    self_show_config() {
+        print_config_summary || printf '[WARN] show-config 无法读取已保存配置。\n'
+    }
+
+    run_self_step() {
+        local name="$1"
+        shift
+        printf '\n===== %s =====\n' "$name"
+        set +e
+        output="$("$@" 2>&1)"
+        rc=$?
+        set -e
+        printf '%s\n' "$output"
+        if [[ "$rc" -ne 0 ]]; then
+            failed=$((failed + 1))
+            printf '[自检] %s：失败（退出码 %s）\n' "$name" "$rc"
+        elif grep -q '\[WARN\]' <<<"$output"; then
+            warning=$((warning + 1))
+            printf '[自检] %s：有警告\n' "$name"
+        else
+            passed=$((passed + 1))
+            printf '[自检] %s：通过\n' "$name"
+        fi
+    }
+
+    run_self_step "show-config" self_show_config
+    run_self_step "status" status
+    run_self_step "doctor" doctor
+    run_self_step "check-port" check_port
+    run_self_step "check-business" check_business
+    run_self_step "check-route" check_route
+    run_self_step "show-port-map" show_port_map
+
+    printf '\n自检完成：\n'
+    printf '%s\n' "- 通过：${passed}"
+    printf '%s\n' "- 警告：${warning}"
+    printf '%s\n' "- 失败：${failed}"
+    return 0
+}
+
+uninstall() {
+    require_root "$@"
+    local remove_et answer
+
+    if command_exists systemctl; then
+        systemctl stop "$MONITOR_TIMER_NAME" "$MONITOR_SERVICE_NAME" >/dev/null 2>&1 || true
+        systemctl disable "$MONITOR_TIMER_NAME" >/dev/null 2>&1 || true
+        stop_disable_profile_services
+        systemctl stop "$SERVICE_NAME" >/dev/null 2>&1 || true
+        cleanup_own_service_processes
+        systemctl disable "$SERVICE_NAME" >/dev/null 2>&1 || true
+        systemctl reset-failed "$SERVICE_NAME" >/dev/null 2>&1 || true
+    else
+        log_warn "systemctl 不可用，跳过服务停止和禁用。"
+    fi
+
+    delete_nft_runtime_and_file
+    rm -f -- "$SYSTEMD_SERVICE" "$PROFILE_SERVICE_TEMPLATE" "$MONITOR_SERVICE_FILE" "$MONITOR_TIMER_FILE" "$ENV_FILE" "$LANDING_CODE_FILE" "$WRAPPER_FILE"
+    rm -f -- "$SYSCTL_FILE"
+    log_ok "已删除项目 service、wrapper、配置、接入码和 sysctl 文件（如果存在）。"
+
+    rmdir "$CONFIG_DIR" >/dev/null 2>&1 || true
+    rmdir "$LIBEXEC_DIR" >/dev/null 2>&1 || true
+
+    remove_et="false"
+    if [[ "${IXTF_SKIP_EASYTIER_DELETE_PROMPT:-}" != "1" ]] && is_interactive_input && [[ -e "$EASYTIER_TARGET" ]]; then
+        answer="$(prompt_yes_no "是否删除 /usr/local/bin/easytier-core" "false")" || answer="false"
+        remove_et="$answer"
+    fi
+    if [[ "$remove_et" == "true" ]]; then
+        rm -f -- "$EASYTIER_TARGET"
+        log_ok "已删除：${EASYTIER_TARGET}"
+    elif [[ -e "$EASYTIER_TARGET" ]]; then
+        log_info "保留 easytier-core：${EASYTIER_TARGET}"
+    fi
+
+    if command_exists systemctl; then
+        systemctl daemon-reload
+    fi
+
+    log_ok "卸载完成，备份仍保留：${BACKUP_DIR}"
+}
+
+safe_remove_project_dir() {
+    local path="$1"
+    case "$path" in
+        "$CONFIG_DIR"|"$BACKUP_DIR"|"$LIBEXEC_DIR")
+            rm -rf -- "$path"
+            ;;
+        *)
+            die_user "拒绝删除非本项目路径：${path}"
+            ;;
+    esac
+}
+
+purge() {
+    require_root "$@"
+    require_tty
+
+    local confirm answer remove_et
+    printf '这会删除 ix-transit-fabric 的配置、profiles、codes、state、notify.env、history、项目文件和所有备份。\n' >&2
+    printf '请输入 DELETE 继续：' >&2
+    IFS= read -r confirm
+    confirm="$(trim_space "${confirm%$'\r'}")"
+    if [[ "$confirm" != "DELETE" ]]; then
+        log_warn "已取消完全清理。请输入大写 DELETE 才会继续。"
+        return 0
+    fi
+
+    remove_et="false"
+    if [[ -e "$EASYTIER_TARGET" ]]; then
+        answer="$(prompt_yes_no "是否删除 /usr/local/bin/easytier-core" "false")" || answer="false"
+        remove_et="$answer"
+    fi
+
+    IXTF_SKIP_EASYTIER_DELETE_PROMPT=1 uninstall
+    if [[ "$remove_et" == "true" ]]; then
+        rm -f -- "$EASYTIER_TARGET"
+    fi
+    rm -f -- "$NFT_FILE" "$SYSCTL_FILE" "$SYSTEMD_SERVICE" "$PROFILE_SERVICE_TEMPLATE" "$MONITOR_SERVICE_FILE" "$MONITOR_TIMER_FILE" "$WRAPPER_FILE" "$ENV_FILE" "$LANDING_CODE_FILE"
+    safe_remove_project_dir "$CONFIG_DIR"
+    safe_remove_project_dir "$BACKUP_DIR"
+    safe_remove_project_dir "$LIBEXEC_DIR"
+
+    rmdir "$LIBEXEC_DIR" >/dev/null 2>&1 || true
+
+    if command_exists systemctl; then
+        systemctl daemon-reload
+    fi
+
+    cat <<EOF
+完全清理完成：
+  已删除配置目录：${CONFIG_DIR}
+  已删除执行目录：${LIBEXEC_DIR}
+  已删除备份目录：${BACKUP_DIR}
+  已删除 nftables 文件：${NFT_FILE}
+  已删除 sysctl 文件：${SYSCTL_FILE}
+  easytier-core：$([[ "$remove_et" == "true" ]] && printf '已删除' || printf '保留')
+EOF
+}
+
+run_advanced_menu_action() {
+    local choice="$1"
+    case "$choice" in
+        1) list_profiles ;;
+        2) show_profile ;;
+        3) status_all ;;
+        4) status_profile ;;
+        5) doctor_all ;;
+        6) logs_profile ;;
+        7) show_nft ;;
+        8) apply_nft_all ;;
+        9) show_port_map_all ;;
+        10) migrate_single_profile ;;
+        11) uninstall ;;
+        12) purge ;;
+        13) self_check ;;
+        14) export_diagnostic ;;
+        15) cleanup_history ;;
+        16) cleanup_state ;;
+        0) return 10 ;;
+        *) log_warn "未知选项，请重新选择。"; return 0 ;;
+    esac
+}
+
+show_advanced_menu() {
+    local choice rc
+    while true; do
+        cat >&2 <<'MENU'
+
+ix-transit-fabric 高级维护
+
+  1) 查看所有 Profile
+  2) 查看指定 Profile
+  3) 查看所有状态
+  4) 诊断指定线路
+  5) 诊断全部线路
+  6) 查看指定线路日志
+  7) 查看 nftables 项目表
+  8) 重新应用全部 nftables 规则
+ 9) show-port-map
+10) 迁移旧单线路配置
+11) 卸载（保留备份）
+12) 完全清理
+ 13) 最终自检 self-check
+ 14) 导出脱敏诊断报告
+ 15) 清理 history
+ 16) 清理 state
+  0) 返回主菜单
+MENU
+        printf '请选择：' >&2
+        IFS= read -r choice || return 0
+
+        set +e
+        trap - ERR
+        export IXTF_IN_MENU=1
+        export IXTF_ALLOW_INTERACTIVE=1
+        ( trap - ERR; set +e; run_advanced_menu_action "$choice" )
+        rc=$?
+        trap 'on_error $LINENO' ERR
+        set -e
+
+        [[ "$rc" -eq 10 ]] && return 0
+        if [[ "$rc" -ne 0 ]]; then
+            log_error "菜单操作失败（退出码 ${rc}），已返回菜单。"
+        fi
+    done
+}
+
+manage_profiles_menu() {
+    local choice profile_id
+    cat >&2 <<'MENU'
+
+线路维护
+
+  1) 启用线路
+  2) 禁用线路
+  3) 删除线路
+  0) 返回
+MENU
+    printf '请选择：' >&2
+    IFS= read -r choice || return 0
+    [[ "$choice" == "0" ]] && return 0
+    printf '请输入 PROFILE_ID：' >&2
+    IFS= read -r profile_id || return 1
+    case "$choice" in
+        1) enable_profile "$profile_id" ;;
+        2) disable_profile "$profile_id" ;;
+        3) delete_profile "$profile_id" ;;
+        *) log_warn "未知选项。" ;;
+    esac
+}
+
+run_health_menu_action() {
+    local choice="$1" profile_id group target
+    case "$choice" in
+        1) health_report ;;
+        2)
+            printf '请输入 PROFILE_ID：' >&2
+            IFS= read -r profile_id || return 1
+            check_line "$profile_id"
+            ;;
+        3) health_all ;;
+        4)
+            printf '请输入 LINE_GROUP：' >&2
+            IFS= read -r group || return 1
+            show_group "$group"
+            ;;
+        5)
+            printf '请输入 LINE_GROUP：' >&2
+            IFS= read -r group || return 1
+            primary_backup_check "$group"
+            ;;
+        6)
+            printf '请输入 LINE_GROUP：' >&2
+            IFS= read -r group || return 1
+            primary_backup_runbook "$group"
+            ;;
+        7) primary_backup_summary ;;
+        8)
+            printf '请输入 LINE_GROUP：' >&2
+            IFS= read -r group || return 1
+            printf '请输入目标 PROFILE_ID：' >&2
+            IFS= read -r target || return 1
+            switch_dry_run "$group" "$target"
+            ;;
+        9)
+            printf '请输入 LINE_GROUP：' >&2
+            IFS= read -r group || return 1
+            printf '请输入目标 PROFILE_ID：' >&2
+            IFS= read -r target || return 1
+            switch_line "$group" "$target"
+            ;;
+        10) switch_history ;;
+        11) switch_rollback_last ;;
+        12) verify_nft_profiles ;;
+        0) return 10 ;;
+        *) log_warn "未知选项，请重新选择。"; return 0 ;;
+    esac
+}
+
+run_monitor_menu_action() {
+    local choice="$1" profile_id group minutes
+    case "$choice" in
+        1) monitor_run_once ;;
+        2) monitor_enable ;;
+        3) monitor_disable ;;
+        4) monitor_status ;;
+        5) monitor_logs ;;
+        6) notify_config ;;
+        7) notify_test ;;
+        8) notify_enable ;;
+        9) notify_disable ;;
+        10) notify_status ;;
+        11) health_history ;;
+        12) traffic_status ;;
+        13) traffic_report ;;
+        14) traffic_reset_all ;;
+        0) return 10 ;;
+        *) log_warn "未知选项，请重新选择。"; return 0 ;;
+    esac
+}
+
+show_monitor_menu() {
+    local choice rc
+    while true; do
+        cat >&2 <<'MENU'
+
+监控 / 通知 / 流量统计
+
+  1) 立即运行一次监控
+  2) 启用定时健康检查
+  3) 禁用定时健康检查
+  4) 查看监控状态
+  5) 查看监控日志
+  6) 配置通知
+  7) 测试通知
+  8) 启用通知
+  9) 禁用通知
+ 10) 查看通知状态
+ 11) 查看健康历史
+ 12) 查看流量统计
+ 13) 查看流量报告
+ 14) 重置流量计数
+  0) 返回
+MENU
+        printf '请选择：' >&2
+        IFS= read -r choice || return 0
+
+        set +e
+        trap - ERR
+        export IXTF_IN_MENU=1
+        export IXTF_ALLOW_INTERACTIVE=1
+        ( trap - ERR; set +e; run_monitor_menu_action "$choice" )
+        rc=$?
+        trap 'on_error $LINENO' ERR
+        set -e
+
+        [[ "$rc" -eq 10 ]] && return 0
+        if [[ "$rc" -ne 0 ]]; then
+            log_error "菜单操作失败（退出码 ${rc}），已返回菜单。"
+        fi
+    done
+}
+
+show_health_menu() {
+    local choice rc
+    while true; do
+        cat >&2 <<'MENU'
+
+健康检查 / 主备切换
+
+  1) 查看健康报告
+  2) 检查指定线路
+  3) 检查全部线路
+  4) 查看线路组
+  5) 主备组完整性检查
+  6) 主备组操作手册
+  7) 主备组汇总
+  8) 切换预演 dry-run
+  9) 手动切换线路
+  10) 查看切换历史
+  11) 最近一次切换回滚辅助
+  12) 校验 nftables 与 Profile 一致性
+  0) 返回
+MENU
+        printf '请选择：' >&2
+        IFS= read -r choice || return 0
+
+        set +e
+        trap - ERR
+        export IXTF_IN_MENU=1
+        export IXTF_ALLOW_INTERACTIVE=1
+        ( trap - ERR; set +e; run_health_menu_action "$choice" )
+        rc=$?
+        trap 'on_error $LINENO' ERR
+        set -e
+
+        [[ "$rc" -eq 10 ]] && return 0
+        if [[ "$rc" -ne 0 ]]; then
+            log_error "菜单操作失败（退出码 ${rc}），已返回菜单。"
+        fi
+    done
+}
+
+run_menu_action() {
+    local choice="$1"
+    case "$choice" in
+        1) add_landing_profile ;;
+        2) add_ingress_profile_from_code ;;
+        3) status_all ;;
+        4) change_landing ;;
+        5) change_ingress ;;
+        6) manage_profiles_menu ;;
+        7) show_health_menu ;;
+        8) show_monitor_menu ;;
+        9) install_easytier ;;
+        10) show_advanced_menu ;;
+        0) return 10 ;;
+        *) log_warn "未知选项，请重新选择。"; return 0 ;;
+    esac
+}
+
+show_menu() {
+    require_tty --menu
+    local choice rc
+    while true; do
+        cat >&2 <<'MENU'
+
+ix-transit-fabric 管理菜单
+
+  1) 新增落地线路 / 生成接入码
+  2) 新增入口线路 / 粘贴接入码
+  3) 线路列表 / 状态
+  4) 更换落地机 / 刷新接入码
+  5) 更换入口机 / CNIX 入口配置
+  6) 启用 / 禁用 / 删除线路
+  7) 健康检查 / 主备切换
+  8) 监控 / 通知 / 流量统计
+  9) 安装 / 更新 EasyTier
+ 10) 高级维护
+  0) 退出
+MENU
+        printf '请选择：' >&2
+        IFS= read -r choice || return 0
+
+        set +e
+        trap - ERR
+        export IXTF_IN_MENU=1
+        export IXTF_ALLOW_INTERACTIVE=1
+        ( trap - ERR; set +e; run_menu_action "$choice" )
+        rc=$?
+        trap 'on_error $LINENO' ERR
+        set -e
+
+        [[ "$rc" -eq 10 ]] && return 0
+        if [[ "$rc" -ne 0 ]]; then
+            log_error "菜单操作失败（退出码 ${rc}），已返回菜单。"
+        fi
+    done
+}
+
+main() {
+    local args=()
+    local arg cmd
+
+    unset IXTF_IN_MENU IXTF_ALLOW_INTERACTIVE
+
+    while (($#)); do
+        arg="$1"
+        case "$arg" in
+            --auto-install-easytier)
+                AUTO_INSTALL_EASYTIER="true"
+                shift
+                ;;
+            --env-file)
+                shift
+                [[ $# -gt 0 ]] || die_user "--env-file 后面必须跟 env 文件路径。"
+                INSTALL_ENV_FILE_PATH="$1"
+                shift
+                ;;
+            --code)
+                shift
+                [[ $# -gt 0 ]] || die_user "--code 后面必须跟 IXTF1 接入码。"
+                CODE_ARG="$1"
+                shift
+                ;;
+            --code-file)
+                shift
+                [[ $# -gt 0 ]] || die_user "--code-file 后面必须跟接入码文件路径。"
+                CODE_FILE_ARG="$1"
+                shift
+                ;;
+            *)
+                args+=("$arg")
+                shift
+                ;;
+        esac
+    done
+
+    cmd="${args[0]:-}"
+    case "$cmd" in
+        --help|-h|help)
+            usage
+            ;;
+        --version|version)
+            printf '%s %s\n' "$APP_NAME" "$SCRIPT_VERSION"
+            ;;
+        --menu|menu)
+            show_menu
+            ;;
+        install-easytier)
+            install_easytier
+            ;;
+        update-easytier)
+            update_easytier
+            ;;
+        install-netcat)
+            install_nc_tool
+            ;;
+        install-diagnostics-tools)
+            install_nc_tool
+            ;;
+        preflight)
+            preflight_check "${args[1]:-all}"
+            ;;
+        list-profiles)
+            list_profiles
+            ;;
+        show-profile)
+            show_profile "${args[1]:-}"
+            ;;
+        add-landing-profile)
+            add_landing_profile
+            ;;
+        add-ingress-profile-from-code)
+            add_ingress_profile_from_code
+            ;;
+        enable-profile)
+            enable_profile "${args[1]:-}"
+            ;;
+        disable-profile)
+            disable_profile "${args[1]:-}"
+            ;;
+        delete-profile)
+            delete_profile "${args[1]:-}"
+            ;;
+        rename-profile)
+            rename_profile "${args[1]:-}" "${args[2]:-}"
+            ;;
+        start-profile)
+            start_profile "${args[1]:-}"
+            ;;
+        stop-profile)
+            stop_profile "${args[1]:-}"
+            ;;
+        restart-profile)
+            restart_profile "${args[1]:-}"
+            ;;
+        status-profile)
+            status_profile "${args[1]:-}"
+            ;;
+        logs-profile)
+            logs_profile "${args[1]:-}"
+            ;;
+        status-all)
+            status_all "${args[1]:-}"
+            ;;
+        doctor-all)
+            doctor_all
+            ;;
+        check-line)
+            check_line "${args[1]:-}"
+            ;;
+        health)
+            health_profile "${args[1]:-}"
+            ;;
+        health-all)
+            health_all
+            ;;
+        health-report)
+            health_report "${args[1]:-}" "${args[2]:-}"
+            ;;
+        export-health-report)
+            export_health_report "${args[1]:-}" "${args[2]:-}"
+            ;;
+        set-health)
+            set_health "${args[@]:1}"
+            ;;
+        list-groups)
+            list_groups
+            ;;
+        show-group)
+            show_group "${args[1]:-}"
+            ;;
+        validate-primary-backup)
+            validate_primary_backup "${args[1]:-}"
+            ;;
+        primary-backup-check)
+            primary_backup_check "${args[1]:-}"
+            ;;
+        primary-backup-runbook)
+            primary_backup_runbook "${args[1]:-}"
+            ;;
+        primary-backup-summary)
+            primary_backup_summary
+            ;;
+        switch-dry-run)
+            switch_dry_run "${args[1]:-}" "${args[2]:-}"
+            ;;
+        switch-line)
+            switch_line "${args[1]:-}" "${args[2]:-}"
+            ;;
+        switch-to)
+            switch_to "${args[1]:-}"
+            ;;
+        switch-history)
+            switch_history "${args[@]:1}"
+            ;;
+        clear-switch-history)
+            clear_switch_history
+            ;;
+        switch-rollback-last)
+            switch_rollback_last
+            ;;
+        monitor-run-once)
+            monitor_run_once "${args[@]:1}"
+            ;;
+        monitor-enable)
+            monitor_enable
+            ;;
+        monitor-disable)
+            monitor_disable
+            ;;
+        monitor-status)
+            monitor_status
+            ;;
+        monitor-logs)
+            monitor_logs
+            ;;
+        monitor-config)
+            monitor_config
+            ;;
+        monitor-set-interval)
+            monitor_set_interval "${args[1]:-}"
+            ;;
+        health-history)
+            health_history "${args[@]:1}"
+            ;;
+        clear-health-history)
+            clear_health_history
+            ;;
+        notify-config)
+            notify_config
+            ;;
+        notify-test)
+            notify_test
+            ;;
+        notify-enable)
+            notify_enable
+            ;;
+        notify-disable)
+            notify_disable
+            ;;
+        notify-status)
+            notify_status
+            ;;
+        traffic-status)
+            traffic_status "${args[1]:-}"
+            ;;
+        traffic-report)
+            traffic_report "${args[@]:1}"
+            ;;
+        traffic-reset)
+            traffic_reset "${args[1]:-}"
+            ;;
+        traffic-reset-all)
+            traffic_reset_all
+            ;;
+        set-line-group)
+            set_line_group "${args[1]:-}" "${args[2]:-}"
+            ;;
+        set-line-priority)
+            set_line_priority "${args[1]:-}" "${args[2]:-}"
+            ;;
+        set-primary)
+            set_primary "${args[1]:-}"
+            ;;
+        set-backup)
+            set_backup "${args[1]:-}"
+            ;;
+        set-standalone)
+            set_standalone "${args[1]:-}"
+            ;;
+        set-forward)
+            set_forward "${args[1]:-}" "${args[2]:-}"
+            ;;
+        restart-all)
+            restart_all
+            ;;
+        apply-nft-all|apply-all-forwards)
+            apply_nft_all
+            ;;
+        verify-nft-profiles)
+            verify_nft_profiles
+            ;;
+        migrate-single-profile)
+            migrate_single_profile
+            ;;
+        install-panel-landing)
+            install_panel_landing
+            ;;
+        install-panel-ingress)
+            install_panel_ingress
+            ;;
+        install-panel-ingress-from-code)
+            install_panel_ingress_from_code
+            ;;
+        change-landing)
+            change_landing "${args[1]:-}"
+            ;;
+        refresh-code)
+            refresh_code "${args[1]:-}"
+            ;;
+        update-from-code)
+            update_from_code "${args[1]:-}"
+            ;;
+        change-ingress|change-cnix-entry)
+            change_ingress "${args[1]:-}"
+            ;;
+        show-landing)
+            show_landing "${args[1]:-}"
+            ;;
+        show-ingress)
+            show_ingress "${args[1]:-}"
+            ;;
+        configure-forward)
+            configure_forward
+            ;;
+        status)
+            status
+            ;;
+        show-config)
+            show_config
+            ;;
+        doctor)
+            doctor "${args[1]:-}"
+            ;;
+        logs)
+            logs
+            ;;
+        check-port)
+            check_port "${args[1]:-}"
+            ;;
+        check-business)
+            check_business "${args[1]:-}"
+            ;;
+        check-route)
+            check_route "${args[1]:-}"
+            ;;
+        show-port-map)
+            show_port_map "${args[@]:1}"
+            ;;
+        show-port-map-compact)
+            show_port_map_compact "${args[1]:-}"
+            ;;
+        self-check)
+            self_check
+            ;;
+        export-diagnostic)
+            export_diagnostic
+            ;;
+        cleanup-history)
+            cleanup_history "${args[@]:1}"
+            ;;
+        cleanup-state)
+            cleanup_state
+            ;;
+        self-test)
+            self_test
+            ;;
+        check-wrapper)
+            check_wrapper
+            ;;
+        show-easytier-command)
+            show_easytier_command
+            ;;
+        panel-guide)
+            panel_guide_cmd "${args[1]:-}"
+            ;;
+        show-nft)
+            show_nft
+            ;;
+        show-code)
+            show_code "${args[1]:-}"
+            ;;
+        import-code)
+            import_code
+            ;;
+        uninstall)
+            uninstall
+            ;;
+        purge)
+            purge
+            ;;
+        "")
+            if is_tty; then
+                show_menu
+            else
+                usage
+                exit 1
+            fi
+            ;;
+        *)
+            usage
+            die_user "未知命令：${cmd}"
+            ;;
+    esac
+}
+
+if [[ "${IXTF_TEST_SOURCE:-}" != "1" ]]; then
+    main "$@"
+fi
