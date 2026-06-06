@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-SCRIPT_VERSION="1.0.0"
+SCRIPT_VERSION="1.1.0-alpha.1"
 APP_NAME="ix-transit-fabric"
 
 CONFIG_DIR="/etc/ix-transit-fabric"
@@ -111,10 +111,16 @@ print_port_map_compact() {
     local cnix_host="${CNIX_ENTRY_HOST:-CNIX_ENTRY_HOST}"
     local landing_ip="${LANDING_ET_IP:-LANDING_ET_IP}"
     local landing_public="${LANDING_PUBLIC_HOST:-${CODE_LANDING_PUBLIC_HINT:-落地 VPS 公网 IP}}"
+    local ingress_et_ip="${INGRESS_ET_IP:-INGRESS_ET_IP}"
+    local nat_et_ip="${NAT_ET_IP:-NAT_ET_IP}"
+    local transit_port="${TRANSIT_PORT:-TRANSIT_PORT}"
+    local ingress_public="${INGRESS_PUBLIC_HOST:-公网入口 VPS}"
+    local landing_host="${LANDING_HOST:-LANDING_HOST}"
+    local landing_port="${LANDING_PORT:-LANDING_PORT}"
 
-    printf '线路：%s\n\n' "$profile_id"
     case "${ROLE:-}" in
         panel-landing)
+            printf '线路：%s\n\n' "$profile_id"
             printf 'CNIX 面板：\n'
             printf '  出口：%s:%s\n\n' "$landing_public" "$(c_cyan "$listener_port")"
             printf '端口含义：\n'
@@ -122,6 +128,7 @@ print_port_map_compact() {
             printf '  %s = REMOTE_PORT，落地业务端口\n' "$remote_port"
             ;;
         panel-ingress)
+            printf '线路：%s\n\n' "$profile_id"
             printf '客户端连接：\n'
             printf '  入口 VPS 公网 IP:%s\n\n' "$(c_cyan "$local_port")"
             printf 'CNIX 面板：\n'
@@ -134,6 +141,30 @@ print_port_map_compact() {
             printf '  %s = CNIX_ENTRY_PORT，商家入口端口\n' "$cnix_port"
             printf '  %s = LISTENER_PORT，填到 CNIX 面板出口\n' "$listener_port"
             printf '  %s = REMOTE_PORT，落地业务端口\n' "$remote_port"
+            ;;
+        nat-ingress)
+            printf '线路：%s（NAT-IX 入口）\n\n' "$profile_id"
+            printf '客户端连接：\n'
+            printf '  %s:%s\n\n' "$ingress_public" "$(c_cyan "$local_port")"
+            printf 'EasyTier：\n'
+            printf '  入口机 ET IP：%s\n' "$ingress_et_ip"
+            printf '  NAT IX ET IP：%s\n\n' "$nat_et_ip"
+            printf '内部转发：\n'
+            printf '  %s -> %s:%s\n\n' "$local_port" "$nat_et_ip" "$transit_port"
+            printf '下一跳：\n'
+            printf '  NAT IX 机器会继续转发 %s -> %s:%s\n' "$transit_port" "$landing_host" "$landing_port"
+            ;;
+        nat-transit)
+            printf '线路：%s（NAT-IX 中转）\n\n' "$profile_id"
+            printf 'EasyTier：\n'
+            printf '  入口机 ET IP：%s\n' "$ingress_et_ip"
+            printf '  NAT IX ET IP：%s\n\n' "$nat_et_ip"
+            printf '中转转发：\n'
+            printf '  %s:%s -> %s:%s\n\n' "$nat_et_ip" "$transit_port" "$landing_host" "$landing_port"
+            printf '客户端连接：\n'
+            printf '  %s:%s\n\n' "$ingress_public" "$(c_cyan "$local_port")"
+            printf '注意：\n'
+            printf '  NAT IX 机器不需要安装代理服务，只做 nftables 中转转发。\n'
             ;;
         *)
             printf '[WARN] 当前角色未知：%s\n' "${ROLE:-未设置}"
@@ -189,11 +220,15 @@ ix-transit-fabric - CNIX/IX 转发面板 + EasyTier + nftables 一键脚本
 单线路：
   bash install.sh add-landing-profile
   bash install.sh add-ingress-profile-from-code [--code IXTF1:...] [--code-file PATH]
+  bash install.sh add-nat-ingress-profile
+  bash install.sh add-nat-transit-profile-from-code [--code IXTF1:...] [--code-file PATH]
   bash install.sh show-code [PROFILE_ID]
+  bash install.sh show-nat-code [PROFILE_ID]
   bash install.sh import-code [--code IXTF1:...] [--code-file PATH]
   bash install.sh show-port-map [PROFILE_ID] [--compact]
   bash install.sh show-port-map --all [--compact]
   bash install.sh show-port-map-compact [PROFILE_ID]
+  bash install.sh nat-guide [PROFILE_ID]
   bash install.sh panel-guide [--all|PROFILE_ID]
   bash install.sh check-port [--all|PROFILE_ID]
   bash install.sh check-business [--all|PROFILE_ID]
@@ -248,6 +283,9 @@ ix-transit-fabric - CNIX/IX 转发面板 + EasyTier + nftables 一键脚本
 说明：
   - 无参数且当前是交互式 TTY 时进入菜单。
   - monitor / notify 只做检查和提醒，不会自动切换。
+  - show-port-map 支持 nat-ingress / nat-transit。
+  - verify-nft-profiles 支持 nat-ingress / nat-transit。
+  - traffic-report 支持 nat-ingress / nat-transit。
   - purge 会删除配置、Profile、codes、state、notify.env、history 和备份，执行前必须确认。
 USAGE
 }
@@ -1958,9 +1996,15 @@ clear_config_vars() {
         LISTENER_PROTOS LISTENER_PORT CNIX_ENTRY_PROTOS \
         ET_PRIVATE_MODE ET_EXPLICIT_ONLY IXTF_EXPLICIT_ONLY CNIX_ENTRY_PROTO CNIX_ENTRY_HOST CNIX_ENTRY_PORT \
         LOCAL_PORT LANDING_ET_IP REMOTE_PORT FORWARD_PROTO SERVICE_PORT CODE_LISTENER_PORT \
+        INGRESS_ET_IP INGRESS_ET_CIDR NAT_ET_IP NAT_ET_CIDR INGRESS_PUBLIC_HOST INGRESS_HOSTNAME \
+        INGRESS_LISTENER_PROTO INGRESS_LISTENER_PROTOS INGRESS_LISTENER_PORT TRANSIT_PORT \
+        LANDING_HOST LANDING_PORT LANDING_IP \
         FORWARD_ENABLED LANDING_EASYTIER_VERSION CODE_EASYTIER_VERSION CODE_TUNNEL_PROTOS \
         CODE_LANDING_ET_CIDR CODE_SUGGESTED_INGRESS_ET_IP CODE_SUGGESTED_INGRESS_ET_CIDR \
-        CODE_PROFILE_ID CODE_PROFILE_NAME CODE_SUGGESTED_INGRESS_PROFILE_ID CODE_LANDING_PUBLIC_HINT CODE_REMARK; do
+        CODE_PROFILE_ID CODE_PROFILE_NAME CODE_SUGGESTED_INGRESS_PROFILE_ID CODE_LANDING_PUBLIC_HINT CODE_REMARK \
+        CODE_INGRESS_HOSTNAME CODE_INGRESS_PUBLIC_HOST CODE_INGRESS_ET_IP CODE_INGRESS_ET_CIDR \
+        CODE_INGRESS_LISTENER_PROTO CODE_INGRESS_LISTENER_PROTOS CODE_INGRESS_LISTENER_PORT \
+        CODE_NAT_ET_IP CODE_NAT_ET_CIDR CODE_TRANSIT_PORT CODE_LOCAL_PORT CODE_FORWARD_PROTO; do
         unset "$key" 2>/dev/null || true
     done
 }
@@ -1991,6 +2035,9 @@ load_env_from_path() {
             LISTENER_PROTOS|LISTENER_PORT|CNIX_ENTRY_PROTOS|\
             ET_NO_LISTENER|ET_PRIVATE_MODE|ET_EXPLICIT_ONLY|IXTF_EXPLICIT_ONLY|CNIX_ENTRY_PROTO|CNIX_ENTRY_HOST|\
             CNIX_ENTRY_PORT|LOCAL_PORT|LANDING_ET_IP|REMOTE_PORT|FORWARD_PROTO|\
+            INGRESS_ET_IP|INGRESS_ET_CIDR|NAT_ET_IP|NAT_ET_CIDR|INGRESS_PUBLIC_HOST|INGRESS_HOSTNAME|\
+            INGRESS_LISTENER_PROTO|INGRESS_LISTENER_PROTOS|INGRESS_LISTENER_PORT|TRANSIT_PORT|\
+            LANDING_HOST|LANDING_PORT|LANDING_IP|\
             SERVICE_PORT|CODE_LISTENER_PORT|FORWARD_ENABLED|LANDING_EASYTIER_VERSION|CODE_EASYTIER_VERSION|\
             CODE_TUNNEL_PROTOS|CODE_LANDING_ET_CIDR|CODE_SUGGESTED_INGRESS_ET_IP|CODE_SUGGESTED_INGRESS_ET_CIDR)
                 printf -v "$key" '%s' "$value"
@@ -2045,6 +2092,39 @@ profile_et_ip_addr_from_path() {
 }
 
 normalize_profile_compat_vars() {
+    case "${ROLE:-}" in
+        nat-ingress)
+            if [[ -n "${INGRESS_LISTENER_PROTOS:-}" ]]; then
+                INGRESS_LISTENER_PROTO="$(proto_list_to_value "$INGRESS_LISTENER_PROTOS")"
+            fi
+            if [[ -z "${INGRESS_LISTENER_PROTOS:-}" && -n "${INGRESS_LISTENER_PROTO:-}" ]]; then
+                INGRESS_LISTENER_PROTOS="$(normalize_listener_protos "$INGRESS_LISTENER_PROTO" "both" 2>/dev/null || printf '%s' "$INGRESS_LISTENER_PROTO")"
+            fi
+            [[ -n "${ET_LISTENER_PROTO:-}" ]] || ET_LISTENER_PROTO="${INGRESS_LISTENER_PROTO:-both}"
+            [[ -n "${ET_LISTENER_PORT:-}" ]] || ET_LISTENER_PORT="${INGRESS_LISTENER_PORT:-}"
+            [[ -n "${INGRESS_LISTENER_PROTO:-}" ]] || INGRESS_LISTENER_PROTO="${ET_LISTENER_PROTO:-both}"
+            [[ -n "${INGRESS_LISTENER_PORT:-}" ]] || INGRESS_LISTENER_PORT="${ET_LISTENER_PORT:-}"
+            [[ -n "${INGRESS_ET_CIDR:-}" ]] || INGRESS_ET_CIDR="${ET_IPV4:-}"
+            [[ -n "${INGRESS_ET_IP:-}" ]] || INGRESS_ET_IP="${INGRESS_ET_CIDR%%/*}"
+            [[ -n "${NAT_ET_CIDR:-}" && -z "${NAT_ET_IP:-}" ]] && NAT_ET_IP="${NAT_ET_CIDR%%/*}"
+            [[ -n "${ET_LISTENERS:-}" || -z "${INGRESS_LISTENER_PORT:-}" ]] || ET_LISTENERS="$(listener_urls_value "${INGRESS_LISTENER_PROTO:-both}" "$INGRESS_LISTENER_PORT" 2>/dev/null || true)"
+            ;;
+        nat-transit)
+            if [[ -n "${INGRESS_LISTENER_PROTOS:-}" ]]; then
+                INGRESS_LISTENER_PROTO="$(proto_list_to_value "$INGRESS_LISTENER_PROTOS")"
+            fi
+            if [[ -z "${INGRESS_LISTENER_PROTOS:-}" && -n "${INGRESS_LISTENER_PROTO:-}" ]]; then
+                INGRESS_LISTENER_PROTOS="$(normalize_listener_protos "$INGRESS_LISTENER_PROTO" "both" 2>/dev/null || printf '%s' "$INGRESS_LISTENER_PROTO")"
+            fi
+            [[ -n "${NAT_ET_CIDR:-}" ]] || NAT_ET_CIDR="${ET_IPV4:-}"
+            [[ -n "${NAT_ET_IP:-}" ]] || NAT_ET_IP="${NAT_ET_CIDR%%/*}"
+            [[ -n "${INGRESS_ET_CIDR:-}" && -z "${INGRESS_ET_IP:-}" ]] && INGRESS_ET_IP="${INGRESS_ET_CIDR%%/*}"
+            if [[ -n "${INGRESS_PUBLIC_HOST:-}" && -n "${INGRESS_LISTENER_PORT:-}" ]]; then
+                ET_PEERS="${ET_PEERS:-$(peer_urls_value "${INGRESS_LISTENER_PROTO:-both}" "$INGRESS_PUBLIC_HOST" "$INGRESS_LISTENER_PORT" 2>/dev/null || true)}"
+            fi
+            ET_NO_LISTENER="${ET_NO_LISTENER:-true}"
+            ;;
+    esac
     if [[ -n "${LISTENER_PROTOS:-}" ]]; then
         ET_LISTENER_PROTO="$(proto_list_to_value "$LISTENER_PROTOS")"
     fi
@@ -2144,28 +2224,69 @@ save_profile_env() {
         [[ -n "${LANDING_PUBLIC_HOST:-}" ]] && printf 'LANDING_PUBLIC_HOST=%s\n' "$(quote_env_value "$LANDING_PUBLIC_HOST")"
         [[ -n "${EASYTIER_VERSION:-}" ]] && printf 'EASYTIER_VERSION=%s\n' "$(quote_env_value "$EASYTIER_VERSION")"
         [[ -n "${REMARK:-}" ]] && printf 'REMARK=%s\n' "$(quote_env_value "$REMARK")"
-        if [[ "$ROLE" == "panel-landing" ]]; then
-            printf 'LISTENER_PROTOS=%s\n' "$(quote_env_value "$listener_protos")"
-            printf 'LISTENER_PORT=%s\n' "$listener_port"
-            printf 'ET_LISTENER_PROTO=%s\n' "${ET_LISTENER_PROTO:-$(proto_list_to_value "$listener_protos")}"
-            printf 'ET_LISTENER_PORT=%s\n' "$listener_port"
-            printf 'ET_LISTENERS=%s\n' "$(quote_env_value "${ET_LISTENERS:-$(listener_urls_value "$listener_proto" "$listener_port" 2>/dev/null || true)}")"
-            [[ -n "${SERVICE_PORT:-}" ]] && printf 'SERVICE_PORT=%s\n' "$SERVICE_PORT"
-            [[ -n "${SERVICE_PORT:-}" ]] && printf 'REMOTE_PORT=%s\n' "$SERVICE_PORT"
-        else
-            printf 'CNIX_ENTRY_PROTOS=%s\n' "$(quote_env_value "$cnix_protos")"
-            printf 'CNIX_ENTRY_PROTO=%s\n' "$CNIX_ENTRY_PROTO"
-            printf 'CNIX_ENTRY_HOST=%s\n' "$CNIX_ENTRY_HOST"
-            printf 'CNIX_ENTRY_PORT=%s\n' "$CNIX_ENTRY_PORT"
-            printf 'ET_PEERS=%s\n' "$(quote_env_value "$ET_PEERS")"
-            printf 'ET_NO_LISTENER=%s\n' "${ET_NO_LISTENER:-true}"
-            printf 'FORWARD_ENABLED=%s\n' "${FORWARD_ENABLED:-true}"
-            [[ -n "${LOCAL_PORT:-}" ]] && printf 'LOCAL_PORT=%s\n' "$LOCAL_PORT"
-            [[ -n "${LANDING_ET_IP:-}" ]] && printf 'LANDING_ET_IP=%s\n' "$LANDING_ET_IP"
-            [[ -n "${REMOTE_PORT:-}" ]] && printf 'REMOTE_PORT=%s\n' "$REMOTE_PORT"
-            [[ -n "${FORWARD_PROTO:-}" ]] && printf 'FORWARD_PROTO=%s\n' "$FORWARD_PROTO"
-            [[ -n "${CODE_LISTENER_PORT:-}" ]] && printf 'CODE_LISTENER_PORT=%s\n' "$CODE_LISTENER_PORT"
-        fi
+        case "$ROLE" in
+            panel-landing)
+                printf 'LISTENER_PROTOS=%s\n' "$(quote_env_value "$listener_protos")"
+                printf 'LISTENER_PORT=%s\n' "$listener_port"
+                printf 'ET_LISTENER_PROTO=%s\n' "${ET_LISTENER_PROTO:-$(proto_list_to_value "$listener_protos")}"
+                printf 'ET_LISTENER_PORT=%s\n' "$listener_port"
+                printf 'ET_LISTENERS=%s\n' "$(quote_env_value "${ET_LISTENERS:-$(listener_urls_value "$listener_proto" "$listener_port" 2>/dev/null || true)}")"
+                [[ -n "${SERVICE_PORT:-}" ]] && printf 'SERVICE_PORT=%s\n' "$SERVICE_PORT"
+                [[ -n "${SERVICE_PORT:-}" ]] && printf 'REMOTE_PORT=%s\n' "$SERVICE_PORT"
+                ;;
+            panel-ingress)
+                printf 'CNIX_ENTRY_PROTOS=%s\n' "$(quote_env_value "$cnix_protos")"
+                printf 'CNIX_ENTRY_PROTO=%s\n' "$CNIX_ENTRY_PROTO"
+                printf 'CNIX_ENTRY_HOST=%s\n' "$CNIX_ENTRY_HOST"
+                printf 'CNIX_ENTRY_PORT=%s\n' "$CNIX_ENTRY_PORT"
+                printf 'ET_PEERS=%s\n' "$(quote_env_value "$ET_PEERS")"
+                printf 'ET_NO_LISTENER=%s\n' "${ET_NO_LISTENER:-true}"
+                printf 'FORWARD_ENABLED=%s\n' "${FORWARD_ENABLED:-true}"
+                [[ -n "${LOCAL_PORT:-}" ]] && printf 'LOCAL_PORT=%s\n' "$LOCAL_PORT"
+                [[ -n "${LANDING_ET_IP:-}" ]] && printf 'LANDING_ET_IP=%s\n' "$LANDING_ET_IP"
+                [[ -n "${REMOTE_PORT:-}" ]] && printf 'REMOTE_PORT=%s\n' "$REMOTE_PORT"
+                [[ -n "${FORWARD_PROTO:-}" ]] && printf 'FORWARD_PROTO=%s\n' "$FORWARD_PROTO"
+                [[ -n "${CODE_LISTENER_PORT:-}" ]] && printf 'CODE_LISTENER_PORT=%s\n' "$CODE_LISTENER_PORT"
+                ;;
+            nat-ingress)
+                printf 'INGRESS_ET_IP=%s\n' "${INGRESS_ET_IP:-${ET_IPV4%%/*}}"
+                printf 'INGRESS_ET_CIDR=%s\n' "${INGRESS_ET_CIDR:-$ET_IPV4}"
+                printf 'NAT_ET_IP=%s\n' "$NAT_ET_IP"
+                [[ -n "${NAT_ET_CIDR:-}" ]] && printf 'NAT_ET_CIDR=%s\n' "$NAT_ET_CIDR"
+                printf 'INGRESS_PUBLIC_HOST=%s\n' "$(quote_env_value "$INGRESS_PUBLIC_HOST")"
+                printf 'INGRESS_HOSTNAME=%s\n' "$(quote_env_value "${INGRESS_HOSTNAME:-$ET_HOSTNAME}")"
+                printf 'INGRESS_LISTENER_PROTO=%s\n' "$INGRESS_LISTENER_PROTO"
+                printf 'INGRESS_LISTENER_PROTOS=%s\n' "$(quote_env_value "${INGRESS_LISTENER_PROTOS:-$(normalize_listener_protos "$INGRESS_LISTENER_PROTO" "both")}")"
+                printf 'INGRESS_LISTENER_PORT=%s\n' "$INGRESS_LISTENER_PORT"
+                printf 'ET_LISTENER_PROTO=%s\n' "$INGRESS_LISTENER_PROTO"
+                printf 'ET_LISTENER_PORT=%s\n' "$INGRESS_LISTENER_PORT"
+                printf 'ET_LISTENERS=%s\n' "$(quote_env_value "${ET_LISTENERS:-$(listener_urls_value "$INGRESS_LISTENER_PROTO" "$INGRESS_LISTENER_PORT" 2>/dev/null || true)}")"
+                printf 'FORWARD_ENABLED=%s\n' "${FORWARD_ENABLED:-true}"
+                printf 'LOCAL_PORT=%s\n' "$LOCAL_PORT"
+                printf 'TRANSIT_PORT=%s\n' "$TRANSIT_PORT"
+                printf 'FORWARD_PROTO=%s\n' "$FORWARD_PROTO"
+                ;;
+            nat-transit)
+                printf 'INGRESS_ET_IP=%s\n' "$INGRESS_ET_IP"
+                [[ -n "${INGRESS_ET_CIDR:-}" ]] && printf 'INGRESS_ET_CIDR=%s\n' "$INGRESS_ET_CIDR"
+                printf 'NAT_ET_IP=%s\n' "${NAT_ET_IP:-${ET_IPV4%%/*}}"
+                printf 'NAT_ET_CIDR=%s\n' "${NAT_ET_CIDR:-$ET_IPV4}"
+                printf 'INGRESS_PUBLIC_HOST=%s\n' "$(quote_env_value "$INGRESS_PUBLIC_HOST")"
+                [[ -n "${INGRESS_HOSTNAME:-}" ]] && printf 'INGRESS_HOSTNAME=%s\n' "$(quote_env_value "$INGRESS_HOSTNAME")"
+                printf 'INGRESS_LISTENER_PROTO=%s\n' "$INGRESS_LISTENER_PROTO"
+                printf 'INGRESS_LISTENER_PROTOS=%s\n' "$(quote_env_value "${INGRESS_LISTENER_PROTOS:-$(normalize_listener_protos "$INGRESS_LISTENER_PROTO" "both")}")"
+                printf 'INGRESS_LISTENER_PORT=%s\n' "$INGRESS_LISTENER_PORT"
+                printf 'ET_PEERS=%s\n' "$(quote_env_value "$ET_PEERS")"
+                printf 'ET_NO_LISTENER=%s\n' "${ET_NO_LISTENER:-true}"
+                printf 'FORWARD_ENABLED=%s\n' "${FORWARD_ENABLED:-true}"
+                [[ -n "${LOCAL_PORT:-}" ]] && printf 'LOCAL_PORT=%s\n' "$LOCAL_PORT"
+                printf 'TRANSIT_PORT=%s\n' "$TRANSIT_PORT"
+                printf 'LANDING_HOST=%s\n' "$(quote_env_value "$LANDING_HOST")"
+                printf 'LANDING_PORT=%s\n' "$LANDING_PORT"
+                [[ -n "${LANDING_IP:-}" ]] && printf 'LANDING_IP=%s\n' "$LANDING_IP"
+                printf 'FORWARD_PROTO=%s\n' "$FORWARD_PROTO"
+                ;;
+        esac
     } >"$tmp"
     backup_file "$path"
     mv -f -- "$tmp" "$path"
@@ -2328,8 +2449,69 @@ validate_easytier_args() {
             ET_PEERS="$(peer_urls_value "$CNIX_ENTRY_PROTO" "$CNIX_ENTRY_HOST" "$CNIX_ENTRY_PORT")"
             ET_NO_LISTENER="${ET_NO_LISTENER:-true}"
             ;;
+        nat-ingress)
+            require_config_var INGRESS_PUBLIC_HOST
+            require_config_var INGRESS_LISTENER_PROTO
+            require_config_var INGRESS_LISTENER_PORT
+            require_config_var NAT_ET_IP
+            require_config_var LOCAL_PORT
+            require_config_var TRANSIT_PORT
+            require_config_var FORWARD_PROTO
+            normalized="$(normalize_listener_proto "$INGRESS_LISTENER_PROTO" "both")" || die_user "INGRESS_LISTENER_PROTO 只能是 tcp、udp、tcp+udp、ws、wss、quic、wg 或 all。"
+            INGRESS_LISTENER_PROTO="$normalized"
+            INGRESS_LISTENER_PROTOS="$(normalize_listener_protos "$normalized" "both")"
+            validate_host "$INGRESS_PUBLIC_HOST" || die_user "INGRESS_PUBLIC_HOST 必须是公网 IP 或域名。"
+            validate_port "$INGRESS_LISTENER_PORT" || die_user "INGRESS_LISTENER_PORT 必须是 1-65535 的端口。"
+            validate_ipv4 "$NAT_ET_IP" || die_user "NAT_ET_IP 必须是 IPv4，例如 10.88.0.2。"
+            validate_ipv4_cidr "${INGRESS_ET_CIDR:-$ET_IPV4}" || die_user "INGRESS_ET_CIDR 必须是 IPv4/CIDR。"
+            validate_port "$LOCAL_PORT" || die_user "LOCAL_PORT 必须是 1-65535 的端口。"
+            validate_port "$TRANSIT_PORT" || die_user "TRANSIT_PORT 必须是 1-65535 的端口。"
+            normalized="$(normalize_forward_proto "$FORWARD_PROTO" "both")" || die_user "FORWARD_PROTO 只能是 tcp、udp 或 both。"
+            FORWARD_PROTO="$normalized"
+            INGRESS_ET_CIDR="${INGRESS_ET_CIDR:-$ET_IPV4}"
+            INGRESS_ET_IP="${INGRESS_ET_IP:-${INGRESS_ET_CIDR%%/*}}"
+            NAT_ET_CIDR="${NAT_ET_CIDR:-${NAT_ET_IP}/24}"
+            validate_ipv4_cidr "$NAT_ET_CIDR" || die_user "NAT_ET_CIDR 必须是 IPv4/CIDR。"
+            [[ "${INGRESS_ET_CIDR%%/*}" == "$INGRESS_ET_IP" ]] || die_user "INGRESS_ET_IP 和 INGRESS_ET_CIDR 不一致。"
+            [[ "${NAT_ET_CIDR%%/*}" == "$NAT_ET_IP" ]] || die_user "NAT_ET_IP 和 NAT_ET_CIDR 不一致。"
+            ET_LISTENER_PROTO="$INGRESS_LISTENER_PROTO"
+            ET_LISTENER_PORT="$INGRESS_LISTENER_PORT"
+            ET_LISTENERS="$(listener_urls_value "$INGRESS_LISTENER_PROTO" "$INGRESS_LISTENER_PORT")"
+            FORWARD_ENABLED="${FORWARD_ENABLED:-true}"
+            ;;
+        nat-transit)
+            require_config_var INGRESS_PUBLIC_HOST
+            require_config_var INGRESS_LISTENER_PROTO
+            require_config_var INGRESS_LISTENER_PORT
+            require_config_var INGRESS_ET_IP
+            require_config_var NAT_ET_IP
+            require_config_var TRANSIT_PORT
+            require_config_var LANDING_HOST
+            require_config_var LANDING_PORT
+            require_config_var FORWARD_PROTO
+            normalized="$(normalize_entry_proto "$INGRESS_LISTENER_PROTO" "both")" || die_user "INGRESS_LISTENER_PROTO 只能是 tcp、udp、tcp+udp、ws、wss、quic、wg 或 all。"
+            INGRESS_LISTENER_PROTO="$normalized"
+            INGRESS_LISTENER_PROTOS="$(normalize_peer_protos "$normalized" "both")"
+            validate_host "$INGRESS_PUBLIC_HOST" || die_user "INGRESS_PUBLIC_HOST 必须是公网 IP 或域名。"
+            validate_port "$INGRESS_LISTENER_PORT" || die_user "INGRESS_LISTENER_PORT 必须是 1-65535 的端口。"
+            validate_ipv4 "$INGRESS_ET_IP" || die_user "INGRESS_ET_IP 必须是 IPv4，例如 10.88.0.1。"
+            [[ -z "${INGRESS_ET_CIDR:-}" ]] || validate_ipv4_cidr "$INGRESS_ET_CIDR" || die_user "INGRESS_ET_CIDR 必须是 IPv4/CIDR。"
+            validate_ipv4 "$NAT_ET_IP" || die_user "NAT_ET_IP 必须是 IPv4，例如 10.88.0.2。"
+            validate_ipv4_cidr "${NAT_ET_CIDR:-$ET_IPV4}" || die_user "NAT_ET_CIDR 必须是 IPv4/CIDR。"
+            validate_port "$TRANSIT_PORT" || die_user "TRANSIT_PORT 必须是 1-65535 的端口。"
+            validate_host "$LANDING_HOST" || die_user "LANDING_HOST 必须是 IPv4 或域名。"
+            validate_port "$LANDING_PORT" || die_user "LANDING_PORT 必须是 1-65535 的端口。"
+            normalized="$(normalize_forward_proto "$FORWARD_PROTO" "both")" || die_user "FORWARD_PROTO 只能是 tcp、udp 或 both。"
+            FORWARD_PROTO="$normalized"
+            NAT_ET_CIDR="${NAT_ET_CIDR:-$ET_IPV4}"
+            [[ -z "${INGRESS_ET_CIDR:-}" || "${INGRESS_ET_CIDR%%/*}" == "$INGRESS_ET_IP" ]] || die_user "INGRESS_ET_IP 和 INGRESS_ET_CIDR 不一致。"
+            [[ "${NAT_ET_CIDR%%/*}" == "$NAT_ET_IP" ]] || die_user "NAT_ET_IP 和 NAT_ET_CIDR 不一致。"
+            ET_PEERS="$(peer_urls_value "$INGRESS_LISTENER_PROTO" "$INGRESS_PUBLIC_HOST" "$INGRESS_LISTENER_PORT")"
+            ET_NO_LISTENER="${ET_NO_LISTENER:-true}"
+            FORWARD_ENABLED="${FORWARD_ENABLED:-true}"
+            ;;
         *)
-            die_user "ROLE 必须是 panel-landing 或 panel-ingress。"
+            die_user "ROLE 必须是 panel-landing、panel-ingress、nat-ingress 或 nat-transit。"
             ;;
     esac
 }
@@ -2355,6 +2537,8 @@ validate_easytier_args_static() {
     case "${ROLE:-}" in
         panel-landing) [[ -n "${ET_LISTENERS:-}" ]] || return 1 ;;
         panel-ingress) [[ -n "${ET_PEERS:-}" ]] || return 1 ;;
+        nat-ingress) [[ -n "${ET_LISTENERS:-}" ]] || return 1 ;;
+        nat-transit) [[ -n "${ET_PEERS:-}" ]] || return 1 ;;
         *) return 1 ;;
     esac
     [[ "$rendered" != *"--private-mode --"* ]] || return 1
@@ -2387,7 +2571,7 @@ render_easytier_args() {
     printf ' --ipv4 %q' "$ET_IPV4"
     render_private_mode_arg
 
-    if [[ "$ROLE" == "panel-landing" ]]; then
+    if [[ "$ROLE" == "panel-landing" || "$ROLE" == "nat-ingress" ]]; then
         [[ -n "${ET_LISTENERS:-}" ]] || die_user "landing 必须至少有一个 listener。"
         while IFS= read -r listener; do
             [[ -n "$listener" ]] || continue
@@ -2494,7 +2678,7 @@ else
 fi
 
 case "\$ROLE" in
-    panel-landing)
+    panel-landing|nat-ingress)
         require_var ET_LISTENERS
         read -r -a listener_items <<<"\$ET_LISTENERS"
         for listener in "\${listener_items[@]}"; do
@@ -2502,7 +2686,7 @@ case "\$ROLE" in
             args+=(--listeners "\$listener")
         done
         ;;
-    panel-ingress)
+    panel-ingress|nat-transit)
         require_var ET_PEERS
         read -r -a peer_items <<<"\$ET_PEERS"
         for peer in "\${peer_items[@]}"; do
@@ -2546,7 +2730,7 @@ render_systemd_service() {
         printf 'ExecStartPre=/usr/bin/test -r %s\n' "$ENV_FILE"
         printf 'ExecStartPre=/usr/bin/test -x %s\n' "$WRAPPER_FILE"
         printf "ExecStartPre=/bin/sh -c 'test -x %s || command -v easytier-core >/dev/null 2>&1'\n" "$EASYTIER_TARGET"
-        if [[ "${ROLE:-}" == "panel-ingress" && "${FORWARD_ENABLED:-true}" == "true" ]]; then
+        if [[ ( "${ROLE:-}" == "panel-ingress" || "${ROLE:-}" == "nat-ingress" || "${ROLE:-}" == "nat-transit" ) && "${FORWARD_ENABLED:-true}" == "true" ]]; then
             nft_bin="$(command -v nft 2>/dev/null || true)"
             [[ -n "$nft_bin" ]] || nft_bin="/usr/sbin/nft"
             printf 'ExecStartPre=/usr/bin/test -f %s\n' "$NFT_FILE"
@@ -2696,14 +2880,14 @@ health_check_easytier() {
     [[ "$rc" -eq 0 || "$rc" -eq 2 ]] && ip_ok="true"
 
     case "${ROLE:-}" in
-        panel-landing)
+        panel-landing|nat-ingress)
             set +e
             check_listener_present
             rc=$?
             set -e
             [[ "$rc" -eq 0 || "$rc" -eq 2 ]] && role_ok="true"
             ;;
-        panel-ingress)
+        panel-ingress|nat-transit)
             [[ -n "${ET_PEERS:-}" ]] && role_ok="true"
             ;;
         *)
@@ -2715,7 +2899,7 @@ health_check_easytier() {
 }
 
 ensure_listener_port_available_before_start() {
-    [[ "${ROLE:-}" == "panel-landing" ]] || return 0
+    [[ "${ROLE:-}" == "panel-landing" || "${ROLE:-}" == "nat-ingress" ]] || return 0
     validate_easytier_args
     if command_exists systemctl; then
         systemctl stop "$SERVICE_NAME" >/dev/null 2>&1 || true
@@ -2819,7 +3003,7 @@ status_easytier_detailed() {
     printf '本机 EasyTier 虚拟 IP：%s\n' "$ip_status"
 
     case "${ROLE:-}" in
-        panel-landing)
+        panel-landing|nat-ingress)
             set +e
             check_listener_present
             rc=$?
@@ -2829,12 +3013,12 @@ status_easytier_detailed() {
                 2) listener_status="无法检查（ss 命令不可用）" ;;
                 *) listener_status="未监听" ;;
             esac
-            printf 'landing listener：%s\n' "$listener_status"
+            printf 'EasyTier listener：%s\n' "$listener_status"
             ;;
-        panel-ingress)
+        panel-ingress|nat-transit)
             if [[ -n "${ET_PEERS:-}" ]]; then
                 peer_status="存在"
-                printf '入口机 peer 配置：存在\n'
+                printf 'EasyTier peer 配置：存在\n'
                 printf 'peers:\n'
                 while IFS= read -r peer; do
                     [[ -n "$peer" ]] || continue
@@ -2842,7 +3026,7 @@ status_easytier_detailed() {
                 done <<<"${ET_PEERS// /$'\n'}"
             else
                 peer_status="不存在"
-                printf '入口机 peer 配置：不存在\n'
+                printf 'EasyTier peer 配置：不存在\n'
             fi
             if [[ "${FORWARD_ENABLED:-true}" == "true" ]]; then
                 printf '业务转发：已配置\n'
@@ -2859,9 +3043,9 @@ status_easytier_detailed() {
         age=""
         [[ -n "$ts" ]] && age=$((now - ts))
         ready_status="false"
-        if [[ "${ROLE:-}" == "panel-landing" && "$proc_status" == "存在" && "$ip_status" == "存在" && "${listener_status:-未监听}" == "已监听" ]]; then
+        if [[ ( "${ROLE:-}" == "panel-landing" || "${ROLE:-}" == "nat-ingress" ) && "$proc_status" == "存在" && "$ip_status" == "存在" && "${listener_status:-未监听}" == "已监听" ]]; then
             ready_status="true"
-        elif [[ "${ROLE:-}" == "panel-ingress" && "$proc_status" == "存在" && "$ip_status" == "存在" && "${peer_status:-不存在}" == "存在" ]]; then
+        elif [[ ( "${ROLE:-}" == "panel-ingress" || "${ROLE:-}" == "nat-transit" ) && "$proc_status" == "存在" && "$ip_status" == "存在" && "${peer_status:-不存在}" == "存在" ]]; then
             ready_status="true"
         fi
         if [[ "$ready_status" == "true" ]]; then
@@ -2891,29 +3075,137 @@ enable_ip_forward() {
     log_ok "已开启 IPv4 转发：net.ipv4.ip_forward=1"
 }
 
+profile_needs_nft_forward() {
+    case "${ROLE:-}" in
+        panel-ingress|nat-ingress|nat-transit)
+            [[ "${ENABLED:-true}" == "true" && "${FORWARD_ENABLED:-true}" == "true" ]]
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+landing_ip_for_nft() {
+    local host="${1:-${LANDING_HOST:-}}" resolved
+    [[ -n "$host" ]] || return 1
+    if validate_ipv4 "$host"; then
+        printf '%s\n' "$host"
+        return 0
+    fi
+    if [[ -n "${LANDING_IP:-}" ]] && validate_ipv4 "$LANDING_IP"; then
+        printf '%s\n' "$LANDING_IP"
+        return 0
+    fi
+    if command_exists getent; then
+        resolved="$(getent ahostsv4 "$host" 2>/dev/null | awk '{print $1; exit}')"
+        if [[ -n "$resolved" ]] && validate_ipv4 "$resolved"; then
+            printf '%s\n' "$resolved"
+            return 0
+        fi
+    fi
+    log_warn "LANDING_HOST 域名解析失败：${host}，已中止应用 nftables。"
+    return 1
+}
+
+profile_nft_target() {
+    local landing_ip
+    case "${ROLE:-}" in
+        panel-ingress)
+            [[ -n "${LANDING_ET_IP:-}" && -n "${REMOTE_PORT:-}" ]] || return 1
+            printf '%s:%s\n' "$LANDING_ET_IP" "$REMOTE_PORT"
+            ;;
+        nat-ingress)
+            [[ -n "${NAT_ET_IP:-}" && -n "${TRANSIT_PORT:-}" ]] || return 1
+            printf '%s:%s\n' "$NAT_ET_IP" "$TRANSIT_PORT"
+            ;;
+        nat-transit)
+            [[ -n "${LANDING_HOST:-}" && -n "${LANDING_PORT:-}" ]] || return 1
+            landing_ip="$(landing_ip_for_nft "$LANDING_HOST")" || return 1
+            printf '%s:%s\n' "$landing_ip" "$LANDING_PORT"
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+profile_nft_daddr_match() {
+    case "${ROLE:-}" in
+        nat-transit)
+            [[ -n "${NAT_ET_IP:-}" ]] || return 1
+            printf 'ip daddr %s ' "$NAT_ET_IP"
+            ;;
+    esac
+}
+
+profile_nft_dport() {
+    case "${ROLE:-}" in
+        panel-ingress|nat-ingress)
+            [[ -n "${LOCAL_PORT:-}" ]] || return 1
+            printf '%s\n' "$LOCAL_PORT"
+            ;;
+        nat-transit)
+            [[ -n "${TRANSIT_PORT:-}" ]] || return 1
+            printf '%s\n' "$TRANSIT_PORT"
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+profile_nft_postrouting_ip_port() {
+    local landing_ip
+    case "${ROLE:-}" in
+        panel-ingress)
+            [[ -n "${LANDING_ET_IP:-}" && -n "${REMOTE_PORT:-}" ]] || return 1
+            printf '%s:%s\n' "$LANDING_ET_IP" "$REMOTE_PORT"
+            ;;
+        nat-ingress)
+            [[ -n "${NAT_ET_IP:-}" && -n "${TRANSIT_PORT:-}" ]] || return 1
+            printf '%s:%s\n' "$NAT_ET_IP" "$TRANSIT_PORT"
+            ;;
+        nat-transit)
+            [[ -n "${LANDING_HOST:-}" && -n "${LANDING_PORT:-}" ]] || return 1
+            landing_ip="$(landing_ip_for_nft "$LANDING_HOST")" || return 1
+            printf '%s:%s\n' "$landing_ip" "$LANDING_PORT"
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
 render_nft_file() {
-    local output="$1"
+    local output="$1" dport target daddr post ip port
     local table_name="$2"
     [[ "${FORWARD_ENABLED:-true}" == "true" ]] || die_user "业务转发未配置，不能生成 nftables 规则。请运行 configure-forward。"
+    dport="$(profile_nft_dport)" || die_user "Profile 缺少 nftables 接收端口。"
+    target="$(profile_nft_target)" || die_user "Profile 缺少 nftables 转发目标。"
+    daddr="$(profile_nft_daddr_match || true)"
+    post="$(profile_nft_postrouting_ip_port)" || die_user "Profile 缺少 nftables SNAT 目标。"
+    ip="${post%:*}"
+    port="${post##*:}"
 
     {
         printf 'table ip %s {\n' "$table_name"
         printf '    chain prerouting {\n'
         printf '        type nat hook prerouting priority dstnat; policy accept;\n'
         if [[ "$FORWARD_PROTO" == "tcp" || "$FORWARD_PROTO" == "both" ]]; then
-            printf '        tcp dport %s dnat to %s:%s\n' "$LOCAL_PORT" "$LANDING_ET_IP" "$REMOTE_PORT"
+            printf '        %stcp dport %s dnat to %s\n' "$daddr" "$dport" "$target"
         fi
         if [[ "$FORWARD_PROTO" == "udp" || "$FORWARD_PROTO" == "both" ]]; then
-            printf '        udp dport %s dnat to %s:%s\n' "$LOCAL_PORT" "$LANDING_ET_IP" "$REMOTE_PORT"
+            printf '        %sudp dport %s dnat to %s\n' "$daddr" "$dport" "$target"
         fi
         printf '    }\n\n'
         printf '    chain postrouting {\n'
         printf '        type nat hook postrouting priority srcnat; policy accept;\n'
         if [[ "$FORWARD_PROTO" == "tcp" || "$FORWARD_PROTO" == "both" ]]; then
-            printf '        ip daddr %s tcp dport %s masquerade\n' "$LANDING_ET_IP" "$REMOTE_PORT"
+            printf '        ip daddr %s tcp dport %s masquerade\n' "$ip" "$port"
         fi
         if [[ "$FORWARD_PROTO" == "udp" || "$FORWARD_PROTO" == "both" ]]; then
-            printf '        ip daddr %s udp dport %s masquerade\n' "$LANDING_ET_IP" "$REMOTE_PORT"
+            printf '        ip daddr %s udp dport %s masquerade\n' "$ip" "$port"
         fi
         printf '    }\n'
         printf '}\n'
@@ -2943,13 +3235,13 @@ check_profile_conflicts() {
     current_ip="${ET_IPV4:-}"
     current_ip="${current_ip%%/*}"
 
-    if [[ "${ROLE:-}" == "panel-ingress" && "${FORWARD_ENABLED:-true}" == "true" ]]; then
+    if [[ ( "${ROLE:-}" == "panel-ingress" || "${ROLE:-}" == "nat-ingress" ) && "${FORWARD_ENABLED:-true}" == "true" ]]; then
         for other in $(profile_ids); do
             [[ "$other" == "$profile_id" ]] && continue
             path="$(profile_env_path "$other")"
             profile_path_enabled "$path" || continue
             other_role="$(profile_env_value_from_path "$path" ROLE 2>/dev/null || true)"
-            [[ "$other_role" == "panel-ingress" ]] || continue
+            [[ "$other_role" == "panel-ingress" || "$other_role" == "nat-ingress" ]] || continue
             other_forward="$(profile_env_value_from_path "$path" FORWARD_ENABLED 2>/dev/null || true)"
             [[ "${other_forward:-true}" == "true" ]] || continue
             old_local="$(profile_env_value_from_path "$path" LOCAL_PORT 2>/dev/null || true)"
@@ -2961,22 +3253,34 @@ check_profile_conflicts() {
             log_warn "LOCAL_PORT ${LOCAL_PORT} 已被本机进程监听，可能和 nftables DNAT 冲突。"
             show_port_owner "$LOCAL_PORT" >&2
         fi
-        [[ -n "${REMOTE_PORT:-}" ]] || die_user "REMOTE_PORT 为空但业务转发已启用。"
+        if [[ "${ROLE:-}" == "panel-ingress" ]]; then
+            [[ -n "${REMOTE_PORT:-}" ]] || die_user "REMOTE_PORT 为空但业务转发已启用。"
+        fi
     fi
-    if [[ "${ROLE:-}" == "panel-landing" ]]; then
+    if [[ "${ROLE:-}" == "nat-ingress" && "${FORWARD_ENABLED:-true}" == "true" ]]; then
+        [[ -n "${TRANSIT_PORT:-}" ]] || die_user "TRANSIT_PORT 为空但 NAT-IX 转发已启用。"
+        if [[ -n "${LOCAL_PORT:-}" && -n "${INGRESS_LISTENER_PORT:-}" && "$LOCAL_PORT" == "$INGRESS_LISTENER_PORT" ]]; then
+            die_user "LOCAL_PORT 不能和 INGRESS_LISTENER_PORT 相同。"
+        fi
+    fi
+    if [[ "${ROLE:-}" == "nat-transit" && "${FORWARD_ENABLED:-true}" == "true" ]]; then
+        [[ -n "${TRANSIT_PORT:-}" && -n "${LANDING_HOST:-}" && -n "${LANDING_PORT:-}" ]] || die_user "nat-transit 缺少 TRANSIT_PORT / LANDING_HOST / LANDING_PORT。"
+    fi
+    if [[ "${ROLE:-}" == "panel-landing" || "${ROLE:-}" == "nat-ingress" ]]; then
         local listener_port listener_proto
-        listener_port="${LISTENER_PORT:-${ET_LISTENER_PORT:-}}"
-        listener_proto="${ET_LISTENER_PROTO:-${LISTENER_PROTOS:-both}}"
+        listener_port="${LISTENER_PORT:-${ET_LISTENER_PORT:-${INGRESS_LISTENER_PORT:-}}}"
+        listener_proto="${ET_LISTENER_PROTO:-${LISTENER_PROTOS:-${INGRESS_LISTENER_PROTO:-both}}}"
         for other in $(profile_ids); do
             [[ "$other" == "$profile_id" ]] && continue
             path="$(profile_env_path "$other")"
             profile_path_enabled "$path" || continue
             other_role="$(profile_env_value_from_path "$path" ROLE 2>/dev/null || true)"
-            [[ "$other_role" == "panel-landing" ]] || continue
+            [[ "$other_role" == "panel-landing" || "$other_role" == "nat-ingress" ]] || continue
             old_listener="$(profile_env_value_from_path "$path" LISTENER_PORT 2>/dev/null || true)"
             [[ -n "$old_listener" ]] || old_listener="$(profile_env_value_from_path "$path" ET_LISTENER_PORT 2>/dev/null || true)"
+            [[ -n "$old_listener" ]] || old_listener="$(profile_env_value_from_path "$path" INGRESS_LISTENER_PORT 2>/dev/null || true)"
             if [[ -n "$listener_port" && "$old_listener" == "$listener_port" ]]; then
-                die_user "LISTENER_PORT 冲突：${listener_port} 已被 profile ${other} 使用。"
+                die_user "EasyTier listener 端口冲突：${listener_port} 已被 profile ${other} 使用。"
             fi
         done
         validate_listener_port_available "$listener_proto" "$listener_port" || die_user "EasyTier listener 端口不可用。"
@@ -3005,7 +3309,7 @@ check_all_profiles_conflicts() {
         profile_path_enabled "$path" || continue
         role="$(profile_env_value_from_path "$path" ROLE 2>/dev/null || true)"
 
-        if [[ "$role" == "panel-ingress" ]]; then
+        if [[ "$role" == "panel-ingress" || "$role" == "nat-ingress" ]]; then
             forward_enabled="$(profile_env_value_from_path "$path" FORWARD_ENABLED 2>/dev/null || true)"
             if [[ "${forward_enabled:-true}" == "true" ]]; then
                 local_port="$(profile_env_value_from_path "$path" LOCAL_PORT 2>/dev/null || true)"
@@ -3018,9 +3322,10 @@ check_all_profiles_conflicts() {
             fi
         fi
 
-        if [[ "$role" == "panel-landing" ]]; then
+        if [[ "$role" == "panel-landing" || "$role" == "nat-ingress" ]]; then
             listener_port="$(profile_env_value_from_path "$path" LISTENER_PORT 2>/dev/null || true)"
             [[ -n "$listener_port" ]] || listener_port="$(profile_env_value_from_path "$path" ET_LISTENER_PORT 2>/dev/null || true)"
+            [[ -n "$listener_port" ]] || listener_port="$(profile_env_value_from_path "$path" INGRESS_LISTENER_PORT 2>/dev/null || true)"
             if [[ -n "$listener_port" ]]; then
                 if [[ -n "${seen_listener[$listener_port]:-}" ]]; then
                     die_user "多个启用 Profile 使用相同 LISTENER_PORT：${listener_port}（${seen_listener[$listener_port]} 与 ${id}）"
@@ -3053,26 +3358,29 @@ validate_all_enabled_profiles() {
         path="$(profile_env_path "$id")"
         profile_path_enabled "$path" || continue
         load_profile "$id" || die_user "无法读取 Profile：${id}"
-        [[ "${ROLE:-}" == "panel-ingress" && "${FORWARD_ENABLED:-true}" == "true" ]] || continue
+        profile_needs_nft_forward || continue
         validate_profile_config "$id"
     done
 }
 
 render_nft_all_file() {
-    local output="$1" table_name="$2" id saved_vars
+    local output="$1" table_name="$2" id dport target daddr post ip port
     {
         printf 'table ip %s {\n' "$table_name"
         printf '    chain prerouting {\n'
         printf '        type nat hook prerouting priority dstnat; policy accept;\n\n'
         for id in $(profile_ids); do
             load_profile "$id" || continue
-            [[ "${ROLE:-}" == "panel-ingress" && "${ENABLED:-true}" == "true" && "${FORWARD_ENABLED:-true}" == "true" ]] || continue
+            profile_needs_nft_forward || continue
+            dport="$(profile_nft_dport)" || continue
+            target="$(profile_nft_target)" || return 1
+            daddr="$(profile_nft_daddr_match || true)"
             printf '        # profile: %s\n' "$id"
             if [[ "${FORWARD_PROTO:-both}" == "tcp" || "${FORWARD_PROTO:-both}" == "both" ]]; then
-                printf '        tcp dport %s dnat to %s:%s\n' "$LOCAL_PORT" "$LANDING_ET_IP" "$REMOTE_PORT"
+                printf '        %stcp dport %s dnat to %s\n' "$daddr" "$dport" "$target"
             fi
             if [[ "${FORWARD_PROTO:-both}" == "udp" || "${FORWARD_PROTO:-both}" == "both" ]]; then
-                printf '        udp dport %s dnat to %s:%s\n' "$LOCAL_PORT" "$LANDING_ET_IP" "$REMOTE_PORT"
+                printf '        %sudp dport %s dnat to %s\n' "$daddr" "$dport" "$target"
             fi
             printf '\n'
         done
@@ -3081,13 +3389,16 @@ render_nft_all_file() {
         printf '        type nat hook postrouting priority srcnat; policy accept;\n\n'
         for id in $(profile_ids); do
             load_profile "$id" || continue
-            [[ "${ROLE:-}" == "panel-ingress" && "${ENABLED:-true}" == "true" && "${FORWARD_ENABLED:-true}" == "true" ]] || continue
+            profile_needs_nft_forward || continue
+            post="$(profile_nft_postrouting_ip_port)" || return 1
+            ip="${post%:*}"
+            port="${post##*:}"
             printf '        # profile: %s\n' "$id"
             if [[ "${FORWARD_PROTO:-both}" == "tcp" || "${FORWARD_PROTO:-both}" == "both" ]]; then
-                printf '        ip daddr %s tcp dport %s masquerade\n' "$LANDING_ET_IP" "$REMOTE_PORT"
+                printf '        ip daddr %s tcp dport %s masquerade\n' "$ip" "$port"
             fi
             if [[ "${FORWARD_PROTO:-both}" == "udp" || "${FORWARD_PROTO:-both}" == "both" ]]; then
-                printf '        ip daddr %s udp dport %s masquerade\n' "$LANDING_ET_IP" "$REMOTE_PORT"
+                printf '        ip daddr %s udp dport %s masquerade\n' "$ip" "$port"
             fi
             printf '\n'
         done
@@ -3317,6 +3628,44 @@ generate_landing_code() {
     render_landing_code_json | base64url_encode | sed 's/^/IXTF1:/'
 }
 
+render_nat_code_json() {
+    local created_at ingress_listener_proto ingress_listener_protos
+    validate_easytier_args
+    [[ "$ROLE" == "nat-ingress" ]] || die_user "只有 nat-ingress 可以生成 NAT-IX 接入码。"
+    normalize_profile_compat_vars
+    created_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    ingress_listener_proto="$(normalize_listener_proto "${INGRESS_LISTENER_PROTO:-both}" "both")"
+    ingress_listener_protos="$(normalize_listener_protos "$ingress_listener_proto" "both")"
+
+    printf '{'
+    printf '"version":1,'
+    printf '"project":"%s",' "$APP_NAME"
+    printf '"mode":"nat-transit",'
+    printf '"role":"nat-ingress-code",'
+    printf '"profile_id":"%s",' "$(json_escape "${PROFILE_ID:-default}")"
+    printf '"profile_name":"%s",' "$(json_escape "${PROFILE_NAME:-${PROFILE_ID:-default}}")"
+    printf '"network_name":"%s",' "$(json_escape "$ET_NETWORK_NAME")"
+    printf '"network_secret":"%s",' "$(json_escape "$ET_NETWORK_SECRET")"
+    printf '"ingress_hostname":"%s",' "$(json_escape "${INGRESS_HOSTNAME:-$ET_HOSTNAME}")"
+    printf '"ingress_public_host":"%s",' "$(json_escape "$INGRESS_PUBLIC_HOST")"
+    printf '"ingress_et_ip":"%s",' "$INGRESS_ET_IP"
+    printf '"ingress_et_cidr":"%s",' "${INGRESS_ET_CIDR:-$ET_IPV4}"
+    printf '"ingress_listener_proto":"%s",' "$ingress_listener_proto"
+    printf '"ingress_listener_protos":%s,' "$(listener_protos_json "$ingress_listener_proto")"
+    printf '"ingress_listener_port":%s,' "$INGRESS_LISTENER_PORT"
+    printf '"nat_et_ip":"%s",' "$NAT_ET_IP"
+    printf '"nat_et_cidr":"%s",' "${NAT_ET_CIDR:-${NAT_ET_IP}/24}"
+    printf '"local_port":%s,' "$LOCAL_PORT"
+    printf '"transit_port":%s,' "$TRANSIT_PORT"
+    printf '"forward_proto":"%s",' "${FORWARD_PROTO:-both}"
+    printf '"created_at":"%s"' "$created_at"
+    printf '}'
+}
+
+generate_nat_code() {
+    render_nat_code_json | base64url_encode | sed 's/^/IXTF1:/'
+}
+
 save_landing_code_file() {
     local code="$1"
     ensure_config_dir
@@ -3338,11 +3687,35 @@ show_code() {
         printf '[WARN] 未找到可读取的配置文件：%s。请先安装落地机模式。\n' "$ENV_FILE"
         return 0
     fi
-    if [[ "${ROLE:-}" != "panel-landing" ]]; then
-        printf '[WARN] 当前角色不是 panel-landing，不能生成落地机接入码。\n'
+    normalize_profile_compat_vars
+    if [[ "${ROLE:-}" == "nat-ingress" ]]; then
+        code="$(generate_nat_code)"
+        if [[ -n "${PROFILE_ID:-}" && "${PROFILE_ID:-default}" != "default" ]]; then
+            save_profile_code_file "$PROFILE_ID" "$code"
+        fi
+        cat <<EOF
+NAT-IX 接入码：
+$(c_yellow '===== 接入码开始 =====')
+${code}
+$(c_yellow '===== 接入码结束 =====')
+
+NAT IX 机器导入后会连接：
+入口机：${INGRESS_PUBLIC_HOST}:${INGRESS_LISTENER_PORT}
+入口机 ET IP：${INGRESS_ET_IP}
+NAT IX ET IP：${NAT_ET_IP}
+中转接收端口：${TRANSIT_PORT}
+
+安全提醒：
+这段接入码包含 EasyTier 组网密钥，不是加密 token。
+不要公开，不要发到工单或群里。
+如果泄露，请 refresh-nat-code 或重建 Profile。
+EOF
         return 0
     fi
-    normalize_profile_compat_vars
+    if [[ "${ROLE:-}" != "panel-landing" ]]; then
+        printf '[WARN] 当前角色不是 panel-landing 或 nat-ingress，不能生成接入码。\n'
+        return 0
+    fi
     listener_proto="${ET_LISTENER_PROTO:-${LISTENER_PROTOS:-}}"
     listener_port="${LISTENER_PORT:-${ET_LISTENER_PORT:-}}"
     if [[ -z "$listener_port" ]]; then
@@ -3413,6 +3786,24 @@ read_code_from_args_or_prompt() {
     extract_landing_code "$code" || die_user "接入码格式不正确，应包含 IXTF1: 开头的单行。"
 }
 
+read_nat_code_from_args_or_prompt() {
+    local code
+    if [[ -n "$CODE_ARG" ]]; then
+        extract_landing_code "$CODE_ARG" || die_user "NAT-IX 接入码格式不正确，应包含 IXTF1: 开头的单行。"
+        return 0
+    fi
+    if [[ -n "$CODE_FILE_ARG" ]]; then
+        [[ -r "$CODE_FILE_ARG" ]] || die_user "无法读取 NAT-IX 接入码文件：${CODE_FILE_ARG}"
+        code="$(cat "$CODE_FILE_ARG")"
+        extract_landing_code "$code" || die_user "NAT-IX 接入码文件中没有找到 IXTF1: 开头的单行。"
+        return 0
+    fi
+    require_tty add-nat-transit-profile-from-code
+    printf '请粘贴 nat-ingress 生成的 NAT-IX 接入码（IXTF1:...）：' >&2
+    IFS= read -r code || return 1
+    extract_landing_code "$code" || die_user "NAT-IX 接入码格式不正确，应包含 IXTF1: 开头的单行。"
+}
+
 parse_landing_code() {
     local code="$1"
     local payload json version project mode role cidr_ip normalized tunnel_protos
@@ -3476,6 +3867,63 @@ parse_landing_code() {
     if [[ -n "$CODE_REMOTE_PORT" ]]; then
         validate_port "$CODE_REMOTE_PORT" || die_user "接入码中的 remote_port 不正确。"
     fi
+}
+
+parse_nat_code() {
+    local code="$1"
+    local payload json version project mode role cidr_ip normalized listener_protos
+    code="$(extract_landing_code "$code")" || die_user "接入码格式不正确，应以 IXTF1: 开头。"
+    payload="${code#IXTF1:}"
+    json="$(base64url_decode "$payload")" || die_user "NAT-IX 接入码解码失败，请确认复制完整。"
+
+    version="$(json_get_number "$json" "version")"
+    project="$(json_get_string "$json" "project")"
+    mode="$(json_get_string "$json" "mode")"
+    role="$(json_get_string "$json" "role")"
+
+    [[ "$version" == "1" || -z "$version" ]] || die_user "NAT-IX 接入码版本不支持。"
+    [[ "$project" == "$APP_NAME" ]] || die_user "NAT-IX 接入码项目不匹配。"
+    [[ "$mode" == "nat-transit" ]] || die_user "NAT-IX 接入码 mode 不匹配。"
+    [[ "$role" == "nat-ingress-code" ]] || die_user "NAT-IX 接入码 role 不匹配。"
+
+    CODE_NETWORK_NAME="$(json_get_string "$json" "network_name")"
+    CODE_NETWORK_SECRET="$(json_get_string "$json" "network_secret")"
+    CODE_PROFILE_ID="$(json_get_string "$json" "profile_id")"
+    CODE_PROFILE_NAME="$(json_get_string "$json" "profile_name")"
+    CODE_INGRESS_HOSTNAME="$(json_get_string "$json" "ingress_hostname")"
+    CODE_INGRESS_PUBLIC_HOST="$(json_get_string "$json" "ingress_public_host")"
+    CODE_INGRESS_ET_IP="$(json_get_string "$json" "ingress_et_ip")"
+    CODE_INGRESS_ET_CIDR="$(json_get_string "$json" "ingress_et_cidr")"
+    CODE_INGRESS_LISTENER_PROTO="$(json_get_string "$json" "ingress_listener_proto")"
+    listener_protos="$(json_get_string_array_as_words "$json" "ingress_listener_protos" 2>/dev/null || true)"
+    [[ -n "$CODE_INGRESS_LISTENER_PROTO" && -z "$listener_protos" ]] && listener_protos="$CODE_INGRESS_LISTENER_PROTO"
+    CODE_INGRESS_LISTENER_PORT="$(json_get_number "$json" "ingress_listener_port")"
+    CODE_NAT_ET_IP="$(json_get_string "$json" "nat_et_ip")"
+    CODE_NAT_ET_CIDR="$(json_get_string "$json" "nat_et_cidr")"
+    CODE_LOCAL_PORT="$(json_get_number "$json" "local_port")"
+    CODE_TRANSIT_PORT="$(json_get_number "$json" "transit_port")"
+    CODE_FORWARD_PROTO="$(json_get_string "$json" "forward_proto")"
+
+    validate_network_name "$CODE_NETWORK_NAME" || die_user "接入码中的 network_name 格式不正确。"
+    validate_secret "$CODE_NETWORK_SECRET" || die_user "接入码中的 network_secret 不合法或长度不足。"
+    validate_host "$CODE_INGRESS_PUBLIC_HOST" || die_user "接入码中的 ingress_public_host 不正确。"
+    validate_ipv4 "$CODE_INGRESS_ET_IP" || die_user "接入码中的 ingress_et_ip 不正确。"
+    validate_ipv4_cidr "$CODE_INGRESS_ET_CIDR" || die_user "接入码中的 ingress_et_cidr 不正确。"
+    cidr_ip="${CODE_INGRESS_ET_CIDR%%/*}"
+    [[ "$cidr_ip" == "$CODE_INGRESS_ET_IP" ]] || die_user "接入码中的 ingress_et_ip 和 ingress_et_cidr 不一致。"
+    validate_ipv4 "$CODE_NAT_ET_IP" || die_user "接入码中的 nat_et_ip 不正确。"
+    validate_ipv4_cidr "$CODE_NAT_ET_CIDR" || die_user "接入码中的 nat_et_cidr 不正确。"
+    cidr_ip="${CODE_NAT_ET_CIDR%%/*}"
+    [[ "$cidr_ip" == "$CODE_NAT_ET_IP" ]] || die_user "接入码中的 nat_et_ip 和 nat_et_cidr 不一致。"
+    normalized="$(normalize_entry_proto "${listener_protos:-$CODE_INGRESS_LISTENER_PROTO}" "both")" || die_user "接入码中的 ingress_listener_proto 不正确。"
+    CODE_INGRESS_LISTENER_PROTO="$normalized"
+    CODE_INGRESS_LISTENER_PROTOS="$(normalize_peer_protos "$normalized" "both")"
+    validate_port "$CODE_INGRESS_LISTENER_PORT" || die_user "接入码中的 ingress_listener_port 不正确。"
+    validate_port "$CODE_TRANSIT_PORT" || die_user "接入码中的 transit_port 不正确。"
+    if [[ -n "${CODE_LOCAL_PORT:-}" ]]; then
+        validate_port "$CODE_LOCAL_PORT" || die_user "接入码中的 local_port 不正确。"
+    fi
+    CODE_FORWARD_PROTO="$(normalize_forward_proto "${CODE_FORWARD_PROTO:-both}" "both")" || die_user "接入码中的 forward_proto 不正确。"
 }
 
 import_code() {
@@ -3585,6 +4033,57 @@ collect_ingress_inputs() {
     ET_NO_LISTENER="true"
 }
 
+collect_nat_ingress_inputs() {
+    local default_network default_secret default_subnet default_ingress_cidr default_nat_cidr default_listener_port default_local_port default_transit_port default_public
+    require_tty add-nat-ingress-profile
+    ROLE="nat-ingress"
+    default_network="$(generate_network_name)"
+    default_secret="$(generate_secret)"
+    default_subnet="$(generate_et_subnet)"
+    default_ingress_cidr="$(cidr_from_subnet_host "$default_subnet" 1)"
+    default_nat_cidr="$(cidr_from_subnet_host "$default_subnet" 2)"
+    default_listener_port="$(pick_random_port_excluding_listeners both || true)"
+    default_local_port="$(pick_random_port || true)"
+    default_transit_port="$(pick_random_port || true)"
+    default_public="$(hostname -f 2>/dev/null || hostname 2>/dev/null || true)"
+    validate_host "$default_public" || default_public="ingress.example"
+
+    cat >&2 <<EOF
+按 Enter 使用推荐默认值。
+NAT-IX Transit Mode 默认连接方向：公网入口机 listens，NAT IX 机器 peers to ingress。
+
+EOF
+    ET_NETWORK_NAME="$(prompt_validated "请输入 EasyTier 网络名" "$default_network" validate_network_name "请输入 1-64 个字符，仅允许字母、数字、点、下划线或短横线。")" || return 1
+    ET_NETWORK_SECRET="$(prompt_secret_default "$default_secret")" || return 1
+    ET_HOSTNAME="$(prompt_validated "请输入当前节点名称" "ix-nat-ingress-${PROFILE_ID:-default}" validate_hostname_value "请输入 1-64 个字符，仅允许字母、数字、点、下划线或短横线。")" || return 1
+    INGRESS_HOSTNAME="$ET_HOSTNAME"
+    INGRESS_PUBLIC_HOST="$(prompt_validated "请输入公网入口机公网 IP 或域名 INGRESS_PUBLIC_HOST" "$default_public" validate_host "请输入公网 IP 或域名。")" || return 1
+    ET_IPV4="$(prompt_validated "请输入公网入口机 EasyTier IP，例如 ${default_ingress_cidr}" "$default_ingress_cidr" validate_ipv4_cidr "请输入 IPv4/CIDR，例如 ${default_ingress_cidr}。")" || return 1
+    INGRESS_ET_CIDR="$ET_IPV4"
+    INGRESS_ET_IP="${INGRESS_ET_CIDR%%/*}"
+    ET_SUBNET="$(cidr_network24 "$ET_IPV4")"
+    NAT_ET_CIDR="$(prompt_validated "请输入 NAT IX 机器 EasyTier IP，例如 ${default_nat_cidr}" "$default_nat_cidr" validate_ipv4_cidr "请输入 IPv4/CIDR，例如 ${default_nat_cidr}。")" || return 1
+    NAT_ET_IP="${NAT_ET_CIDR%%/*}"
+    INGRESS_LISTENER_PROTO="$(prompt_listener_proto "请选择公网入口机 EasyTier listener 协议（tcp / udp / tcp+udp / ws / wss / quic / wg / all）" "both")" || return 1
+    INGRESS_LISTENER_PROTOS="$(normalize_listener_protos "$INGRESS_LISTENER_PROTO" "both")"
+    INGRESS_LISTENER_PORT="$(prompt_listener_port "请输入公网入口机 EasyTier listener 端口" "$INGRESS_LISTENER_PROTO" "$default_listener_port")" || return 1
+    if [[ -n "$default_listener_port" && "$INGRESS_LISTENER_PORT" == "$default_listener_port" ]]; then
+        ET_LISTENER_PORT_WAS_DEFAULT="true"
+    else
+        ET_LISTENER_PORT_WAS_DEFAULT="false"
+    fi
+    LOCAL_PORT="$(prompt_random_port "请输入客户端连接端口 LOCAL_PORT" "$default_local_port")" || return 1
+    TRANSIT_PORT="$(prompt_random_port "请输入 NAT IX 机器中转接收端口 TRANSIT_PORT" "$default_transit_port")" || return 1
+    FORWARD_PROTO="$(prompt_forward_proto "请选择业务转发协议（tcp / udp / both / tcp/udp）" "both")" || return 1
+    ET_LISTENER_PROTO="$INGRESS_LISTENER_PROTO"
+    ET_LISTENER_PORT="$INGRESS_LISTENER_PORT"
+    ET_LISTENERS="$(listener_urls_value "$INGRESS_LISTENER_PROTO" "$INGRESS_LISTENER_PORT")"
+    ET_PRIVATE_MODE="true"
+    ET_EXPLICIT_ONLY="true"
+    IXTF_EXPLICIT_ONLY="true"
+    FORWARD_ENABLED="true"
+}
+
 print_config_summary() {
     local source="${1:-env}" listener_proto_display forward_proto_display
     if [[ "$source" != "loaded" ]]; then
@@ -3629,6 +4128,25 @@ print_config_summary() {
             else
                 printf '业务转发：未配置\n'
             fi
+            ;;
+        nat-ingress)
+            forward_proto_display="$(proto_display "${FORWARD_PROTO:-both}")"
+            printf 'NAT-IX 角色：公网入口机（listener）\n'
+            printf '入口公网地址：%s:%s\n' "${INGRESS_PUBLIC_HOST:-}" "${INGRESS_LISTENER_PORT:-}"
+            printf '入口机 ET IP：%s\n' "${INGRESS_ET_IP:-}"
+            printf 'NAT IX ET IP：%s\n' "${NAT_ET_IP:-}"
+            printf '客户端连接端口 LOCAL_PORT：%s\n' "${LOCAL_PORT:-}"
+            printf '中转接收端口 TRANSIT_PORT：%s\n' "${TRANSIT_PORT:-}"
+            printf '转发：%s -> %s:%s（%s）\n' "${LOCAL_PORT:-}" "${NAT_ET_IP:-}" "${TRANSIT_PORT:-}" "$forward_proto_display"
+            ;;
+        nat-transit)
+            forward_proto_display="$(proto_display "${FORWARD_PROTO:-both}")"
+            printf 'NAT-IX 角色：NAT IX 中转机（peer）\n'
+            printf '入口公网 listener：%s:%s\n' "${INGRESS_PUBLIC_HOST:-}" "${INGRESS_LISTENER_PORT:-}"
+            printf '入口机 ET IP：%s\n' "${INGRESS_ET_IP:-}"
+            printf 'NAT IX ET IP：%s\n' "${NAT_ET_IP:-}"
+            printf '中转转发：%s:%s -> %s:%s（%s）\n' "${NAT_ET_IP:-}" "${TRANSIT_PORT:-}" "${LANDING_HOST:-}" "${LANDING_PORT:-}" "$forward_proto_display"
+            [[ -n "${LOCAL_PORT:-}" ]] && printf '客户端连接：%s:%s\n' "${INGRESS_PUBLIC_HOST:-公网入口 VPS}" "$LOCAL_PORT"
             ;;
     esac
 }
@@ -3688,6 +4206,26 @@ show_profile_summary() {
             printf '\nsystemd 实例：%s\n' "$service"
             printf 'systemd 状态：%s（开机自启：%s）\n' "${active:-unknown}" "${enabled_status:-unknown}"
             ;;
+        nat-ingress)
+            printf '\n%s\n' "$(c_green "NAT-IX 入口线路已完成：${profile_id}")"
+            print_box "【客户端连接】" "${INGRESS_PUBLIC_HOST:-公网入口 VPS}:$(c_cyan "${LOCAL_PORT:-LOCAL_PORT}")"
+            print_box "【EasyTier listener】" \
+                "入口机：${INGRESS_PUBLIC_HOST:-INGRESS_PUBLIC_HOST}:${INGRESS_LISTENER_PORT:-INGRESS_LISTENER_PORT}" \
+                "协议：$(proto_display "${INGRESS_LISTENER_PROTO:-both}")"
+            print_box "【内部转发】" "${LOCAL_PORT:-LOCAL_PORT} -> ${NAT_ET_IP:-NAT_ET_IP}:${TRANSIT_PORT:-TRANSIT_PORT}"
+            printf '\nNAT IX 机器下一步：bash install.sh add-nat-transit-profile-from-code\n'
+            printf 'systemd 实例：%s\n' "$service"
+            printf 'systemd 状态：%s（开机自启：%s）\n' "${active:-unknown}" "${enabled_status:-unknown}"
+            ;;
+        nat-transit)
+            printf '\n%s\n' "$(c_green "NAT-IX 中转线路已完成：${profile_id}")"
+            print_box "【EasyTier peer】" "连接入口机：${INGRESS_PUBLIC_HOST:-INGRESS_PUBLIC_HOST}:${INGRESS_LISTENER_PORT:-INGRESS_LISTENER_PORT}"
+            print_box "【中转转发】" "${NAT_ET_IP:-NAT_ET_IP}:${TRANSIT_PORT:-TRANSIT_PORT} -> ${LANDING_HOST:-LANDING_HOST}:${LANDING_PORT:-LANDING_PORT}"
+            print_box "【客户端连接】" "${INGRESS_PUBLIC_HOST:-公网入口 VPS}:${LOCAL_PORT:-LOCAL_PORT}"
+            printf '\n注意：NAT IX 机器只做 nftables 中转，不需要安装代理服务。\n'
+            printf 'systemd 实例：%s\n' "$service"
+            printf 'systemd 状态：%s（开机自启：%s）\n' "${active:-unknown}" "${enabled_status:-unknown}"
+            ;;
         *)
             printf '[WARN] Profile 角色未知：%s\n' "${ROLE:-未设置}"
             ;;
@@ -3714,6 +4252,18 @@ print_profile_next_steps() {
                 "如果不通，运行 bash install.sh health ${profile_id}" \
                 "继续查看：bash install.sh doctor-all 或 bash install.sh logs-profile ${profile_id}"
             ;;
+        nat-ingress)
+            print_next_steps "下一步：" \
+                "把 NAT-IX 接入码复制到 NAT IX 机器" \
+                "在 NAT IX 机器运行 bash install.sh add-nat-transit-profile-from-code" \
+                "客户端未来连接 ${INGRESS_PUBLIC_HOST:-公网入口 VPS}:${LOCAL_PORT:-LOCAL_PORT}"
+            ;;
+        nat-transit)
+            print_next_steps "下一步：" \
+                "确认落地机允许 NAT IX 机器出口 IP 访问 ${LANDING_HOST:-LANDING_HOST}:${LANDING_PORT:-LANDING_PORT}" \
+                "运行 bash install.sh health ${profile_id}" \
+                "客户端连接 ${INGRESS_PUBLIC_HOST:-公网入口 VPS}:${LOCAL_PORT:-LOCAL_PORT}"
+            ;;
     esac
 }
 
@@ -3721,7 +4271,7 @@ print_access_code_security_hint() {
     cat <<'EOF'
 安全提醒：
   接入码包含组网密钥，不要公开。
-  如果接入码曾经发到聊天或工单，正式使用前请运行 refresh-code PROFILE_ID，或 change-landing PROFILE_ID 重新生成 secret。
+  如果接入码曾经发到聊天或工单，正式使用前请运行 refresh-code/refresh-nat-code PROFILE_ID，或重建 Profile 重新生成 secret。
 EOF
 }
 
@@ -3950,20 +4500,89 @@ panel_guide_cmd() {
     esac
 }
 
+nat_guide_profile() {
+    local profile_id="${1:-}"
+    if ! profile_id="$(resolve_profile_id_for_cmd "$profile_id" nat-guide)"; then
+        return_or_exit 2 || return $?
+    fi
+    if ! load_profile "$profile_id"; then
+        print_profile_selection_hint "$profile_id" nat-guide
+        return_or_exit 2 || return $?
+    fi
+    normalize_profile_compat_vars
+    case "${ROLE:-}" in
+        nat-ingress)
+            cat <<EOF
+当前 Profile：${profile_id}（NAT-IX 入口）
+
+公网入口机：
+- EasyTier listener：${INGRESS_PUBLIC_HOST:-INGRESS_PUBLIC_HOST}:${INGRESS_LISTENER_PORT:-INGRESS_LISTENER_PORT}
+- 入口机 ET IP：${INGRESS_ET_IP:-INGRESS_ET_IP}
+- NAT IX ET IP：${NAT_ET_IP:-NAT_ET_IP}
+- nftables 转发：LOCAL_PORT ${LOCAL_PORT:-LOCAL_PORT} -> ${NAT_ET_IP:-NAT_ET_IP}:${TRANSIT_PORT:-TRANSIT_PORT}
+
+NAT IX 机器：
+- 运行 bash install.sh add-nat-transit-profile-from-code
+- 粘贴 show-code ${profile_id} 输出的 NAT-IX 接入码。
+
+客户端：
+- 连接 ${INGRESS_PUBLIC_HOST:-公网入口 VPS}:${LOCAL_PORT:-LOCAL_PORT}
+EOF
+            ;;
+        nat-transit)
+            cat <<EOF
+当前 Profile：${profile_id}（NAT-IX 中转）
+
+NAT IX 机器：
+- EasyTier peer：${INGRESS_PUBLIC_HOST:-INGRESS_PUBLIC_HOST}:${INGRESS_LISTENER_PORT:-INGRESS_LISTENER_PORT}
+- 中转接收：${NAT_ET_IP:-NAT_ET_IP}:${TRANSIT_PORT:-TRANSIT_PORT}
+- nftables 转发：${NAT_ET_IP:-NAT_ET_IP}:${TRANSIT_PORT:-TRANSIT_PORT} -> ${LANDING_HOST:-LANDING_HOST}:${LANDING_PORT:-LANDING_PORT}
+
+落地机：
+- 不需要安装本项目。
+- 确保 ${LANDING_HOST:-LANDING_HOST}:${LANDING_PORT:-LANDING_PORT} 可被 NAT IX 机器访问。
+- 如果只允许特定来源访问，请允许 NAT IX 机器出口 IP。
+
+客户端：
+- 连接 ${INGRESS_PUBLIC_HOST:-公网入口 VPS}:${LOCAL_PORT:-LOCAL_PORT}
+EOF
+            ;;
+        *)
+            printf '[WARN] 当前 Profile 不是 NAT-IX 角色：%s\n' "${ROLE:-未设置}"
+            ;;
+    esac
+}
+
+nat_guide_cmd() {
+    require_root "$@"
+    case "${1:-}" in
+        --all)
+            local id
+            for id in $(profile_ids); do
+                printf '\n===== Profile %s =====\n' "$id"
+                nat_guide_profile "$id"
+            done
+            ;;
+        *)
+            nat_guide_profile "${1:-}"
+            ;;
+    esac
+}
+
 show_easytier_command() {
     load_env_or_warn || return 0
     printf 'EasyTier 启动命令（已脱敏，不执行）：\n'
     render_easytier_args
-    if [[ "${ROLE:-}" == "panel-landing" ]]; then
+    if [[ "${ROLE:-}" == "panel-landing" || "${ROLE:-}" == "nat-ingress" ]]; then
         print_easytier_listeners
-    elif [[ "${ROLE:-}" == "panel-ingress" ]]; then
+    elif [[ "${ROLE:-}" == "panel-ingress" || "${ROLE:-}" == "nat-transit" ]]; then
         print_easytier_peers
     fi
 }
 
 status_brief() {
     status_easytier
-    if [[ "${ROLE:-}" == "panel-ingress" ]]; then
+    if [[ "${ROLE:-}" == "panel-ingress" || "${ROLE:-}" == "nat-ingress" || "${ROLE:-}" == "nat-transit" ]]; then
         if [[ "${FORWARD_ENABLED:-true}" == "true" ]]; then
             status_nft
             if command_exists sysctl; then
@@ -4195,6 +4814,103 @@ add_ingress_profile_from_code() {
     print_profile_next_steps "$PROFILE_ID"
 }
 
+add_nat_ingress_profile() {
+    require_root "$@"
+    run_profile_install_preflight ingress
+    require_tty add-nat-ingress-profile
+    ensure_profile_dirs
+    collect_profile_identity "nat-ingress" || return 1
+    collect_nat_ingress_inputs || return 1
+    PROFILE_ID="${PROFILE_ID}"
+    PROFILE_NAME="${PROFILE_NAME:-$PROFILE_ID}"
+    ENABLED="true"
+    validate_profile_config "$PROFILE_ID"
+    check_profile_conflicts "$PROFILE_ID"
+    ensure_systemctl
+    ensure_listener_port_available_before_start
+    enable_ip_forward
+    save_profile_env "$PROFILE_ID"
+    save_profile_code_file "$PROFILE_ID" "$(generate_nat_code)"
+    render_profile_service_files
+    apply_nft_all
+    start_profile "$PROFILE_ID"
+    show_profile_summary "$PROFILE_ID"
+    printf '\nNAT-IX 接入码：\n'
+    show_code "$PROFILE_ID" || true
+    print_access_code_security_hint
+    printf '\n端口映射：\n'
+    show_port_map "$PROFILE_ID" --compact || true
+    printf '\n健康检查摘要：\n'
+    run_line_health_check "$PROFILE_ID" false || true
+    print_profile_next_steps "$PROFILE_ID"
+}
+
+add_nat_transit_profile_from_code() {
+    local profile_id code landing_host landing_port_default
+    require_root "$@"
+    run_profile_install_preflight ingress
+    require_tty add-nat-transit-profile-from-code
+    ensure_profile_dirs
+    collect_profile_identity "nat-transit" || return 1
+    profile_id="$PROFILE_ID"
+    code="$(read_nat_code_from_args_or_prompt)" || die_user "未读取到 NAT-IX 接入码。"
+    parse_nat_code "$code"
+
+    ROLE="nat-transit"
+    PROFILE_ID="$profile_id"
+    PROFILE_NAME="${PROFILE_NAME:-$profile_id}"
+    ENABLED="true"
+    ET_NETWORK_NAME="$CODE_NETWORK_NAME"
+    ET_NETWORK_SECRET="$CODE_NETWORK_SECRET"
+    ET_HOSTNAME="$(prompt_validated "请输入当前节点名称" "ix-nat-transit-${PROFILE_ID}" validate_hostname_value "请输入 1-64 个字符，仅允许字母、数字、点、下划线或短横线。")" || return 1
+    ET_IPV4="$CODE_NAT_ET_CIDR"
+    ET_SUBNET="$(cidr_network24 "$ET_IPV4")"
+    INGRESS_HOSTNAME="$CODE_INGRESS_HOSTNAME"
+    INGRESS_PUBLIC_HOST="$CODE_INGRESS_PUBLIC_HOST"
+    INGRESS_ET_IP="$CODE_INGRESS_ET_IP"
+    INGRESS_ET_CIDR="$CODE_INGRESS_ET_CIDR"
+    INGRESS_LISTENER_PROTO="$CODE_INGRESS_LISTENER_PROTO"
+    INGRESS_LISTENER_PROTOS="$CODE_INGRESS_LISTENER_PROTOS"
+    INGRESS_LISTENER_PORT="$CODE_INGRESS_LISTENER_PORT"
+    NAT_ET_IP="$CODE_NAT_ET_IP"
+    NAT_ET_CIDR="$CODE_NAT_ET_CIDR"
+    LOCAL_PORT="$CODE_LOCAL_PORT"
+    TRANSIT_PORT="$CODE_TRANSIT_PORT"
+    landing_host="$(prompt_validated "请输入落地机公网 IP 或域名 LANDING_HOST，例如 landing.example" "" validate_host "请输入 IPv4 或域名。")" || return 1
+    LANDING_HOST="$landing_host"
+    landing_port_default="50000"
+    LANDING_PORT="$(prompt_port "请输入落地机业务端口 LANDING_PORT" "$landing_port_default")" || return 1
+    FORWARD_PROTO="$(prompt_forward_proto "请选择业务转发协议（tcp / udp / both / tcp/udp）" "${CODE_FORWARD_PROTO:-both}")" || return 1
+    if validate_ipv4 "$LANDING_HOST"; then
+        LANDING_IP="$LANDING_HOST"
+    else
+        LANDING_IP=""
+    fi
+    ET_PEERS="$(peer_urls_value "$INGRESS_LISTENER_PROTO" "$INGRESS_PUBLIC_HOST" "$INGRESS_LISTENER_PORT")"
+    ET_NO_LISTENER="true"
+    ET_PRIVATE_MODE="true"
+    ET_EXPLICIT_ONLY="true"
+    IXTF_EXPLICIT_ONLY="true"
+    FORWARD_ENABLED="true"
+
+    validate_profile_config "$PROFILE_ID"
+    check_profile_conflicts "$PROFILE_ID"
+    ensure_systemctl
+    enable_ip_forward
+    save_profile_env "$PROFILE_ID"
+    render_profile_service_files
+    apply_nft_all
+    start_profile "$PROFILE_ID"
+    show_profile_summary "$PROFILE_ID"
+    printf '\n端口映射：\n'
+    show_port_map "$PROFILE_ID" --compact || true
+    printf '\n健康检查摘要：\n'
+    run_line_health_check "$PROFILE_ID" false || true
+    printf '\nnftables：\n'
+    verify_nft_profiles_core || true
+    print_profile_next_steps "$PROFILE_ID"
+}
+
 install_panel_ingress() {
     require_root "$@"
     run_profile_install_preflight ingress
@@ -4385,8 +5101,13 @@ refresh_code() {
     else
         load_env_or_warn || die_user "未找到配置，无法刷新接入码。"
     fi
-    [[ "${ROLE:-}" == "panel-landing" ]] || die_user "refresh-code 只适用于落地机。"
+    [[ "${ROLE:-}" == "panel-landing" || "${ROLE:-}" == "nat-ingress" ]] || die_user "refresh-code 只适用于 panel-landing 或 nat-ingress。"
     validate_easytier_args
+    if [[ "${ROLE:-}" == "nat-ingress" ]]; then
+        save_profile_code_file "$PROFILE_ID" "$(generate_nat_code)"
+        show_code "$PROFILE_ID"
+        return 0
+    fi
     if [[ -n "${PROFILE_ID:-}" && "${PROFILE_ID:-default}" != "default" ]]; then
         save_profile_code_file "$PROFILE_ID" "$(generate_landing_code)"
         show_code "$PROFILE_ID"
@@ -4643,6 +5364,21 @@ enabled_display() {
 
 forward_display() {
     local role="${1:-}" enabled="${2:-true}" forward="${3:-true}"
+    case "$role" in
+        panel-ingress|nat-ingress|nat-transit) ;;
+        *) printf 'n/a\n'; return 0 ;;
+    esac
+    if [[ "$enabled" != "true" ]]; then
+        printf 'off\n'
+    elif [[ "$forward" == "true" ]]; then
+        printf 'active\n'
+    else
+        printf 'standby\n'
+    fi
+}
+
+panel_forward_display() {
+    local role="${1:-}" enabled="${2:-true}" forward="${3:-true}"
     if [[ "$role" != "panel-ingress" ]]; then
         printf 'n/a\n'
     elif [[ "$enabled" != "true" ]]; then
@@ -4895,7 +5631,7 @@ profile_service_status() {
 
 nft_profile_rule_present() {
     local profile_id="$1" output expected actual missing
-    [[ "${ROLE:-}" == "panel-ingress" && "${FORWARD_ENABLED:-true}" == "true" ]] || return 3
+    profile_needs_nft_forward || return 3
     output="$(nft_table_text 2>/dev/null || true)"
     [[ -n "$output" ]] || return 2
     expected="$(profile_expected_nft_rules)"
@@ -4914,7 +5650,7 @@ enabled_forwarding_ingress_count() {
     local id count=0
     for id in $(profile_ids); do
         load_profile "$id" >/dev/null 2>&1 || continue
-        [[ "${ROLE:-}" == "panel-ingress" && "${ENABLED:-true}" == "true" && "${FORWARD_ENABLED:-true}" == "true" ]] || continue
+        profile_needs_nft_forward || continue
         count=$((count + 1))
     done
     printf '%s\n' "$count"
@@ -4926,7 +5662,7 @@ profile_role_counts() {
         load_profile "$id" >/dev/null 2>&1 || continue
         case "${ROLE:-}" in
             panel-landing) landing=$((landing + 1)) ;;
-            panel-ingress) ingress=$((ingress + 1)) ;;
+            panel-ingress|nat-ingress|nat-transit) ingress=$((ingress + 1)) ;;
             *) other=$((other + 1)) ;;
         esac
     done
@@ -4938,8 +5674,7 @@ nft_profile_rule_status() {
     if [[ -n "$profile_id" ]]; then
         load_profile "$profile_id" >/dev/null 2>&1 || { printf 'unknown\n'; return 0; }
     fi
-    [[ "${ROLE:-}" == "panel-ingress" ]] || { printf 'skipped\n'; return 0; }
-    [[ "${ENABLED:-true}" == "true" && "${FORWARD_ENABLED:-true}" == "true" ]] || { printf 'skipped\n'; return 0; }
+    profile_needs_nft_forward || { printf 'skipped\n'; return 0; }
     expected_rules="$(profile_expected_nft_rules)"
     [[ -n "$expected_rules" ]] || { printf 'unknown\n'; return 0; }
     text="$(nft_table_text 2>/dev/null || true)"
@@ -4980,23 +5715,33 @@ nft_table_text() {
 }
 
 nft_text_has_dnat_rule() {
-    local text="$1" proto="$2" local_port="$3" landing_ip="$4" remote_port="$5"
+    local text="$1" proto="$2" local_port="$3" landing_ip="$4" remote_port="$5" daddr="${6:-}"
     [[ -n "$local_port" && -n "$landing_ip" && -n "$remote_port" ]] || return 1
-    grep -Eq "${proto}[[:space:]]+dport[[:space:]]+${local_port}[[:space:]]+dnat[[:space:]]+to[[:space:]]+${landing_ip}:${remote_port}" <<<"$text" || return 1
+    if [[ -n "$daddr" ]]; then
+        grep -Eq "ip[[:space:]]+daddr[[:space:]]+${daddr}[[:space:]]+${proto}[[:space:]]+dport[[:space:]]+${local_port}([[:space:]]+counter([[:space:]]+packets[[:space:]]+[0-9]+[[:space:]]+bytes[[:space:]]+[0-9]+)?)?[[:space:]]+dnat[[:space:]]+to[[:space:]]+${landing_ip}:${remote_port}" <<<"$text" || return 1
+    else
+        grep -Eq "${proto}[[:space:]]+dport[[:space:]]+${local_port}([[:space:]]+counter([[:space:]]+packets[[:space:]]+[0-9]+[[:space:]]+bytes[[:space:]]+[0-9]+)?)?[[:space:]]+dnat[[:space:]]+to[[:space:]]+${landing_ip}:${remote_port}" <<<"$text" || return 1
+    fi
 }
 
 nft_text_has_profile_rule() {
-    local text="$1" proto="${FORWARD_PROTO:-both}" ok=0
+    local text="$1" proto="${FORWARD_PROTO:-both}" ok=0 dport target ip port daddr_ip=""
+    dport="$(profile_nft_dport 2>/dev/null || true)"
+    target="$(profile_nft_target 2>/dev/null || true)"
+    [[ -n "$dport" && -n "$target" ]] || return 1
+    ip="${target%:*}"
+    port="${target##*:}"
+    [[ "${ROLE:-}" == "nat-transit" ]] && daddr_ip="${NAT_ET_IP:-}"
     case "$proto" in
         tcp)
-            nft_text_has_dnat_rule "$text" tcp "${LOCAL_PORT:-}" "${LANDING_ET_IP:-}" "${REMOTE_PORT:-}" || ok=1
+            nft_text_has_dnat_rule "$text" tcp "$dport" "$ip" "$port" "$daddr_ip" || ok=1
             ;;
         udp)
-            nft_text_has_dnat_rule "$text" udp "${LOCAL_PORT:-}" "${LANDING_ET_IP:-}" "${REMOTE_PORT:-}" || ok=1
+            nft_text_has_dnat_rule "$text" udp "$dport" "$ip" "$port" "$daddr_ip" || ok=1
             ;;
         *)
-            nft_text_has_dnat_rule "$text" tcp "${LOCAL_PORT:-}" "${LANDING_ET_IP:-}" "${REMOTE_PORT:-}" || ok=1
-            nft_text_has_dnat_rule "$text" udp "${LOCAL_PORT:-}" "${LANDING_ET_IP:-}" "${REMOTE_PORT:-}" || ok=1
+            nft_text_has_dnat_rule "$text" tcp "$dport" "$ip" "$port" "$daddr_ip" || ok=1
+            nft_text_has_dnat_rule "$text" udp "$dport" "$ip" "$port" "$daddr_ip" || ok=1
             ;;
     esac
     return "$ok"
@@ -5006,33 +5751,36 @@ active_forwarding_local_ports() {
     local id
     for id in $(profile_ids); do
         load_profile "$id" >/dev/null 2>&1 || continue
-        [[ "${ROLE:-}" == "panel-ingress" && "${ENABLED:-true}" == "true" && "${FORWARD_ENABLED:-true}" == "true" ]] || continue
-        [[ -n "${LOCAL_PORT:-}" ]] && printf '%s\n' "$LOCAL_PORT"
+        profile_needs_nft_forward || continue
+        profile_nft_dport 2>/dev/null || true
     done | sort -u
 }
 
 nft_dnat_local_ports_from_text() {
     local text="$1"
-    { grep -Eo 'dport[[:space:]]+[0-9]+[[:space:]]+dnat[[:space:]]+to' <<<"$text" 2>/dev/null || true; } | awk '{print $2}' | sort -u
+    { grep -Eo 'dport[[:space:]]+[0-9]+([[:space:]]+counter([[:space:]]+packets[[:space:]]+[0-9]+[[:space:]]+bytes[[:space:]]+[0-9]+)?)?[[:space:]]+dnat[[:space:]]+to' <<<"$text" 2>/dev/null || true; } | awk '{print $2}' | sort -u
     return 0
 }
 
 nft_dnat_rules_from_text() {
     local text="$1"
-    { grep -E '^[[:space:]]*(tcp|udp)[[:space:]]+dport[[:space:]]+[0-9]+[[:space:]]+dnat[[:space:]]+to[[:space:]]+' <<<"$text" 2>/dev/null || true; } |
-        sed -E 's/^[[:space:]]+//; s/[[:space:]]+/ /g' | sort -u
+    { grep -E '^[[:space:]]*((ip[[:space:]]+daddr[[:space:]]+[0-9.]+[[:space:]]+)?(tcp|udp))[[:space:]]+dport[[:space:]]+[0-9]+([[:space:]]+counter([[:space:]]+packets[[:space:]]+[0-9]+[[:space:]]+bytes[[:space:]]+[0-9]+)?)?[[:space:]]+dnat[[:space:]]+to[[:space:]]+' <<<"$text" 2>/dev/null || true; } |
+        sed -E 's/^[[:space:]]+//; s/[[:space:]]+counter( packets [0-9]+ bytes [0-9]+)?//g; s/[[:space:]]+/ /g' | sort -u
     return 0
 }
 
 profile_expected_nft_rules() {
-    local proto="${FORWARD_PROTO:-both}"
-    [[ "${ROLE:-}" == "panel-ingress" ]] || return 0
-    [[ -n "${LOCAL_PORT:-}" && -n "${LANDING_ET_IP:-}" && -n "${REMOTE_PORT:-}" ]] || return 0
+    local proto="${FORWARD_PROTO:-both}" dport target daddr
+    profile_needs_nft_forward || return 0
+    dport="$(profile_nft_dport 2>/dev/null || true)"
+    target="$(profile_nft_target 2>/dev/null || true)"
+    [[ -n "$dport" && -n "$target" ]] || return 0
+    daddr="$(profile_nft_daddr_match || true)"
     if [[ "$proto" == "tcp" || "$proto" == "both" ]]; then
-        printf 'tcp dport %s dnat to %s:%s\n' "$LOCAL_PORT" "$LANDING_ET_IP" "$REMOTE_PORT"
+        printf '%stcp dport %s dnat to %s\n' "$daddr" "$dport" "$target"
     fi
     if [[ "$proto" == "udp" || "$proto" == "both" ]]; then
-        printf 'udp dport %s dnat to %s:%s\n' "$LOCAL_PORT" "$LANDING_ET_IP" "$REMOTE_PORT"
+        printf '%sudp dport %s dnat to %s\n' "$daddr" "$dport" "$target"
     fi
 }
 
@@ -5040,7 +5788,7 @@ expected_forwarding_nft_rules() {
     local id
     for id in $(profile_ids); do
         load_profile "$id" >/dev/null 2>&1 || continue
-        [[ "${ROLE:-}" == "panel-ingress" && "${ENABLED:-true}" == "true" && "${FORWARD_ENABLED:-true}" == "true" ]] || continue
+        profile_needs_nft_forward || continue
         profile_expected_nft_rules
     done | sort -u
 }
@@ -5117,9 +5865,9 @@ verify_nft_profiles_core() {
     printf '\nExpected forwarding profiles:\n'
     for id in $(profile_ids); do
         load_profile "$id" >/dev/null 2>&1 || continue
-        [[ "${ROLE:-}" == "panel-ingress" && "${ENABLED:-true}" == "true" && "${FORWARD_ENABLED:-true}" == "true" ]] || continue
+        profile_needs_nft_forward || continue
         expected=$((expected + 1))
-        printf '  - %s LOCAL_PORT=%s -> %s:%s proto=%s\n' "$id" "${LOCAL_PORT:-missing}" "${LANDING_ET_IP:-missing}" "${REMOTE_PORT:-missing}" "${FORWARD_PROTO:-both}"
+        printf '  - %s ROLE=%s %s -> %s proto=%s\n' "$id" "${ROLE:-missing}" "$(profile_nft_dport 2>/dev/null || printf missing)" "$(profile_nft_target 2>/dev/null || printf missing)" "${FORWARD_PROTO:-both}"
     done
     if [[ "$expected" -eq 0 ]]; then
         printf '  - none\n'
@@ -5146,11 +5894,12 @@ verify_nft_profiles_core() {
     printf '\nDisabled Profile residual rules:\n'
     for id in $(profile_ids); do
         load_profile "$id" >/dev/null 2>&1 || continue
-        [[ "${ROLE:-}" == "panel-ingress" ]] || continue
-        [[ -n "${LOCAL_PORT:-}" && -n "${LANDING_ET_IP:-}" && -n "${REMOTE_PORT:-}" ]] || continue
+        case "${ROLE:-}" in panel-ingress|nat-ingress|nat-transit) ;; *) continue ;; esac
+        profile_nft_dport >/dev/null 2>&1 || continue
+        profile_nft_target >/dev/null 2>&1 || continue
         if [[ "${ENABLED:-true}" != "true" ]] && nft_text_has_profile_rule "$text"; then
             disabled_residue=$((disabled_residue + 1))
-            printf '[FAIL] disabled Profile %s still has nft rule (LOCAL_PORT=%s)\n' "$id" "$LOCAL_PORT"
+            printf '[FAIL] disabled Profile %s still has nft rule (PORT=%s)\n' "$id" "$(profile_nft_dport 2>/dev/null || printf missing)"
         fi
     done
     [[ "$disabled_residue" -gt 0 ]] || printf '  - none\n'
@@ -5159,11 +5908,12 @@ verify_nft_profiles_core() {
     printf '\nFORWARD_ENABLED=false Profile residual rules:\n'
     for id in $(profile_ids); do
         load_profile "$id" >/dev/null 2>&1 || continue
-        [[ "${ROLE:-}" == "panel-ingress" ]] || continue
-        [[ -n "${LOCAL_PORT:-}" && -n "${LANDING_ET_IP:-}" && -n "${REMOTE_PORT:-}" ]] || continue
+        case "${ROLE:-}" in panel-ingress|nat-ingress|nat-transit) ;; *) continue ;; esac
+        profile_nft_dport >/dev/null 2>&1 || continue
+        profile_nft_target >/dev/null 2>&1 || continue
         if [[ "${ENABLED:-true}" == "true" && "${FORWARD_ENABLED:-true}" != "true" ]] && nft_text_has_profile_rule "$text"; then
             standby_residue=$((standby_residue + 1))
-            printf '[FAIL] FORWARD_ENABLED=false Profile %s still has nft rule (LOCAL_PORT=%s)\n' "$id" "$LOCAL_PORT"
+            printf '[FAIL] FORWARD_ENABLED=false Profile %s still has nft rule (PORT=%s)\n' "$id" "$(profile_nft_dport 2>/dev/null || printf missing)"
         fi
     done
     [[ "$standby_residue" -gt 0 ]] || printf '  - none\n'
@@ -5258,6 +6008,18 @@ profile_port_map_complete() {
                 [[ -n "${LOCAL_PORT:-}" && -n "${LANDING_ET_IP:-}" && -n "${REMOTE_PORT:-}" && -n "${FORWARD_PROTO:-}" ]]
             fi
             ;;
+        nat-ingress)
+            [[ -n "${ET_LISTENERS:-}" && -n "${INGRESS_PUBLIC_HOST:-}" && -n "${INGRESS_ET_IP:-}" && -n "${NAT_ET_IP:-}" ]] || return 1
+            if [[ "${FORWARD_ENABLED:-true}" == "true" ]]; then
+                [[ -n "${LOCAL_PORT:-}" && -n "${TRANSIT_PORT:-}" && -n "${FORWARD_PROTO:-}" ]]
+            fi
+            ;;
+        nat-transit)
+            [[ -n "${ET_PEERS:-}" && -n "${INGRESS_PUBLIC_HOST:-}" && -n "${INGRESS_ET_IP:-}" && -n "${NAT_ET_IP:-}" ]] || return 1
+            if [[ "${FORWARD_ENABLED:-true}" == "true" ]]; then
+                [[ -n "${TRANSIT_PORT:-}" && -n "${LANDING_HOST:-}" && -n "${LANDING_PORT:-}" && -n "${FORWARD_PROTO:-}" ]]
+            fi
+            ;;
         *)
             return 1
             ;;
@@ -5335,10 +6097,10 @@ run_line_health_check() {
 
     nft_label="$(nft_profile_rule_status "$profile_id")"
     health_line "nftables 规则" "$nft_label"
-    if [[ "${ROLE:-}" == "panel-ingress" && "${FORWARD_ENABLED:-true}" == "true" ]]; then
+    if profile_needs_nft_forward; then
         case "$nft_label" in
             present) ;;
-            missing) health_mark down "nftables 缺少 LOCAL_PORT 转发规则" ;;
+            missing) health_mark down "nftables 缺少转发规则" ;;
             unknown) health_mark warning "无法检查 nftables 项目表" ;;
             skipped) ;;
         esac
@@ -5461,6 +6223,105 @@ run_line_health_check() {
                     health_line "CNIX UDP 探测" "跳过（UDP 不可靠）"
                 fi
             fi
+            ;;
+        nat-ingress)
+            if [[ -n "${ET_LISTENERS:-}" ]]; then
+                health_line "EasyTier listener" "存在（${INGRESS_PUBLIC_HOST:-}:${INGRESS_LISTENER_PORT:-}）"
+            else
+                health_line "EasyTier listener" "不存在"
+                health_mark down "ET_LISTENERS 不存在"
+            fi
+            if command_exists ip && [[ -n "${NAT_ET_IP:-}" ]]; then
+                if ip route get "$NAT_ET_IP" >/dev/null 2>&1; then
+                    health_line "NAT_ET_IP 路由" "存在"
+                else
+                    health_line "NAT_ET_IP 路由" "未找到"
+                    health_mark warning "到 NAT_ET_IP 的路由未确认"
+                fi
+            else
+                health_line "NAT_ET_IP 路由" "无法检查"
+                health_mark warning "无法检查 NAT_ET_IP 路由"
+            fi
+            if command_exists ping && [[ -n "${NAT_ET_IP:-}" ]]; then
+                if ping -c 1 -W 3 "$NAT_ET_IP" >/dev/null 2>&1; then
+                    health_line "NAT_ET_IP ping" "成功"
+                else
+                    health_line "NAT_ET_IP ping" "失败"
+                    health_mark down "ping NAT_ET_IP 失败"
+                fi
+            else
+                health_line "NAT_ET_IP ping" "跳过"
+            fi
+            [[ "${FORWARD_PROTO:-both}" == "tcp" || "${FORWARD_PROTO:-both}" == "both" ]] && tcp_needed="true"
+            if [[ "$tcp_needed" == "true" && -n "${NAT_ET_IP:-}" && -n "${TRANSIT_PORT:-}" ]]; then
+                if nc_cmd="$(detect_nc_cmd 2>/dev/null)"; then
+                    if "$nc_cmd" -vz -w 3 "$NAT_ET_IP" "$TRANSIT_PORT" >/dev/null 2>&1; then
+                        health_line "NAT_ET_IP:TRANSIT_PORT TCP" "可达"
+                    else
+                        health_line "NAT_ET_IP:TRANSIT_PORT TCP" "不可达"
+                        health_mark warning "NAT-IX 中转端口 TCP 探测失败"
+                    fi
+                else
+                    health_line "NAT_ET_IP:TRANSIT_PORT TCP" "nc 不可用"
+                    suggest_install_nc | sed 's/^/  /'
+                    health_mark warning "nc 不可用，跳过 NAT_ET_IP:TRANSIT_PORT 探测"
+                fi
+            fi
+            if [[ "${FORWARD_ENABLED:-true}" == "true" && -n "${LOCAL_PORT:-}" ]] && command_exists ss; then
+                if ss -lntup 2>/dev/null | grep -Eq "[:.]${LOCAL_PORT}[[:space:]]"; then
+                    health_line "LOCAL_PORT 本机监听冲突" "检测到"
+                    health_mark warning "LOCAL_PORT 被本机进程监听"
+                else
+                    health_line "LOCAL_PORT 本机监听冲突" "未检测到"
+                fi
+            fi
+            ;;
+        nat-transit)
+            if [[ -n "${ET_PEERS:-}" ]]; then
+                health_line "EasyTier peers" "存在"
+            else
+                health_line "EasyTier peers" "不存在"
+                health_mark down "ET_PEERS 不存在"
+            fi
+            if command_exists ping && [[ -n "${INGRESS_ET_IP:-}" ]]; then
+                if ping -c 1 -W 3 "$INGRESS_ET_IP" >/dev/null 2>&1; then
+                    health_line "INGRESS_ET_IP ping" "成功"
+                else
+                    health_line "INGRESS_ET_IP ping" "失败"
+                    health_mark down "ping INGRESS_ET_IP 失败"
+                fi
+            else
+                health_line "INGRESS_ET_IP ping" "跳过"
+            fi
+            if [[ -n "${LANDING_HOST:-}" ]]; then
+                if validate_ipv4 "$LANDING_HOST"; then
+                    health_line "LANDING_IP" "$LANDING_HOST"
+                elif landing_ip="$(landing_ip_for_nft "$LANDING_HOST" 2>/dev/null)"; then
+                    health_line "LANDING_HOST 解析" "${LANDING_HOST} -> ${landing_ip}"
+                else
+                    health_line "LANDING_HOST 解析" "失败"
+                    health_mark down "LANDING_HOST 域名解析失败"
+                fi
+            fi
+            [[ "${FORWARD_PROTO:-both}" == "tcp" || "${FORWARD_PROTO:-both}" == "both" ]] && tcp_needed="true"
+            if [[ "$tcp_needed" == "true" && -n "${LANDING_HOST:-}" && -n "${LANDING_PORT:-}" ]]; then
+                if nc_cmd="$(detect_nc_cmd 2>/dev/null)"; then
+                    if "$nc_cmd" -vz -w 3 "$LANDING_HOST" "$LANDING_PORT" >/dev/null 2>&1; then
+                        health_line "LANDING_HOST:LANDING_PORT TCP" "可达"
+                    else
+                        health_line "LANDING_HOST:LANDING_PORT TCP" "不可达"
+                        health_mark warning "落地服务 TCP 探测失败"
+                    fi
+                else
+                    health_line "LANDING_HOST:LANDING_PORT TCP" "nc 不可用"
+                    suggest_install_nc | sed 's/^/  /'
+                    health_mark warning "nc 不可用，跳过落地端口探测"
+                fi
+            fi
+            if [[ "${FORWARD_PROTO:-both}" == "udp" || "${FORWARD_PROTO:-both}" == "both" ]]; then
+                health_line "UDP 探测" "跳过（UDP 不可靠）"
+            fi
+            health_line "TRANSIT_PORT userspace 监听" "不要求（nftables DNAT 接收端口）"
             ;;
     esac
 
@@ -5759,6 +6620,25 @@ profile_four_ports_missing() {
             [[ -n "${ET_LISTENER_PORT:-${LISTENER_PORT:-}}" ]] || missing+=("LISTENER_PORT")
             [[ -n "${SERVICE_PORT:-${REMOTE_PORT:-}}" ]] || missing+=("REMOTE_PORT")
             ;;
+        nat-ingress)
+            [[ -n "${INGRESS_PUBLIC_HOST:-}" ]] || missing+=("INGRESS_PUBLIC_HOST")
+            [[ -n "${INGRESS_ET_IP:-}" ]] || missing+=("INGRESS_ET_IP")
+            [[ -n "${NAT_ET_IP:-}" ]] || missing+=("NAT_ET_IP")
+            [[ -n "${INGRESS_LISTENER_PORT:-}" ]] || missing+=("INGRESS_LISTENER_PORT")
+            [[ -n "${LOCAL_PORT:-}" ]] || missing+=("LOCAL_PORT")
+            [[ -n "${TRANSIT_PORT:-}" ]] || missing+=("TRANSIT_PORT")
+            [[ -n "${FORWARD_PROTO:-}" ]] || missing+=("FORWARD_PROTO")
+            ;;
+        nat-transit)
+            [[ -n "${INGRESS_PUBLIC_HOST:-}" ]] || missing+=("INGRESS_PUBLIC_HOST")
+            [[ -n "${INGRESS_ET_IP:-}" ]] || missing+=("INGRESS_ET_IP")
+            [[ -n "${NAT_ET_IP:-}" ]] || missing+=("NAT_ET_IP")
+            [[ -n "${INGRESS_LISTENER_PORT:-}" ]] || missing+=("INGRESS_LISTENER_PORT")
+            [[ -n "${TRANSIT_PORT:-}" ]] || missing+=("TRANSIT_PORT")
+            [[ -n "${LANDING_HOST:-}" ]] || missing+=("LANDING_HOST")
+            [[ -n "${LANDING_PORT:-}" ]] || missing+=("LANDING_PORT")
+            [[ -n "${FORWARD_PROTO:-}" ]] || missing+=("FORWARD_PROTO")
+            ;;
         *)
             missing+=("ROLE")
             ;;
@@ -5772,6 +6652,18 @@ profile_four_ports_missing() {
 
 profile_four_port_summary() {
     local cnix listener remote landing
+    case "${ROLE:-}" in
+        nat-ingress)
+            printf 'LOCAL=%s INGRESS_ET=%s NAT_ET=%s TRANSIT=%s TARGET=%s:%s PROTO=%s\n' \
+                "${LOCAL_PORT:-?}" "${INGRESS_ET_IP:-?}" "${NAT_ET_IP:-?}" "${TRANSIT_PORT:-?}" "${NAT_ET_IP:-?}" "${TRANSIT_PORT:-?}" "${FORWARD_PROTO:-?}"
+            return 0
+            ;;
+        nat-transit)
+            printf 'TRANSIT=%s:%s LANDING=%s:%s CLIENT=%s:%s PROTO=%s\n' \
+                "${NAT_ET_IP:-?}" "${TRANSIT_PORT:-?}" "${LANDING_HOST:-?}" "${LANDING_PORT:-?}" "${INGRESS_PUBLIC_HOST:-?}" "${LOCAL_PORT:-?}" "${FORWARD_PROTO:-?}"
+            return 0
+            ;;
+    esac
     cnix="${CNIX_ENTRY_HOST:-?}:${CNIX_ENTRY_PORT:-?}"
     listener="${CODE_LISTENER_PORT:-${ET_LISTENER_PORT:-${LISTENER_PORT:-?}}}"
     remote="${REMOTE_PORT:-${SERVICE_PORT:-?}}"
@@ -7903,32 +8795,39 @@ monitor_run_once() {
 }
 
 nft_text_has_dnat_rule() {
-    local text="$1" proto="$2" local_port="$3" landing_ip="$4" remote_port="$5"
+    local text="$1" proto="$2" local_port="$3" landing_ip="$4" remote_port="$5" daddr="${6:-}"
     [[ -n "$local_port" && -n "$landing_ip" && -n "$remote_port" ]] || return 1
-    grep -Eq "${proto}[[:space:]]+dport[[:space:]]+${local_port}([[:space:]]+counter([[:space:]]+packets[[:space:]]+[0-9]+[[:space:]]+bytes[[:space:]]+[0-9]+)?)?[[:space:]]+dnat[[:space:]]+to[[:space:]]+${landing_ip}:${remote_port}" <<<"$text"
+    if [[ -n "$daddr" ]]; then
+        grep -Eq "ip[[:space:]]+daddr[[:space:]]+${daddr}[[:space:]]+${proto}[[:space:]]+dport[[:space:]]+${local_port}([[:space:]]+counter([[:space:]]+packets[[:space:]]+[0-9]+[[:space:]]+bytes[[:space:]]+[0-9]+)?)?[[:space:]]+dnat[[:space:]]+to[[:space:]]+${landing_ip}:${remote_port}" <<<"$text"
+    else
+        grep -Eq "${proto}[[:space:]]+dport[[:space:]]+${local_port}([[:space:]]+counter([[:space:]]+packets[[:space:]]+[0-9]+[[:space:]]+bytes[[:space:]]+[0-9]+)?)?[[:space:]]+dnat[[:space:]]+to[[:space:]]+${landing_ip}:${remote_port}" <<<"$text"
+    fi
 }
 
 nft_dnat_rules_from_text() {
     local text="$1"
-    grep -E '^[[:space:]]*(tcp|udp)[[:space:]]+dport[[:space:]]+[0-9]+([[:space:]]+counter([[:space:]]+packets[[:space:]]+[0-9]+[[:space:]]+bytes[[:space:]]+[0-9]+)?)?[[:space:]]+dnat[[:space:]]+to[[:space:]]+' <<<"$text" 2>/dev/null |
+    grep -E '^[[:space:]]*((ip[[:space:]]+daddr[[:space:]]+[0-9.]+[[:space:]]+)?(tcp|udp))[[:space:]]+dport[[:space:]]+[0-9]+([[:space:]]+counter([[:space:]]+packets[[:space:]]+[0-9]+[[:space:]]+bytes[[:space:]]+[0-9]+)?)?[[:space:]]+dnat[[:space:]]+to[[:space:]]+' <<<"$text" 2>/dev/null |
         sed -E 's/^[[:space:]]+//; s/[[:space:]]+counter( packets [0-9]+ bytes [0-9]+)?//g; s/[[:space:]]+/ /g' | sort -u
 }
 
 render_nft_all_file() {
-    local output="$1" table_name="$2" id
+    local output="$1" table_name="$2" id dport target daddr post ip port
     {
         printf 'table ip %s {\n' "$table_name"
         printf '    chain prerouting {\n'
         printf '        type nat hook prerouting priority dstnat; policy accept;\n\n'
         for id in $(profile_ids); do
             load_profile "$id" || continue
-            [[ "${ROLE:-}" == "panel-ingress" && "${ENABLED:-true}" == "true" && "${FORWARD_ENABLED:-true}" == "true" ]] || continue
+            profile_needs_nft_forward || continue
+            dport="$(profile_nft_dport)" || continue
+            target="$(profile_nft_target)" || return 1
+            daddr="$(profile_nft_daddr_match || true)"
             printf '        # profile: %s\n' "$id"
             if [[ "${FORWARD_PROTO:-both}" == "tcp" || "${FORWARD_PROTO:-both}" == "both" ]]; then
-                printf '        tcp dport %s counter dnat to %s:%s\n' "$LOCAL_PORT" "$LANDING_ET_IP" "$REMOTE_PORT"
+                printf '        %stcp dport %s counter dnat to %s\n' "$daddr" "$dport" "$target"
             fi
             if [[ "${FORWARD_PROTO:-both}" == "udp" || "${FORWARD_PROTO:-both}" == "both" ]]; then
-                printf '        udp dport %s counter dnat to %s:%s\n' "$LOCAL_PORT" "$LANDING_ET_IP" "$REMOTE_PORT"
+                printf '        %sudp dport %s counter dnat to %s\n' "$daddr" "$dport" "$target"
             fi
             printf '\n'
         done
@@ -7937,13 +8836,16 @@ render_nft_all_file() {
         printf '        type nat hook postrouting priority srcnat; policy accept;\n\n'
         for id in $(profile_ids); do
             load_profile "$id" || continue
-            [[ "${ROLE:-}" == "panel-ingress" && "${ENABLED:-true}" == "true" && "${FORWARD_ENABLED:-true}" == "true" ]] || continue
+            profile_needs_nft_forward || continue
+            post="$(profile_nft_postrouting_ip_port)" || return 1
+            ip="${post%:*}"
+            port="${post##*:}"
             printf '        # profile: %s\n' "$id"
             if [[ "${FORWARD_PROTO:-both}" == "tcp" || "${FORWARD_PROTO:-both}" == "both" ]]; then
-                printf '        ip daddr %s tcp dport %s counter masquerade\n' "$LANDING_ET_IP" "$REMOTE_PORT"
+                printf '        ip daddr %s tcp dport %s counter masquerade\n' "$ip" "$port"
             fi
             if [[ "${FORWARD_PROTO:-both}" == "udp" || "${FORWARD_PROTO:-both}" == "both" ]]; then
-                printf '        ip daddr %s udp dport %s counter masquerade\n' "$LANDING_ET_IP" "$REMOTE_PORT"
+                printf '        ip daddr %s udp dport %s counter masquerade\n' "$ip" "$port"
             fi
             printf '\n'
         done
@@ -7967,12 +8869,17 @@ human_bytes() {
 }
 
 profile_counter_from_text() {
-    local text="$1" packets=0 bytes=0 found=0 line proto_pattern
-    [[ "${ROLE:-}" == "panel-ingress" ]] || { printf -- "-\t-\tmissing\n"; return 0; }
-    [[ -n "${LOCAL_PORT:-}" && -n "${LANDING_ET_IP:-}" && -n "${REMOTE_PORT:-}" ]] || { printf -- "-\t-\tmissing\n"; return 0; }
+    local text="$1" packets=0 bytes=0 found=0 line dport target daddr_prefix=""
+    profile_needs_nft_forward || { printf -- "-\t-\tmissing\n"; return 0; }
+    dport="$(profile_nft_dport 2>/dev/null || true)"
+    target="$(profile_nft_target 2>/dev/null || true)"
+    [[ -n "$dport" && -n "$target" ]] || { printf -- "-\t-\tmissing\n"; return 0; }
+    if [[ "${ROLE:-}" == "nat-transit" ]]; then
+        daddr_prefix="ip[[:space:]]+daddr[[:space:]]+${NAT_ET_IP:-}[[:space:]]+"
+    fi
     while IFS= read -r line; do
         [[ -n "$line" ]] || continue
-        if grep -Eq "(tcp|udp)[[:space:]]+dport[[:space:]]+${LOCAL_PORT}[[:space:]].*dnat[[:space:]]+to[[:space:]]+${LANDING_ET_IP}:${REMOTE_PORT}" <<<"$line"; then
+        if grep -Eq "${daddr_prefix}(tcp|udp)[[:space:]]+dport[[:space:]]+${dport}[[:space:]].*dnat[[:space:]]+to[[:space:]]+${target}" <<<"$line"; then
             if grep -Eq 'counter[[:space:]]+packets[[:space:]]+[0-9]+[[:space:]]+bytes[[:space:]]+[0-9]+' <<<"$line"; then
                 packets=$((packets + $(sed -E 's/.*counter packets ([0-9]+) bytes ([0-9]+).*/\1/' <<<"$line")))
                 bytes=$((bytes + $(sed -E 's/.*counter packets ([0-9]+) bytes ([0-9]+).*/\2/' <<<"$line")))
@@ -7989,7 +8896,7 @@ profile_counter_from_text() {
 
 traffic_report() {
     require_root "$@"
-    local group_filter="" id text packets bytes state human
+    local group_filter="" id text packets bytes state human port target
     if [[ "${1:-}" == "--group" ]]; then
         group_filter="${2:-}"
         [[ -n "$group_filter" ]] || die_user "用法：traffic-report [--group GROUP]"
@@ -7997,21 +8904,24 @@ traffic_report() {
         die_user "用法：traffic-report [--group GROUP]"
     fi
     text="$(nft_table_text 2>/dev/null || true)"
-    printf 'PROFILE_ID\tGROUP\tLOCAL_PORT\tREMOTE_PORT\tFORWARD_ENABLED\tPACKETS\tBYTES\tHUMAN_READABLE\n'
+    printf 'PROFILE_ID\tGROUP\tROLE\tPORT\tTARGET\tFORWARD_ENABLED\tPACKETS\tBYTES\tHUMAN_READABLE\n'
     if [[ -z "$text" ]]; then
         printf '# nftables project table unavailable; run on ingress host after apply-nft-all.\n'
     fi
     for id in $(sorted_profile_ids); do
         load_profile "$id" >/dev/null 2>&1 || continue
-        [[ "${ROLE:-}" == "panel-ingress" ]] || continue
+        case "${ROLE:-}" in panel-ingress|nat-ingress|nat-transit) ;; *) continue ;; esac
         [[ -z "$group_filter" || "${LINE_GROUP:-}" == "$group_filter" ]] || continue
+        port="$(profile_nft_dport 2>/dev/null || true)"
+        target="$(profile_nft_target 2>/dev/null || true)"
+        [[ -n "$target" ]] || target="missing"
         IFS=$'\t' read -r packets bytes state <<<"$(profile_counter_from_text "$text")"
         if [[ "$state" == "ok" ]]; then
             human="$(human_bytes "$bytes")"
         else
             human="counter missing; run bash install.sh apply-nft-all"
         fi
-        printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$id" "${LINE_GROUP:-}" "${LOCAL_PORT:-}" "${REMOTE_PORT:-}" "${FORWARD_ENABLED:-true}" "$packets" "$bytes" "$human"
+        printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$id" "${LINE_GROUP:-}" "${ROLE:-}" "${port:-}" "$target" "${FORWARD_ENABLED:-true}" "$packets" "$bytes" "$human"
     done
     printf '\nNote: nftables counter only counts project forwarding rule hits on the ingress host; it is not cloud billing traffic.\n'
 }
@@ -8111,7 +9021,7 @@ health_report() {
         forward_label="$(forward_display "${ROLE:-}" "${ENABLED:-true}" "${FORWARD_ENABLED:-true}")"
         group_display="${LINE_GROUP:-standalone}"
         health="${HEALTH_STATUS:-unknown}"
-        case "${ROLE:-}" in panel-ingress) role_label="ingress" ;; panel-landing) role_label="landing" ;; *) role_label="${ROLE:-unknown}" ;; esac
+        case "${ROLE:-}" in panel-ingress) role_label="ingress" ;; panel-landing) role_label="landing" ;; nat-ingress|nat-transit) role_label="${ROLE}" ;; *) role_label="${ROLE:-unknown}" ;; esac
         [[ "$forward_label" == "active" ]] && forwarding_lines=$((forwarding_lines + 1))
         case "$health" in healthy) healthy=$((healthy + 1)) ;; warning) warning=$((warning + 1)) ;; down) down=$((down + 1)) ;; *) unknown=$((unknown + 1)) ;; esac
         total=$((total + 1))
@@ -8279,7 +9189,7 @@ self_check() {
     self_check_line INFO "landing Profile count" "${landing_count:-0}"
     self_check_line INFO "ingress Profile count" "${ingress_count:-0}"
     case "${landing_count:-0}:${ingress_count:-0}" in
-        0:0) role_hint="no Profile yet; create a landing or ingress Profile first" ;;
+        0:0) role_hint="no Profile yet; create a CNIX or NAT-IX Profile first" ;;
         *:0) role_hint="当前机器是落地侧，不负责入口 nftables 转发" ;;
         0:*) role_hint="当前机器是入口侧，负责 LOCAL_PORT -> LANDING_ET_IP:REMOTE_PORT" ;;
         *) role_hint="当前机器同时承担落地和入口角色" ;;
@@ -8328,7 +9238,7 @@ self_check() {
     fi
 
     printf '\nSuggestions:\n'
-    [[ "$profile_count" -gt 0 ]] || printf '  - Add a landing and ingress Profile before production use.\n'
+    [[ "$profile_count" -gt 0 ]] || printf '  - Add CNIX panel Profiles or NAT-IX transit Profiles before production use.\n'
     detect_nc_cmd >/dev/null 2>&1 || printf '  - For TCP port diagnostics, run: bash install.sh install-netcat\n'
     [[ -n "$et_path" ]] || printf '  - EasyTier is required before starting a line: bash install.sh install-easytier\n'
     printf '  - For issue reports, run: bash install.sh export-diagnostic\n'
@@ -8572,6 +9482,10 @@ doctor_profile() {
                 fi
             fi
             check_business_core || true
+            ;;
+        nat-ingress|nat-transit)
+            printf '\nNAT-IX 检查：\n'
+            run_line_health_check "$profile_id" false || true
             ;;
     esac
 }
@@ -9300,6 +10214,53 @@ EOF
                 printf 'UDP 业务探测：跳过，UDP 可达性探测不可靠。\n'
             fi
             ;;
+        nat-ingress)
+            printf 'NAT-IX 入口机中转端口检查\n'
+            if command_exists ping && [[ -n "${NAT_ET_IP:-}" ]]; then
+                if ping -c 1 -W 3 "$NAT_ET_IP" >/dev/null 2>&1; then
+                    printf 'NAT_ET_IP ping：成功\n'
+                else
+                    printf '[WARN] NAT_ET_IP ping 失败，请先确认 NAT IX 机器 EasyTier 已连接。\n'
+                fi
+            fi
+            if [[ "${FORWARD_PROTO:-both}" == "tcp" || "${FORWARD_PROTO:-both}" == "both" ]]; then
+                if nc_cmd="$(detect_nc_cmd 2>/dev/null)"; then
+                    if "$nc_cmd" -vz -w 3 "$NAT_ET_IP" "$TRANSIT_PORT" >/dev/null 2>&1; then
+                        printf 'NAT_ET_IP:TRANSIT_PORT TCP 可达：是（%s:%s）\n' "$NAT_ET_IP" "$TRANSIT_PORT"
+                    else
+                        printf '[WARN] NAT_ET_IP:TRANSIT_PORT TCP 不可达：%s:%s。\n' "$NAT_ET_IP" "$TRANSIT_PORT"
+                    fi
+                else
+                    printf '[WARN] nc/ncat 不可用，跳过 TCP 中转端口探测。\n'
+                    suggest_install_nc
+                fi
+            fi
+            ;;
+        nat-transit)
+            printf 'NAT-IX 中转机落地端口检查\n'
+            if [[ -n "${LANDING_HOST:-}" ]]; then
+                if validate_ipv4 "$LANDING_HOST"; then
+                    printf 'LANDING_IP：%s\n' "$LANDING_HOST"
+                elif landing_ip="$(landing_ip_for_nft "$LANDING_HOST" 2>/dev/null)"; then
+                    printf 'LANDING_HOST 解析：%s -> %s\n' "$LANDING_HOST" "$landing_ip"
+                else
+                    printf '[WARN] LANDING_HOST 解析失败：%s\n' "$LANDING_HOST"
+                fi
+            fi
+            if [[ "${FORWARD_PROTO:-both}" == "tcp" || "${FORWARD_PROTO:-both}" == "both" ]]; then
+                if nc_cmd="$(detect_nc_cmd 2>/dev/null)"; then
+                    if "$nc_cmd" -vz -w 3 "$LANDING_HOST" "$LANDING_PORT" >/dev/null 2>&1; then
+                        printf 'LANDING_HOST:LANDING_PORT TCP 可达：是（%s:%s）\n' "$LANDING_HOST" "$LANDING_PORT"
+                    else
+                        printf '[WARN] LANDING_HOST:LANDING_PORT TCP 不可达：%s:%s。\n' "$LANDING_HOST" "$LANDING_PORT"
+                    fi
+                else
+                    printf '[WARN] nc/ncat 不可用，跳过 TCP 落地端口探测。\n'
+                    suggest_install_nc
+                fi
+            fi
+            printf 'TRANSIT_PORT 不要求 userspace 监听；它是 nftables DNAT 接收端口。\n'
+            ;;
         *)
             printf '[WARN] 未知角色：%s\n' "${ROLE:-未设置}"
             ;;
@@ -9387,6 +10348,35 @@ show_port_map() {
     fi
     if [[ "$compact" == "--compact" ]]; then
         print_port_map_compact
+        return 0
+    fi
+    if [[ "${ROLE:-}" == "nat-ingress" || "${ROLE:-}" == "nat-transit" ]]; then
+        cat <<EOF
+Profile：${PROFILE_ID:-default}（${ROLE:-未设置}，enabled=${ENABLED:-true}）
+
+NAT-IX Transit Mode 链路：
+
+客户端
+-> ${INGRESS_PUBLIC_HOST:-公网入口机公网 IP}:${LOCAL_PORT:-LOCAL_PORT}
+-> 公网入口机 nftables
+-> ${NAT_ET_IP:-NAT_ET_IP}:${TRANSIT_PORT:-TRANSIT_PORT}
+-> EasyTier 隧道
+-> NAT IX 机器 nftables
+-> ${LANDING_HOST:-LANDING_HOST}:${LANDING_PORT:-LANDING_PORT}
+
+字段：
+  LOCAL_PORT=${LOCAL_PORT:-未配置}
+  INGRESS_ET_IP=${INGRESS_ET_IP:-未配置}
+  NAT_ET_IP=${NAT_ET_IP:-未配置}
+  TRANSIT_PORT=${TRANSIT_PORT:-未配置}
+  LANDING_HOST=${LANDING_HOST:-未配置}
+  LANDING_PORT=${LANDING_PORT:-未配置}
+  FORWARD_PROTO=${FORWARD_PROTO:-both}
+
+注意：
+  NAT IX 机器不需要安装代理服务，只做 nftables 中转。
+  LANDING_HOST 如果是域名，应用 nftables 时会解析为 LANDING_IP；域名 IP 变化后请重新运行 apply-nft-all 或更新 Profile。
+EOF
         return 0
     fi
     local local_display cnix_display listener_display remote_display
@@ -9740,6 +10730,57 @@ MENU
     esac
 }
 
+run_nat_menu_action() {
+    local choice="$1" profile_id
+    case "$choice" in
+        1) add_nat_ingress_profile ;;
+        2) add_nat_transit_profile_from_code ;;
+        3) show_port_map --all --compact ;;
+        4) nat_guide_cmd --all ;;
+        5)
+            printf '请输入 PROFILE_ID（留空时自动选择唯一 Profile）：' >&2
+            IFS= read -r profile_id || return 1
+            health_profile "$profile_id"
+            ;;
+        6) return 10 ;;
+        0) return 10 ;;
+        *) log_warn "未知选项，请重新选择。"; return 0 ;;
+    esac
+}
+
+show_nat_menu() {
+    local choice rc
+    while true; do
+        cat >&2 <<'MENU'
+
+NAT-IX 中转模式
+
+  1) 公网入口机：创建 NAT-IX 入口线路 / 生成接入码
+  2) NAT IX 机器：粘贴接入码并配置中转
+  3) 查看 NAT-IX 端口地图
+  4) 查看 NAT-IX 配置指引
+  5) 健康检查
+  6) 返回
+MENU
+        printf '请选择：' >&2
+        IFS= read -r choice || return 0
+
+        set +e
+        trap - ERR
+        export IXTF_IN_MENU=1
+        export IXTF_ALLOW_INTERACTIVE=1
+        ( trap - ERR; set +e; run_nat_menu_action "$choice" )
+        rc=$?
+        trap 'on_error $LINENO' ERR
+        set -e
+
+        [[ "$rc" -eq 10 ]] && return 0
+        if [[ "$rc" -ne 0 ]]; then
+            log_error "菜单操作失败（退出码 ${rc}），已返回菜单。"
+        fi
+    done
+}
+
 run_health_menu_action() {
     local choice="$1" profile_id group target
     case "$choice" in
@@ -9897,14 +10938,16 @@ run_menu_action() {
     case "$choice" in
         1) add_landing_profile ;;
         2) add_ingress_profile_from_code ;;
-        3) status_all ;;
-        4) change_landing ;;
-        5) change_ingress ;;
-        6) manage_profiles_menu ;;
-        7) show_health_menu ;;
-        8) show_monitor_menu ;;
-        9) install_easytier ;;
-        10) show_advanced_menu ;;
+        3) show_nat_menu ;;
+        4) status_all ;;
+        5) change_landing ;;
+        6) change_ingress ;;
+        7) manage_profiles_menu ;;
+        8) show_health_menu ;;
+        9) show_monitor_menu ;;
+        10) install_easytier ;;
+        11) show_advanced_menu ;;
+        12) return 10 ;;
         0) return 10 ;;
         *) log_warn "未知选项，请重新选择。"; return 0 ;;
     esac
@@ -9918,17 +10961,18 @@ show_menu() {
 
 ix-transit-fabric 管理菜单
 
-  1) 新增落地线路 / 生成接入码
-  2) 新增入口线路 / 粘贴接入码
-  3) 线路列表 / 状态
-  4) 更换落地机 / 刷新接入码
-  5) 更换入口机 / CNIX 入口配置
-  6) 启用 / 禁用 / 删除线路
-  7) 健康检查 / 主备切换
-  8) 监控 / 通知 / 流量统计
-  9) 安装 / 更新 EasyTier
- 10) 高级维护
-  0) 退出
+  1) CNIX 面板模式：新增落地线路 / 生成接入码
+  2) CNIX 面板模式：新增入口线路 / 粘贴接入码
+  3) NAT-IX 中转模式
+  4) 线路列表 / 状态
+  5) 更换落地机 / 刷新接入码
+  6) 更换入口机 / CNIX 入口配置
+  7) 启用 / 禁用 / 删除线路
+  8) 健康检查 / 主备切换
+  9) 监控 / 通知 / 流量统计
+ 10) 安装 / 更新 EasyTier
+ 11) 高级维护
+ 12) 退出
 MENU
         printf '请选择：' >&2
         IFS= read -r choice || return 0
@@ -10025,6 +11069,12 @@ main() {
         add-ingress-profile-from-code)
             add_ingress_profile_from_code
             ;;
+        add-nat-ingress-profile)
+            add_nat_ingress_profile
+            ;;
+        add-nat-transit-profile-from-code)
+            add_nat_transit_profile_from_code
+            ;;
         enable-profile)
             enable_profile "${args[1]:-}"
             ;;
@@ -10062,6 +11112,9 @@ main() {
             check_line "${args[1]:-}"
             ;;
         health)
+            health_profile "${args[1]:-}"
+            ;;
+        nat-health)
             health_profile "${args[1]:-}"
             ;;
         health-all)
@@ -10211,6 +11264,9 @@ main() {
         refresh-code)
             refresh_code "${args[1]:-}"
             ;;
+        refresh-nat-code)
+            refresh_code "${args[1]:-}"
+            ;;
         update-from-code)
             update_from_code "${args[1]:-}"
             ;;
@@ -10250,6 +11306,12 @@ main() {
         show-port-map)
             show_port_map "${args[@]:1}"
             ;;
+        nat-port-map)
+            show_port_map "${args[@]:1}"
+            ;;
+        nat-status)
+            status_all "${args[1]:-}"
+            ;;
         show-port-map-compact)
             show_port_map_compact "${args[1]:-}"
             ;;
@@ -10277,10 +11339,16 @@ main() {
         panel-guide)
             panel_guide_cmd "${args[1]:-}"
             ;;
+        nat-guide)
+            nat_guide_cmd "${args[1]:-}"
+            ;;
         show-nft)
             show_nft
             ;;
         show-code)
+            show_code "${args[1]:-}"
+            ;;
+        show-nat-code)
             show_code "${args[1]:-}"
             ;;
         import-code)

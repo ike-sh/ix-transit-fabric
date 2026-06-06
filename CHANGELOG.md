@@ -1,5 +1,27 @@
 # Changelog
 
+## 1.1.0-alpha.1
+
+### Added
+
+- NAT-IX Transit Mode.
+- `nat-ingress` / `nat-transit` Profile roles.
+- NAT-IX access-code workflow.
+- NAT-IX nftables rendering.
+- NAT-IX health / doctor / port-map / traffic support.
+
+### Compatibility
+
+- Existing CNIX Panel Mode remains unchanged.
+- Existing 1.0.0 panel profiles remain compatible.
+
+### Safety
+
+- No automatic switching.
+- No global nftables takeover.
+- No global nftables ruleset reset.
+- No global process kill.
+
 ## 1.0.0
 
 正式长期使用版。
@@ -29,7 +51,7 @@
 ### Security
 
 - 不接管全局 nftables。
-- 不使用 `flush ruleset`。
+- 不清空全局 nftables ruleset。
 - 不全局 kill 业务进程或 EasyTier 进程。
 - 不自动切换线路。
 - 不自动修改 `FORWARD_ENABLED`。

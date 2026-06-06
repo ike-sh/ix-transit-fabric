@@ -1,10 +1,22 @@
 # ix-transit-fabric
 
-当前版本：`1.0.0`
+当前版本：`1.1.0-alpha.1`
 
 `ix-transit-fabric` 是一个面向 CNIX / IX 转发面板场景的 EasyTier 隧道编排脚本。它用于将商家常见的 WireGuard 隧道接入方式替换为 EasyTier，并自动完成公网入口机上的 nftables 转发。
 
-它只负责 EasyTier 组网、Profile 管理、入口机转发规则、健康诊断和只读监控。它不安装代理服务，不配置 Remnawave / Xray / sing-box，不接管全局 nftables，不执行 `flush ruleset`，不全局 kill `rw-core` / `easytier-core`，不自动切换线路，不自动修改 `FORWARD_ENABLED`，也不自动修复 nftables。
+它只负责 EasyTier 组网、Profile 管理、入口机转发规则、健康诊断和只读监控。它不安装代理服务，不配置 Remnawave / Xray / sing-box，不接管全局 nftables，不清空全局 ruleset，不全局 kill `rw-core` / `easytier-core`，不自动切换线路，不自动修改 `FORWARD_ENABLED`，也不自动修复 nftables。
+
+## 两种模式
+
+### CNIX Panel Mode
+
+适用于商家提供 CNIX 转发面板，面板里需要填写出口 IP:端口。这是 1.0.0 已实机验证通过的模式，现有 `panel-landing` / `panel-ingress` Profile 继续兼容。
+
+### NAT-IX Transit Mode
+
+适用于用户有一台单独 NAT IX / 沪日 IX / 类似中转服务器。公网入口机与 NAT IX 机器通过 EasyTier 组网，公网入口机把客户端流量转发到 NAT IX 机器的 EasyTier IP:TRANSIT_PORT，NAT IX 机器再通过自身 IX 路由转发到落地机公网 IP:LANDING_PORT。
+
+这个模式不需要 CNIX 面板出口配置。NAT IX 机器不安装代理服务，只做 nftables 中转；`LANDING_HOST:LANDING_PORT` 是最终落地服务，`TRANSIT_PORT` 是 NAT IX 机器在 EasyTier 虚拟网内接收入口机转发流量的端口。
 
 ## 项目简介
 
@@ -116,6 +128,61 @@ curl -fsSL -o install.sh https://raw.githubusercontent.com/ike-sh/ix-transit-fab
 
 access code 包含 EasyTier 组网密钥，不要公开。正式使用前如果接入码曾经发到聊天或工单里，建议刷新接入码。
 
+## NAT-IX 快速开始
+
+公网入口机：
+
+```bash
+curl -fsSL -o install.sh https://raw.githubusercontent.com/ike-sh/ix-transit-fabric/main/install.sh && bash install.sh --menu
+```
+
+菜单选择：
+
+```text
+NAT-IX 中转模式 -> 公网入口机：创建 NAT-IX 入口线路 / 生成接入码
+```
+
+NAT IX 机器：
+
+```bash
+curl -fsSL -o install.sh https://raw.githubusercontent.com/ike-sh/ix-transit-fabric/main/install.sh && bash install.sh --menu
+```
+
+菜单选择：
+
+```text
+NAT-IX 中转模式 -> NAT IX 机器：粘贴接入码并配置中转
+```
+
+客户端连接：
+
+```text
+公网入口 VPS:LOCAL_PORT
+```
+
+NAT-IX 链路：
+
+```text
+客户端
+-> 公网入口机公网 IP:LOCAL_PORT
+-> 公网入口机 nftables
+-> NAT IX 机器 EasyTier IP:TRANSIT_PORT
+-> EasyTier 隧道
+-> NAT IX 机器 nftables
+-> 落地机公网 IP:LANDING_PORT
+```
+
+NAT-IX 字段：
+
+- `LOCAL_PORT`：客户端连接公网入口机的端口。
+- `INGRESS_ET_IP`：公网入口机 EasyTier 虚拟 IP。
+- `NAT_ET_IP`：NAT IX 机器 EasyTier 虚拟 IP。
+- `TRANSIT_PORT`：NAT IX 机器在 EasyTier 虚拟网内接收转发流量的端口，通常不需要公网放行。
+- `LANDING_HOST`：落地机公网 IP 或域名。
+- `LANDING_PORT`：落地机业务服务端口，例如 Remnawave / VLESS / Xray / sing-box 的真实服务端口。
+
+如果落地机只允许特定来源访问，需要允许 NAT IX 机器出口 IP。`LANDING_HOST` 是域名时，应用 nftables 会解析到当前 IPv4；域名 IP 变化后请重新运行 `apply-nft-all` 或更新 Profile。
+
 ## 落地机配置
 
 常用命令：
@@ -194,6 +261,9 @@ bash install.sh --help
 bash install.sh --menu
 bash install.sh list-profiles
 bash install.sh show-profile PROFILE_ID
+bash install.sh add-nat-ingress-profile
+bash install.sh add-nat-transit-profile-from-code
+bash install.sh show-code PROFILE_ID
 bash install.sh show-port-map --compact PROFILE_ID
 bash install.sh doctor-all
 bash install.sh health-report
@@ -295,7 +365,7 @@ bash install.sh switch-rollback-last
 当前没有已配置的线路组；standalone 模式下主备组检查已跳过。若需要主备切换，请先设置 LINE_GROUP。
 ```
 
-`switch-dry-run` 只预演，不写配置、不重启服务、不应用 nftables。`switch-line` 是人工确认后的手动切换命令。本项目 1.0.0 不做自动切换。
+`switch-dry-run` 只预演，不写配置、不重启服务、不应用 nftables。`switch-line` 是人工确认后的手动切换命令。本项目不做自动切换。
 
 ## 监控 / 通知 / 流量统计
 
@@ -335,12 +405,12 @@ bash install.sh traffic-report --group GROUP
 - 不安装代理服务。
 - 不配置 Remnawave / Xray / sing-box。
 - 不接管全局 nftables。
-- 不使用 `flush ruleset`。
+- 不清空全局 nftables ruleset。
 - 不全局 kill `rw-core` / `easytier-core`。
 - 不自动切换线路。
 - 不自动修改 `FORWARD_ENABLED`。
 - 不自动修复 nftables。
-- 不输出或公开 access code、network secret、Telegram token。
+- 不公开 access code、network secret、Telegram token；诊断导出会脱敏。
 
 ## 卸载 / 完全清理
 
@@ -382,7 +452,7 @@ bash install.sh purge
 
 ## Roadmap
 
-1.0.0 是正式长期使用版，当前边界保持稳定：
+1.1.0-alpha.1 先引入 NAT-IX Transit Mode，CNIX Panel Mode 继续保持 1.0.0 的稳定边界：
 
 - 保持 CNIX + EasyTier + nftables 核心链路。
 - 保持人工主备切换。
