@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-SCRIPT_VERSION="1.1.0-alpha.2"
+SCRIPT_VERSION="1.1.0-alpha.3"
 APP_NAME="ix-transit-fabric"
 
 CONFIG_DIR="/etc/ix-transit-fabric"
@@ -105,6 +105,7 @@ print_next_steps() {
 print_port_map_compact() {
     local profile_id="${PROFILE_ID:-default}"
     local listener_port="${LISTENER_PORT:-${ET_LISTENER_PORT:-${CODE_LISTENER_PORT:-LISTENER_PORT}}}"
+    local ingress_listener_port="${INGRESS_LISTENER_PORT:-${ET_LISTENER_PORT:-}}"
     local remote_port="${REMOTE_PORT:-${SERVICE_PORT:-REMOTE_PORT}}"
     local local_port="${LOCAL_PORT:-LOCAL_PORT}"
     local cnix_port="${CNIX_ENTRY_PORT:-CNIX_ENTRY_PORT}"
@@ -147,7 +148,11 @@ print_port_map_compact() {
             printf '客户端连接：\n'
             printf '  %s:%s\n\n' "$ingress_public" "$(c_cyan "$local_port")"
             printf 'EasyTier listener：\n'
-            printf '  %s:%s\n\n' "$ingress_public" "$(c_cyan "$listener_port")"
+            if [[ -n "$ingress_listener_port" ]]; then
+                printf '  %s:%s\n\n' "$ingress_public" "$(c_cyan "$ingress_listener_port")"
+            else
+                printf '  INGRESS_LISTENER_PORT 未配置\n\n'
+            fi
             printf '内部转发：\n'
             printf '  %s -> %s:%s\n\n' "$local_port" "$nat_et_ip" "$transit_port"
             printf '下一跳：\n'
@@ -162,7 +167,11 @@ print_port_map_compact() {
             printf '客户端连接：\n'
             printf '  %s:%s\n\n' "$ingress_public" "$(c_cyan "$local_port")"
             printf 'EasyTier peer：\n'
-            printf '  %s:%s\n\n' "$ingress_public" "$(c_cyan "$listener_port")"
+            if [[ -n "$ingress_listener_port" ]]; then
+                printf '  %s:%s\n\n' "$ingress_public" "$(c_cyan "$ingress_listener_port")"
+            else
+                printf '  INGRESS_LISTENER_PORT 未配置\n\n'
+            fi
             printf '中转转发：\n'
             printf '  %s:%s -> %s:%s\n\n' "$nat_et_ip" "$transit_port" "$landing_host" "$landing_port"
             printf '落地服务：\n'
@@ -1059,6 +1068,65 @@ validate_host() {
     local value="$1"
     [[ -n "$value" ]] || return 1
     [[ "$value" =~ ^[A-Za-z0-9.-]{1,253}$ ]]
+}
+
+detect_public_ipv4() {
+    local value url output
+    for value in "${IXTF_PUBLIC_IP:-}" "${IXTF_INGRESS_PUBLIC_HOST:-}"; do
+        value="$(trim_space "$value")"
+        if validate_ipv4 "$value"; then
+            printf '%s\n' "$value"
+            return 0
+        fi
+    done
+
+    for url in \
+        https://api.ipify.org \
+        https://ifconfig.me \
+        https://icanhazip.com; do
+        output=""
+        if command_exists curl; then
+            output="$(curl -4 -fsS --max-time 5 "$url" 2>/dev/null | sed -n '1p' | tr -d '\r' || true)"
+        elif command_exists wget; then
+            output="$(wget -4 -qO- --timeout=5 "$url" 2>/dev/null | sed -n '1p' | tr -d '\r' || true)"
+        else
+            return 1
+        fi
+        output="$(trim_space "$output")"
+        if validate_ipv4 "$output"; then
+            printf '%s\n' "$output"
+            return 0
+        fi
+    done
+    return 1
+}
+
+detect_public_host() {
+    local value detected
+    value="$(trim_space "${IXTF_PUBLIC_IP:-}")"
+    if validate_ipv4 "$value"; then
+        printf '%s\n' "$value"
+        return 0
+    fi
+    value="$(trim_space "${IXTF_INGRESS_PUBLIC_HOST:-}")"
+    if validate_host "$value"; then
+        printf '%s\n' "$value"
+        return 0
+    fi
+    if detected="$(detect_public_ipv4)"; then
+        printf '%s\n' "$detected"
+        return 0
+    fi
+    return 1
+}
+
+suggest_ingress_public_host() {
+    local detected
+    if detected="$(detect_public_host)"; then
+        printf '%s\n' "$detected"
+        return 0
+    fi
+    printf 'localhost\n'
 }
 
 random_hex() {
@@ -4095,7 +4163,7 @@ collect_ingress_inputs() {
 }
 
 collect_nat_ingress_inputs() {
-    local default_network default_secret default_subnet default_ingress_cidr default_nat_cidr default_listener_port default_local_port default_transit_port default_public
+    local default_network default_secret default_subnet default_ingress_cidr default_nat_cidr default_listener_port default_local_port default_transit_port default_public public_prompt
     require_tty add-nat-ingress-profile
     ROLE="nat-ingress"
     default_network="$(generate_network_name)"
@@ -4106,19 +4174,26 @@ collect_nat_ingress_inputs() {
     default_listener_port="$(pick_random_port_excluding_listeners both || true)"
     default_local_port="$(pick_random_port || true)"
     default_transit_port="$(pick_random_port || true)"
-    default_public="$(hostname -f 2>/dev/null || hostname 2>/dev/null || true)"
-    validate_host "$default_public" || default_public="ingress.example"
+    default_public="$(suggest_ingress_public_host)"
+    validate_host "$default_public" || default_public="localhost"
 
     cat >&2 <<EOF
 按 Enter 使用推荐默认值。
 NAT-IX Transit Mode 默认连接方向：公网入口机 listens，NAT IX 机器 peers to ingress。
 
 EOF
+    if validate_ipv4 "$default_public"; then
+        printf '检测到当前公网 IPv4：%s\n' "$default_public" >&2
+        public_prompt="请输入公网入口机公网 IP 或域名 INGRESS_PUBLIC_HOST（默认 ${default_public}）"
+    else
+        printf '[WARN] 未能自动检测公网 IPv4；可设置 IXTF_PUBLIC_IP 或 IXTF_INGRESS_PUBLIC_HOST 覆盖，或手动输入。\n' >&2
+        public_prompt="请输入公网入口机公网 IP 或域名 INGRESS_PUBLIC_HOST"
+    fi
     ET_NETWORK_NAME="$(prompt_validated "请输入 EasyTier 网络名" "$default_network" validate_network_name "请输入 1-64 个字符，仅允许字母、数字、点、下划线或短横线。")" || return 1
     ET_NETWORK_SECRET="$(prompt_secret_default "$default_secret")" || return 1
     ET_HOSTNAME="$(prompt_validated "请输入当前节点名称" "ix-nat-ingress-${PROFILE_ID:-default}" validate_hostname_value "请输入 1-64 个字符，仅允许字母、数字、点、下划线或短横线。")" || return 1
     INGRESS_HOSTNAME="$ET_HOSTNAME"
-    INGRESS_PUBLIC_HOST="$(prompt_validated "请输入公网入口机公网 IP 或域名 INGRESS_PUBLIC_HOST" "$default_public" validate_host "请输入公网 IP 或域名。")" || return 1
+    INGRESS_PUBLIC_HOST="$(prompt_validated "$public_prompt" "$default_public" validate_host "请输入公网 IP 或域名。")" || return 1
     ET_IPV4="$(prompt_validated "请输入公网入口机 EasyTier IP，例如 ${default_ingress_cidr}" "$default_ingress_cidr" validate_ipv4_cidr "请输入 IPv4/CIDR，例如 ${default_ingress_cidr}。")" || return 1
     INGRESS_ET_CIDR="$ET_IPV4"
     INGRESS_ET_IP="${INGRESS_ET_CIDR%%/*}"
@@ -4317,12 +4392,14 @@ print_profile_next_steps() {
             print_next_steps "下一步：" \
                 "把 NAT-IX 接入码复制到 NAT IX 机器" \
                 "在 NAT IX 机器运行 bash install.sh add-nat-transit-profile-from-code" \
+                "如果接入码出现在聊天、日志或工单，请正式使用前运行：bash install.sh refresh-nat-code ${profile_id}" \
                 "客户端未来连接 ${INGRESS_PUBLIC_HOST:-公网入口 VPS}:${LOCAL_PORT:-LOCAL_PORT}"
             ;;
         nat-transit)
             print_next_steps "下一步：" \
                 "确认落地机允许 NAT IX 机器出口 IP 访问 ${LANDING_HOST:-LANDING_HOST}:${LANDING_PORT:-LANDING_PORT}" \
                 "运行 bash install.sh health ${profile_id}" \
+                "回入口机运行 bash install.sh health NAT_INGRESS_PROFILE，并可执行 nc -vz -w 3 ${NAT_ET_IP:-NAT_ET_IP} ${TRANSIT_PORT:-TRANSIT_PORT}" \
                 "客户端连接 ${INGRESS_PUBLIC_HOST:-公网入口 VPS}:${LOCAL_PORT:-LOCAL_PORT}"
             ;;
     esac
@@ -4332,7 +4409,7 @@ print_access_code_security_hint() {
     cat <<'EOF'
 安全提醒：
   接入码包含组网密钥，不要公开。
-  如果接入码曾经发到聊天或工单，正式使用前请运行 refresh-code/refresh-nat-code PROFILE_ID，或重建 Profile 重新生成 secret。
+  如果接入码曾经发到聊天、日志或工单，正式使用前请运行 bash install.sh refresh-nat-code PROFILE_ID，或重建 Profile 重新生成 secret。
 EOF
 }
 
@@ -5184,8 +5261,9 @@ refresh_code() {
         ET_NETWORK_SECRET="$(generate_secret)"
         save_profile_env "$PROFILE_ID"
         save_profile_code_file "$PROFILE_ID" "$(generate_nat_code)"
-        printf '[OK] 已刷新 NAT-IX 接入码和 EasyTier network_secret。\n'
-        printf '[WARN] 旧 nat-transit Profile 需要重新导入新的接入码后才能连接。\n'
+        printf '[OK] 已生成新 network_secret，并刷新 NAT-IX 接入码。\n'
+        printf '[WARN] 旧接入码失效。\n'
+        printf '[WARN] NAT IX 机器需要重新导入新接入码。\n'
         if command_exists systemctl; then
             render_profile_service_files
             restart_profile "$PROFILE_ID" || log_warn "Profile 已保存新 secret，但服务重启未完成；请手动运行：bash install.sh restart-profile ${PROFILE_ID}"
@@ -6190,6 +6268,29 @@ profile_port_map_complete() {
     esac
 }
 
+profile_counter_health_status() {
+    local text packets bytes state
+    text="$(nft_table_text 2>/dev/null || true)"
+    if [[ -z "$text" ]]; then
+        printf 'unavailable\t-\t-\n'
+        return 0
+    fi
+    IFS=$'\t' read -r packets bytes state <<<"$(profile_counter_from_text "$text")"
+    if [[ "$state" == "ok" ]]; then
+        if [[ "$packets" =~ ^[0-9]+$ && "$packets" -gt 0 ]]; then
+            printf 'hit\t%s\t%s\n' "$packets" "$bytes"
+        else
+            printf 'readable\t%s\t%s\n' "${packets:-0}" "${bytes:-0}"
+        fi
+        return 0
+    fi
+    if nft_text_has_profile_rule "$text"; then
+        printf 'readable\t-\t-\n'
+        return 0
+    fi
+    printf 'missing\t-\t-\n'
+}
+
 run_line_health_check() {
     local profile_id="$1" write_back="${2:-false}" service active rc nft_label tcp_needed="false" nc_cmd business_port
     local saved_status saved_reason now
@@ -6389,6 +6490,7 @@ run_line_health_check() {
             fi
             ;;
         nat-ingress)
+            local nat_route_ok="false" nat_tcp_ok="false" nat_counter_state nat_counter_packets nat_counter_bytes
             if [[ -n "${ET_LISTENERS:-}" ]]; then
                 health_line "EasyTier listener" "存在（${INGRESS_PUBLIC_HOST:-}:${INGRESS_LISTENER_PORT:-}）"
             else
@@ -6407,6 +6509,7 @@ run_line_health_check() {
             if command_exists ip && [[ -n "${NAT_ET_IP:-}" ]]; then
                 if ip route get "$NAT_ET_IP" >/dev/null 2>&1; then
                     health_line "NAT_ET_IP 路由" "存在"
+                    nat_route_ok="true"
                 else
                     health_line "NAT_ET_IP 路由" "未找到"
                     health_mark warning "到 NAT_ET_IP 的路由未确认"
@@ -6419,8 +6522,7 @@ run_line_health_check() {
                 if ping -c 1 -W 3 "$NAT_ET_IP" >/dev/null 2>&1; then
                     health_line "NAT_ET_IP ping" "成功"
                 else
-                    health_line "NAT_ET_IP ping" "pending peer"
-                    health_mark warning "pending peer：NAT IX 机器尚未接入或未连通"
+                    health_line "NAT_ET_IP ping" "pending peer（ICMP ping 不通不单独判失败）"
                 fi
             else
                 health_line "NAT_ET_IP ping" "跳过"
@@ -6429,16 +6531,31 @@ run_line_health_check() {
             if [[ "$tcp_needed" == "true" && -n "${NAT_ET_IP:-}" && -n "${TRANSIT_PORT:-}" ]]; then
                 if nc_cmd="$(detect_nc_cmd 2>/dev/null)"; then
                     if "$nc_cmd" -vz -w 3 "$NAT_ET_IP" "$TRANSIT_PORT" >/dev/null 2>&1; then
-                        health_line "NAT_ET_IP:TRANSIT_PORT TCP" "可达"
+                        health_line "NAT_ET_IP:TRANSIT_PORT TCP" "可达（入口机到 NAT IX 中转链路可用）"
+                        nat_tcp_ok="true"
                     else
                         health_line "NAT_ET_IP:TRANSIT_PORT TCP" "不可达"
-                        health_mark warning "NAT-IX 中转端口 TCP 探测失败"
+                        if [[ "$nat_route_ok" == "true" ]]; then
+                            health_mark warning "NAT_ET_IP:TRANSIT_PORT 不可达；如 NAT IX 已导入，请检查 NAT IX nftables 或落地服务。"
+                        else
+                            health_mark warning "pending peer：NAT IX 机器可能尚未导入。"
+                        fi
                     fi
                 else
                     health_line "NAT_ET_IP:TRANSIT_PORT TCP" "nc 不可用"
                     suggest_install_nc | sed 's/^/  /'
                     health_mark warning "nc 不可用，跳过 NAT_ET_IP:TRANSIT_PORT 探测"
                 fi
+            fi
+            IFS=$'\t' read -r nat_counter_state nat_counter_packets nat_counter_bytes <<<"$(profile_counter_health_status)"
+            case "$nat_counter_state" in
+                hit) health_line "nftables counter" "有命中（packets=${nat_counter_packets} bytes=${nat_counter_bytes}），说明转发规则正在接收流量" ;;
+                readable) health_line "nftables counter" "可读（等待入口侧或客户端流量命中）" ;;
+                unavailable) health_line "nftables counter" "不可读" ;;
+                *) health_line "nftables counter" "未找到" ;;
+            esac
+            if [[ "$nat_route_ok" != "true" && "$nat_tcp_ok" != "true" && "$nat_counter_state" != "hit" ]]; then
+                health_mark warning "pending peer：NAT IX 机器尚未接入或未连通"
             fi
             if [[ "${FORWARD_ENABLED:-true}" == "true" && -n "${LOCAL_PORT:-}" ]] && command_exists ss; then
                 if ss -lntup 2>/dev/null | grep -Eq "[:.]${LOCAL_PORT}[[:space:]]"; then
@@ -6450,21 +6567,41 @@ run_line_health_check() {
             fi
             ;;
         nat-transit)
+            local transit_peers_ok="false" transit_route_ok="false" transit_counter_state transit_counter_packets transit_counter_bytes
             if [[ -n "${ET_PEERS:-}" ]]; then
                 health_line "EasyTier peers" "存在"
+                transit_peers_ok="true"
             else
                 health_line "EasyTier peers" "不存在"
-                health_mark down "ET_PEERS 不存在"
+                health_mark warning "ET_PEERS 不存在"
+            fi
+            if command_exists ip && [[ -n "${INGRESS_ET_IP:-}" ]]; then
+                if ip route get "$INGRESS_ET_IP" >/dev/null 2>&1; then
+                    health_line "INGRESS_ET_IP 路由" "存在"
+                    transit_route_ok="true"
+                else
+                    health_line "INGRESS_ET_IP 路由" "未找到"
+                fi
+            else
+                health_line "INGRESS_ET_IP 路由" "无法检查"
             fi
             if command_exists ping && [[ -n "${INGRESS_ET_IP:-}" ]]; then
                 if ping -c 1 -W 3 "$INGRESS_ET_IP" >/dev/null 2>&1; then
                     health_line "INGRESS_ET_IP ping" "成功"
                 else
-                    health_line "INGRESS_ET_IP ping" "失败"
-                    health_mark warning "EasyTier peer 未建立，请检查入口机 listener、安全组、NAT IX 出口是否可访问入口机 listener。"
+                    if [[ "$transit_peers_ok" == "true" && "$transit_route_ok" == "true" ]]; then
+                        health_line "INGRESS_ET_IP ping" "ICMP ping 不通，但 EasyTier route/peer 存在；可能是 ICMP 不响应。请以业务 TCP、traffic counter 或 EasyTier peer 状态为准。"
+                    else
+                        health_line "INGRESS_ET_IP ping" "失败"
+                    fi
                 fi
             else
                 health_line "INGRESS_ET_IP ping" "跳过"
+            fi
+            if [[ "$transit_peers_ok" != "true" && "$transit_route_ok" != "true" ]]; then
+                health_mark warning "EasyTier peer 未建立，请检查入口机 listener、安全组、NAT IX 出口是否可访问入口机 listener。"
+            elif [[ "$transit_peers_ok" != "true" || "$transit_route_ok" != "true" ]]; then
+                health_mark warning "EasyTier peer/route 未完全确认，请检查入口机 listener 和安全组。"
             fi
             if [[ -n "${LANDING_HOST:-}" ]]; then
                 if validate_ipv4 "$LANDING_HOST"; then
@@ -6495,6 +6632,14 @@ run_line_health_check() {
                 health_line "UDP 探测" "跳过（UDP 不可靠）"
             fi
             health_line "TRANSIT_PORT userspace 监听" "不要求（nftables DNAT 接收端口）"
+            health_line "NAT_ET_IP:TRANSIT_PORT 本机直连" "仅供参考：本机直连 NAT_ET_IP:TRANSIT_PORT 可能不命中 PREROUTING DNAT"
+            IFS=$'\t' read -r transit_counter_state transit_counter_packets transit_counter_bytes <<<"$(profile_counter_health_status)"
+            case "$transit_counter_state" in
+                hit) health_line "nftables counter" "有命中（packets=${transit_counter_packets} bytes=${transit_counter_bytes}），说明转发规则正在接收流量" ;;
+                readable) health_line "nftables counter" "可读（等待入口侧或客户端流量命中）" ;;
+                unavailable) health_line "nftables counter" "不可读" ;;
+                *) health_line "nftables counter" "未找到" ;;
+            esac
             ;;
     esac
 
@@ -9117,7 +9262,8 @@ traffic_report() {
         fi
         printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$id" "${LINE_GROUP:-}" "${ROLE:-}" "${port:-}" "$target" "${FORWARD_ENABLED:-true}" "$packets" "$bytes" "$human"
     done
-    printf '\nNote: nftables counter only counts project forwarding rule hits on the ingress host; it is not cloud billing traffic.\n'
+    printf '\nNote: nftables counter only counts project forwarding rule hits on the host running this project table; it is not cloud billing traffic.\n'
+    printf 'NAT-IX: counter growth means PREROUTING DNAT is receiving traffic; local NAT IX self-test to NAT_ET_IP:TRANSIT_PORT may bypass that path.\n'
 }
 
 traffic_status() {

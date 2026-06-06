@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.1.0-alpha.3
+
+### Fixed
+
+- Auto-detect INGRESS_PUBLIC_HOST on nat-ingress setup.
+- Avoid treating NAT IX local self-test to NAT_ET_IP:TRANSIT_PORT as hard failure.
+- Relax NAT-IX health when ICMP ping fails but EasyTier route/peer and nftables are present.
+- Fix nat-transit compact port map showing LISTENER_PORT placeholder.
+- Improve NAT-IX access-code leakage guidance.
+
+### Compatibility
+
+- CNIX Panel Mode remains unchanged.
+- Existing 1.0.0 profiles remain compatible.
+
 ## 1.1.0-alpha.2
 
 ### Fixed

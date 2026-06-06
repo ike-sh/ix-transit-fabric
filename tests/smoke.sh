@@ -12,7 +12,7 @@ fi
 bash -n install.sh
 
 version_output="$(bash install.sh --version)"
-[[ "$version_output" == "ix-transit-fabric 1.1.0-alpha.2" ]]
+[[ "$version_output" == "ix-transit-fabric 1.1.0-alpha.3" ]]
 
 bash install.sh --help >/dev/null
 
@@ -144,6 +144,17 @@ for token in \
     wait_for_easytier_ready \
     wait_for_et_ip \
     wait_for_peer_or_route \
+    detect_public_ipv4 \
+    detect_public_host \
+    suggest_ingress_public_host \
+    IXTF_PUBLIC_IP \
+    "检测到当前公网 IPv4" \
+    "INGRESS_PUBLIC_HOST（默认" \
+    "ICMP ping 不通" \
+    "NAT_ET_IP:TRANSIT_PORT" \
+    "可能不命中 PREROUTING" \
+    "INGRESS_LISTENER_PORT 未配置" \
+    profile_counter_health_status \
     pending_peer \
     mode_nat_transit \
     mode_nat_ingress \
@@ -179,12 +190,16 @@ for token in \
     "安全边界" \
     "Roadmap" \
     "raw.githubusercontent.com/ike-sh/ix-transit-fabric/main/install.sh" \
-    "1.1.0-alpha.2" \
+    "1.1.0-alpha.3" \
+    "IXTF_PUBLIC_IP" \
+    "ICMP ping 不是" \
+    "PREROUTING" \
     "pending peer" \
     "NAT IX 机器需要能访问入口机 EasyTier listener" \
     "落地机需要允许 NAT IX 机器出口 IP 访问 LANDING_PORT" \
     "refresh-nat-code" \
     "NAT-IX Alpha 注意事项" \
+    "NAT IX 机器本机" \
     "EasyTier peer 未建立"; do
     grep -q "$token" README.md
 done
@@ -269,7 +284,7 @@ fi
 
 ! grep -R -E -q "${forbidden_old_051}|${forbidden_old_056}" README.md install.sh examples
 
-[[ "$(tr -d '\r\n' < VERSION)" == "1.1.0-alpha.2" ]]
+[[ "$(tr -d '\r\n' < VERSION)" == "1.1.0-alpha.3" ]]
 
 grep -q 'ix-transit-easytier@%s.service' install.sh
 grep -q 'show_profile_summary "$PROFILE_ID"' install.sh
@@ -606,7 +621,10 @@ EOF_PROFILE
     grep -q 'ip daddr 10.88.0.2 udp dport 20000 counter dnat to 10.88.0.1:50000' "$nft_render"
     nat_transit_map="$(show_port_map --compact nat-mid)"
     grep -q 'NAT-IX 中转' <<<"$nat_transit_map"
+    grep -q 'EasyTier peer' <<<"$nat_transit_map"
+    grep -q 'ingress.example:20000' <<<"$nat_transit_map"
     grep -q '10.88.0.2:20000 -> 10.88.0.1:50000' <<<"$nat_transit_map"
+    ! grep -q ':LISTENER_PORT' <<<"$nat_transit_map"
     mkdir -p "$NFT_DIR"
     render_nft_all_file "$NFT_FILE" "$NFT_TABLE"
     [[ "$(nft_profile_rule_status nat-mid)" == "present" ]]

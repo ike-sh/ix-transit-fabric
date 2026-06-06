@@ -1,6 +1,6 @@
 # ix-transit-fabric
 
-当前版本：`1.1.0-alpha.2`
+当前版本：`1.1.0-alpha.3`
 
 `ix-transit-fabric` 是一个面向 CNIX / IX 转发面板场景的 EasyTier 隧道编排脚本。它用于将商家常见的 WireGuard 隧道接入方式替换为 EasyTier，并自动完成公网入口机上的 nftables 转发。
 
@@ -452,17 +452,22 @@ bash install.sh purge
 
 ## NAT-IX Alpha 注意事项
 
-1.1.0-alpha.2 是 NAT-IX 实测修复版。
+1.1.0-alpha.3 是 NAT-IX 实机语义修复版。
 
 - NAT-IX 模式推荐先在入口机创建 nat-ingress，再在 NAT IX 机器导入。
+- `add-nat-ingress-profile` 会自动检测 `INGRESS_PUBLIC_HOST`，检测到公网 IPv4 后可直接回车使用；也可以设置 `IXTF_PUBLIC_IP=203.0.113.10` 或 `IXTF_INGRESS_PUBLIC_HOST=ingress.example` 覆盖自动检测。
 - nat-ingress 第一端创建后，NAT_ET_IP ping 失败属于正常 pending peer 状态，等 nat-transit 导入后再测试。
 - nat-transit 创建后，如果 NAT_ET_IP 不存在，优先看 EasyTier service 日志和 `bash install.sh show-easytier-command PROFILE_ID`。
-- 如果出现 `EasyTier peer 未建立`，请检查入口机 listener、安全组，以及 NAT IX 机器出口是否可访问入口机 EasyTier listener。
+- ICMP ping 不是 NAT-IX 成功的唯一标准；如果 EasyTier route/peer、nftables 规则、`LANDING_HOST:LANDING_PORT` TCP 和 traffic counter 正常，应以这些业务信号为准。
+- 只有 EasyTier peer 配置和到入口机 ET IP 的 route 都不存在时，才应按 `EasyTier peer 未建立` 方向排查。
+- NAT IX 机器本机 `nc NAT_ET_IP:TRANSIT_PORT` 失败不一定代表链路失败，因为本机直连可能不命中 PREROUTING DNAT；推荐从入口机或客户端侧测试。
+- 入口机侧可以运行 `nc -vz -w 3 NAT_ET_IP TRANSIT_PORT`，客户端侧以连接 `INGRESS_PUBLIC_HOST:LOCAL_PORT` 为准。
+- `show-port-map --compact` 已修复 nat-transit 的 EasyTier peer 端口显示；缺少端口时会显示 `INGRESS_LISTENER_PORT 未配置`。
 - NAT IX 机器需要能访问入口机 EasyTier listener。
 - 落地机需要允许 NAT IX 机器出口 IP 访问 LANDING_PORT。
 - NAT IX 机器不需要安装代理服务，只做 nftables 中转。
 - NAT-IX 接入码包含 EasyTier `network_secret`；如果接入码发到聊天、工单或日志，请正式使用前运行 `bash install.sh refresh-nat-code PROFILE_ID` 刷新或重建 nat-ingress Profile。
-- `refresh-nat-code` 会轮换 `network_secret`，旧 nat-transit Profile 需要重新导入新的接入码。
+- `refresh-nat-code` 会生成新 `network_secret`，旧接入码失效，旧 nat-transit Profile 需要重新导入新的接入码。
 
 ## Roadmap
 
