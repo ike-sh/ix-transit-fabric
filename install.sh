@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-SCRIPT_VERSION="1.1.0-alpha.4"
+SCRIPT_VERSION="1.1.0-alpha.5"
 APP_NAME="ix-transit-fabric"
 
 CONFIG_DIR="/etc/ix-transit-fabric"
@@ -148,65 +148,70 @@ print_port_map_compact() {
             ;;
         nat-ingress)
             if [[ "$nat_direction" == "nat-listener" ]]; then
-                printf '线路：%s（NAT-IX 入口，连接 NAT IX listener）\n\n' "$profile_id"
-            else
-                printf '线路：%s（NAT-IX 入口）\n\n' "$profile_id"
-            fi
-            printf '客户端连接：\n'
-            printf '  %s:%s\n\n' "$ingress_public" "$(c_cyan "$local_port")"
-            if [[ "$nat_direction" == "nat-listener" ]]; then
-                printf 'EasyTier peer：\n'
+                printf '线路：%s（公网入口线路）\n\n' "$profile_id"
+                printf '客户端连接：\n'
+                printf '  公网入口机公网 IP:%s\n\n' "$(c_cyan "$local_port")"
+                printf '连接 NAT IX：\n'
                 if [[ -n "$nat_listener_port" ]]; then
                     printf '  %s:%s\n\n' "$nat_public" "$(c_cyan "$nat_listener_port")"
                 else
-                    printf '  NAT_LISTENER_PORT 未配置\n\n'
+                    printf '  商家 NAT/IX 入口地址:商家分配入口端口（未配置）\n\n'
                 fi
+                printf '虚拟网转发：\n'
+                printf '  客户端入口端口 %s -> %s:%s\n\n' "$local_port" "$nat_et_ip" "$transit_port"
+                printf '最终落地：\n'
+                if [[ -n "${LANDING_HOST:-}" && -n "${LANDING_PORT:-}" ]]; then
+                    printf '  %s:%s\n\n' "$landing_host" "$landing_port"
+                else
+                    printf '  落地机地址:落地业务端口（来自 NAT IX 接入码）\n\n'
+                fi
+                printf '说明：虚拟网中转端口只在 EasyTier 虚拟网内部使用，不是公网端口，不是商家入口端口。\n'
             else
-                printf 'EasyTier listener：\n'
+                printf '线路：%s（公网入口线路，兼容旧模式）\n\n' "$profile_id"
+                printf '客户端连接：\n'
+                printf '  %s:%s\n\n' "$ingress_public" "$(c_cyan "$local_port")"
+                printf 'EasyTier 监听：\n'
                 if [[ -n "$ingress_listener_port" ]]; then
                     printf '  %s:%s\n\n' "$ingress_public" "$(c_cyan "$ingress_listener_port")"
                 else
-                    printf '  INGRESS_LISTENER_PORT 未配置\n\n'
+                    printf '  公网入口机 EasyTier 监听端口未配置\n\n'
                 fi
-            fi
-            printf '内部转发：\n'
-            printf '  %s -> %s:%s\n\n' "$local_port" "$nat_et_ip" "$transit_port"
-            printf '下一跳：\n'
-            if [[ -n "${LANDING_HOST:-}" && -n "${LANDING_PORT:-}" ]]; then
-                printf '  NAT IX 机器转发 %s -> %s:%s\n' "$transit_port" "$landing_host" "$landing_port"
-            else
-                printf '  NAT IX 机器导入后配置 LANDING_HOST:LANDING_PORT\n'
+                printf '虚拟网转发：\n'
+                printf '  客户端入口端口 %s -> %s:%s\n\n' "$local_port" "$nat_et_ip" "$transit_port"
+                printf '说明：这是兼容旧模式，NAT IX 机器会连接公网入口机。\n'
             fi
             ;;
         nat-transit)
             if [[ "$nat_direction" == "nat-listener" ]]; then
-                printf '线路：%s（NAT-IX 监听中转）\n\n' "$profile_id"
-                printf 'NAT IX listener：\n'
+                printf '线路：%s（NAT IX 中转线路）\n\n' "$profile_id"
+                printf '商家入口：\n'
                 if [[ -n "$nat_listener_port" ]]; then
                     printf '  %s:%s\n\n' "$nat_public" "$(c_cyan "$nat_listener_port")"
                 else
-                    printf '  NAT_LISTENER_PORT 未配置\n\n'
+                    printf '  商家 NAT/IX 入口地址:商家分配入口端口（未配置）\n\n'
                 fi
-                printf 'EasyTier：\n'
-                printf '  NAT IX ET IP：%s\n' "$nat_et_ip"
-                printf '  入口机 ET IP：%s\n\n' "$ingress_et_ip"
-                printf '公网入口机下一步：\n'
-                printf '  导入接入码后，客户端连接入口机公网 IP:%s\n\n' "$local_port"
-            else
-                printf '线路：%s（NAT-IX 中转）\n\n' "$profile_id"
+                printf '用途：公网入口机通过 EasyTier 连接到这里。\n\n'
+                printf '虚拟网：\n'
+                printf '  NAT IX 虚拟 IP：%s\n' "$nat_et_ip"
+                printf '  公网入口机虚拟 IP：%s\n\n' "$ingress_et_ip"
+                printf '虚拟网中转：\n'
+                printf '  %s:%s -> %s:%s\n' "$nat_et_ip" "$(c_cyan "$transit_port")" "$landing_host" "$landing_port"
+                printf '  说明：虚拟网中转端口只在 EasyTier 虚拟网内部使用，不需要公网放行。\n\n'
                 printf '客户端连接：\n'
-                printf '  %s:%s\n\n' "$ingress_public" "$(c_cyan "$local_port")"
-                printf 'EasyTier peer：\n'
+                printf '  公网入口机导入接入码后，客户端连接：公网入口机公网 IP:%s\n' "$local_port"
+            else
+                printf '线路：%s（NAT IX 中转线路，兼容旧模式）\n\n' "$profile_id"
+                printf '连接公网入口机：\n'
                 if [[ -n "$ingress_listener_port" ]]; then
                     printf '  %s:%s\n\n' "$ingress_public" "$(c_cyan "$ingress_listener_port")"
                 else
-                    printf '  INGRESS_LISTENER_PORT 未配置\n\n'
+                    printf '  公网入口机 EasyTier 监听端口未配置\n\n'
                 fi
+                printf '虚拟网中转：\n'
+                printf '  %s:%s -> %s:%s\n\n' "$nat_et_ip" "$(c_cyan "$transit_port")" "$landing_host" "$landing_port"
+                printf '客户端连接：\n'
+                printf '  %s:%s\n' "$ingress_public" "$local_port"
             fi
-            printf '中转转发：\n'
-            printf '  %s:%s -> %s:%s\n\n' "$nat_et_ip" "$transit_port" "$landing_host" "$landing_port"
-            printf '落地服务：\n'
-            printf '  %s:%s\n' "$landing_host" "$landing_port"
             ;;
         *)
             printf '[WARN] 当前角色未知：%s\n' "${ROLE:-未设置}"
@@ -1203,6 +1208,18 @@ generate_profile_id() {
     printf '%s-%s\n' "$prefix" "$(random_hex 2)"
 }
 
+generate_unique_profile_id() {
+    local prefix="${1:-line}" id attempt
+    for attempt in $(seq 1 30); do
+        id="$(generate_profile_id "$prefix")"
+        if [[ ! -e "$(profile_env_path "$id" 2>/dev/null || printf '%s/%s.env' "$PROFILES_DIR" "$id")" ]]; then
+            printf '%s\n' "$id"
+            return 0
+        fi
+    done
+    return 1
+}
+
 validate_profile_id() {
     local value="$1"
     [[ "$value" =~ ^[a-z0-9-]{3,32}$ ]] || return 1
@@ -1671,8 +1688,8 @@ profile_uses_easytier_listener() {
 
 nat_direction_label() {
     case "${1:-ingress-listener}" in
-        nat-listener) printf '模式 B：NAT IX 机器监听，公网入口机连接 NAT IX 商家入口\n' ;;
-        *) printf '模式 A：公网入口机监听，NAT IX 机器连接入口机\n' ;;
+        nat-listener) printf '推荐模式：NAT IX 机器监听，公网入口机连接 NAT IX\n' ;;
+        *) printf '兼容旧模式：公网入口机监听，NAT IX 机器连接公网入口机\n' ;;
     esac
 }
 
@@ -2082,6 +2099,47 @@ prompt_yes_no() {
             *) log_warn "请输入 yes 或 no。" ;;
         esac
     done
+}
+
+confirm_recommended_nat_listener_role() {
+    cat >&2 <<'EOF'
+当前操作适用于 NAT IX 机器，不适用于公网入口机。
+如果你正在公网入口机上操作，请返回并选择“公网入口机导入 NAT IX 接入码”。
+EOF
+    [[ "$(prompt_yes_no "是否继续" "false")" == "true" ]]
+}
+
+confirm_recommended_ingress_import_role() {
+    cat >&2 <<'EOF'
+当前操作适用于公网入口机，不适用于 NAT IX 机器。
+如果你正在 NAT IX 机器上操作，请返回并选择“NAT IX 机器生成接入码”。
+EOF
+    [[ "$(prompt_yes_no "是否继续" "false")" == "true" ]]
+}
+
+assign_auto_profile_identity() {
+    local role_prefix="$1" id
+    id="$(generate_unique_profile_id "$role_prefix")" || die_user "无法自动生成未占用的线路 ID，请稍后重试。"
+    PROFILE_ID="$id"
+    PROFILE_NAME="$id"
+    ENABLED="true"
+}
+
+prompt_virtual_transit_port() {
+    local default_port="${1:-}" answer
+    if [[ -z "$default_port" ]]; then
+        default_port="$(pick_random_port || true)"
+    fi
+    cat >&2 <<'EOF'
+虚拟网中转端口用于 EasyTier 虚拟网内部转发，不需要公网放行。
+通常保持自动随机即可。
+EOF
+    answer="$(prompt_yes_no "是否自定义虚拟网中转端口" "false")" || return 1
+    if [[ "$answer" == "true" ]]; then
+        prompt_port "请输入虚拟网中转端口（仅 EasyTier 虚拟网内部使用，不是商家入口端口）" "$default_port"
+    else
+        printf '%s\n' "$default_port"
+    fi
 }
 
 mask_secret() {
@@ -3996,7 +4054,7 @@ render_nat_code_json() {
     created_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
     if [[ "$nat_direction" == "nat-listener" ]]; then
-        [[ "$ROLE" == "nat-transit" ]] || die_user "只有 nat-transit + NAT_DIRECTION=nat-listener 可以生成模式 B 接入码。"
+        [[ "$ROLE" == "nat-transit" ]] || die_user "只有 NAT IX 中转线路可以生成推荐模式接入码。"
         nat_listener_proto="$(normalize_listener_proto "${NAT_LISTENER_PROTO:-both}" "both")"
         nat_listener_protos="$(normalize_listener_protos "$nat_listener_proto" "both")"
 
@@ -4028,7 +4086,7 @@ render_nat_code_json() {
         return 0
     fi
 
-    [[ "$ROLE" == "nat-ingress" ]] || die_user "只有 nat-ingress + NAT_DIRECTION=ingress-listener 可以生成模式 A 接入码。"
+    [[ "$ROLE" == "nat-ingress" ]] || die_user "只有公网入口线路可以生成兼容旧模式接入码。"
     ingress_listener_proto="$(normalize_listener_proto "${INGRESS_LISTENER_PROTO:-both}" "both")"
     ingress_listener_protos="$(normalize_listener_protos "$ingress_listener_proto" "both")"
 
@@ -4093,16 +4151,16 @@ show_code() {
         fi
         if [[ "${ROLE:-}" == "nat-transit" && "${NAT_DIRECTION:-ingress-listener}" == "nat-listener" ]]; then
             cat <<EOF
-NAT-IX 模式 B 接入码：
+NAT-IX 接入码（复制整段到公网入口机）
 $(c_yellow '===== 接入码开始 =====')
 ${code}
 $(c_yellow '===== 接入码结束 =====')
 
 公网入口机导入后会连接：
-NAT IX listener：${NAT_PUBLIC_HOST}:${NAT_LISTENER_PORT}
-NAT IX ET IP：${NAT_ET_IP}
-公网入口机 ET IP：${INGRESS_ET_IP}
-中转接收端口：${TRANSIT_PORT}
+商家 NAT/IX 入口：${NAT_PUBLIC_HOST}:${NAT_LISTENER_PORT}
+NAT IX 虚拟 IP：${NAT_ET_IP}
+公网入口机虚拟 IP：${INGRESS_ET_IP}
+虚拟网中转端口：${TRANSIT_PORT}
 落地目标：${LANDING_HOST}:${LANDING_PORT}
 
 安全提醒：
@@ -4114,29 +4172,29 @@ EOF
         fi
         if [[ "${show_code_skip_security:-}" == "true" ]]; then
             cat <<EOF
-NAT-IX 接入码：
+NAT-IX 接入码（复制整段到 NAT IX 机器）
 $(c_yellow '===== 接入码开始 =====')
 ${code}
 $(c_yellow '===== 接入码结束 =====')
 
 NAT IX 机器导入后会连接：
 入口机：${INGRESS_PUBLIC_HOST}:${INGRESS_LISTENER_PORT}
-入口机 ET IP：${INGRESS_ET_IP}
-NAT IX ET IP：${NAT_ET_IP}
-中转接收端口：${TRANSIT_PORT}
+公网入口机虚拟 IP：${INGRESS_ET_IP}
+NAT IX 虚拟 IP：${NAT_ET_IP}
+虚拟网中转端口：${TRANSIT_PORT}
 EOF
         else
             cat <<EOF
-NAT-IX 接入码：
+NAT-IX 接入码（复制整段到 NAT IX 机器）
 $(c_yellow '===== 接入码开始 =====')
 ${code}
 $(c_yellow '===== 接入码结束 =====')
 
 NAT IX 机器导入后会连接：
 入口机：${INGRESS_PUBLIC_HOST}:${INGRESS_LISTENER_PORT}
-入口机 ET IP：${INGRESS_ET_IP}
-NAT IX ET IP：${NAT_ET_IP}
-中转接收端口：${TRANSIT_PORT}
+公网入口机虚拟 IP：${INGRESS_ET_IP}
+NAT IX 虚拟 IP：${NAT_ET_IP}
+虚拟网中转端口：${TRANSIT_PORT}
 
 安全提醒：
 这段接入码包含 EasyTier 组网密钥，不是加密 token。
@@ -4517,7 +4575,7 @@ collect_nat_ingress_inputs() {
 
     cat >&2 <<EOF
 按 Enter 使用推荐默认值。
-NAT-IX Transit Mode 默认连接方向：公网入口机 listens，NAT IX 机器 peers to ingress。
+兼容旧模式默认连接方向：公网入口机监听，NAT IX 机器连接公网入口机。
 
 EOF
     if env_public="$(detect_env_ingress_public_host)"; then
@@ -4564,7 +4622,7 @@ EOF
 }
 
 collect_nat_listener_inputs() {
-    local default_network default_secret default_subnet default_ingress_cidr default_nat_cidr default_transit_port
+    local default_network default_secret default_subnet default_ingress_cidr default_nat_cidr default_transit_port advanced
     require_tty add-nat-listener-profile
     ROLE="nat-transit"
     NAT_DIRECTION="nat-listener"
@@ -4576,28 +4634,44 @@ collect_nat_listener_inputs() {
     default_transit_port="$(pick_random_port || true)"
 
     cat >&2 <<EOF
-按 Enter 使用推荐默认值。
-NAT-IX 模式 B：NAT IX 机器 listens，公网入口机 peers to NAT IX。
-NAT_PUBLIC_HOST 是商家分配给公网入口机连接的 NAT/IX 入口地址，不一定等于本机 curl 出口 IP。
+推荐模式：NAT IX 机器监听，公网入口机连接 NAT IX。
+适合商家给了 NAT/IX 入口 IP:端口。
 
 EOF
-    ET_NETWORK_NAME="$(prompt_validated "请输入 EasyTier 网络名" "$default_network" validate_network_name "请输入 1-64 个字符，仅允许字母、数字、点、下划线或短横线。")" || return 1
-    ET_NETWORK_SECRET="$(prompt_secret_default "$default_secret")" || return 1
-    ET_HOSTNAME="$(prompt_validated "请输入 NAT IX 节点名称" "ix-nat-listener-${PROFILE_ID:-default}" validate_hostname_value "请输入 1-64 个字符，仅允许字母、数字、点、下划线或短横线。")" || return 1
-    NAT_ET_CIDR="$(prompt_validated "请输入 NAT IX EasyTier IP，例如 ${default_nat_cidr}" "$default_nat_cidr" validate_ipv4_cidr "请输入 IPv4/CIDR，例如 ${default_nat_cidr}。")" || return 1
+    NAT_PUBLIC_HOST="$(prompt_validated "请输入商家 NAT/IX 入口地址" "" validate_host "请输入商家分配给你的入口 IP 或域名。")" || return 1
+    NAT_LISTENER_PORT="$(prompt_port "请输入商家分配入口端口" "")" || return 1
+    LANDING_HOST="$(prompt_validated "请输入落地机地址" "" validate_host "请输入落地机 IP 或域名。")" || return 1
+    LANDING_PORT="$(prompt_port "请输入落地业务端口" "")" || return 1
+    advanced="$(prompt_yes_no "是否自定义高级参数" "false")" || return 1
+    if [[ "$advanced" == "true" ]]; then
+        collect_profile_identity "nat-listener" || return 1
+        ET_NETWORK_NAME="$(prompt_validated "请输入网络名" "$default_network" validate_network_name "请输入 1-64 个字符，仅允许字母、数字、点、下划线或短横线。")" || return 1
+        ET_NETWORK_SECRET="$(prompt_secret_default "$default_secret")" || return 1
+        ET_HOSTNAME="$(prompt_validated "请输入节点名" "ix-nat-listener-${PROFILE_ID}" validate_hostname_value "请输入 1-64 个字符，仅允许字母、数字、点、下划线或短横线。")" || return 1
+        NAT_ET_CIDR="$(prompt_validated "请输入 NAT IX 虚拟 IP，例如 ${default_nat_cidr}" "$default_nat_cidr" validate_ipv4_cidr "请输入 IPv4/CIDR，例如 ${default_nat_cidr}。")" || return 1
+        INGRESS_ET_CIDR="$(prompt_validated "请输入公网入口机虚拟 IP，例如 ${default_ingress_cidr}" "$default_ingress_cidr" validate_ipv4_cidr "请输入 IPv4/CIDR，例如 ${default_ingress_cidr}。")" || return 1
+        TRANSIT_PORT="$(prompt_virtual_transit_port "$default_transit_port")" || return 1
+        NAT_LISTENER_PROTO="$(prompt_listener_proto "请选择 EasyTier 监听协议（tcp / udp / tcp+udp / ws / wss / quic / wg / all）" "both")" || return 1
+        FORWARD_PROTO="$(prompt_forward_proto "请选择转发协议（tcp / udp / both / tcp/udp）" "both")" || return 1
+    else
+        assign_auto_profile_identity "nat-listener"
+        ET_NETWORK_NAME="$default_network"
+        ET_NETWORK_SECRET="$default_secret"
+        ET_HOSTNAME="ix-nat-listener-${PROFILE_ID}"
+        NAT_ET_CIDR="$default_nat_cidr"
+        INGRESS_ET_CIDR="$default_ingress_cidr"
+        TRANSIT_PORT="$default_transit_port"
+        NAT_LISTENER_PROTO="both"
+        FORWARD_PROTO="both"
+    fi
+    NAT_LISTENER_PROTOS="$(normalize_listener_protos "$NAT_LISTENER_PROTO" "both")"
+    if [[ -z "${TRANSIT_PORT:-}" ]]; then
+        TRANSIT_PORT="$(prompt_virtual_transit_port "$default_transit_port")" || return 1
+    fi
     NAT_ET_IP="${NAT_ET_CIDR%%/*}"
     ET_IPV4="$NAT_ET_CIDR"
     ET_SUBNET="$(cidr_network24 "$ET_IPV4")"
-    INGRESS_ET_CIDR="$(prompt_validated "请输入公网入口机 EasyTier IP，例如 ${default_ingress_cidr}" "$default_ingress_cidr" validate_ipv4_cidr "请输入 IPv4/CIDR，例如 ${default_ingress_cidr}。")" || return 1
     INGRESS_ET_IP="${INGRESS_ET_CIDR%%/*}"
-    NAT_PUBLIC_HOST="$(prompt_validated "请输入 NAT IX 商家入口 IP 或域名 NAT_PUBLIC_HOST" "" validate_host "请输入 IPv4 或域名；这是公网入口机要连接的商家 NAT/IX 入口地址。")" || return 1
-    NAT_LISTENER_PORT="$(prompt_port "请输入 NAT IX 商家分配端口 NAT_LISTENER_PORT" "")" || return 1
-    NAT_LISTENER_PROTO="$(prompt_listener_proto "请选择 NAT IX EasyTier listener 协议（tcp / udp / tcp+udp / ws / wss / quic / wg / all）" "both")" || return 1
-    NAT_LISTENER_PROTOS="$(normalize_listener_protos "$NAT_LISTENER_PROTO" "both")"
-    TRANSIT_PORT="$(prompt_random_port "请输入 NAT IX 机器中转接收端口 TRANSIT_PORT" "$default_transit_port")" || return 1
-    LANDING_HOST="$(prompt_validated "请输入落地机公网 IP 或域名 LANDING_HOST，例如 landing.example" "" validate_host "请输入 IPv4 或域名。")" || return 1
-    LANDING_PORT="$(prompt_port "请输入落地机业务端口 LANDING_PORT" "50000")" || return 1
-    FORWARD_PROTO="$(prompt_forward_proto "请选择业务转发协议（tcp / udp / both / tcp/udp）" "both")" || return 1
     if validate_ipv4 "$LANDING_HOST"; then
         LANDING_IP="$LANDING_HOST"
     else
@@ -4662,30 +4736,30 @@ print_config_summary() {
             forward_proto_display="$(proto_display "${FORWARD_PROTO:-both}")"
             printf 'NAT-IX 方向：%s\n' "$(nat_direction_label "${NAT_DIRECTION:-ingress-listener}")"
             if [[ "${NAT_DIRECTION:-ingress-listener}" == "nat-listener" ]]; then
-                printf 'NAT-IX 角色：公网入口机（peer to NAT IX）\n'
-                printf 'NAT IX listener：%s:%s\n' "${NAT_PUBLIC_HOST:-}" "${NAT_LISTENER_PORT:-}"
+                printf 'NAT-IX 角色：公网入口机（导入 NAT IX 接入码）\n'
+                printf '商家 NAT/IX 入口：%s:%s\n' "${NAT_PUBLIC_HOST:-}" "${NAT_LISTENER_PORT:-}"
             else
-                printf 'NAT-IX 角色：公网入口机（listener）\n'
-                printf '入口公网地址：%s:%s\n' "${INGRESS_PUBLIC_HOST:-}" "${INGRESS_LISTENER_PORT:-}"
+                printf 'NAT-IX 角色：公网入口机（兼容旧模式监听）\n'
+                printf '公网入口机监听地址：%s:%s\n' "${INGRESS_PUBLIC_HOST:-}" "${INGRESS_LISTENER_PORT:-}"
             fi
-            printf '入口机 ET IP：%s\n' "${INGRESS_ET_IP:-}"
-            printf 'NAT IX ET IP：%s\n' "${NAT_ET_IP:-}"
-            printf '客户端连接端口 LOCAL_PORT：%s\n' "${LOCAL_PORT:-}"
-            printf '中转接收端口 TRANSIT_PORT：%s\n' "${TRANSIT_PORT:-}"
+            printf '公网入口机虚拟 IP：%s\n' "${INGRESS_ET_IP:-}"
+            printf 'NAT IX 虚拟 IP：%s\n' "${NAT_ET_IP:-}"
+            printf '客户端入口端口：%s\n' "${LOCAL_PORT:-}"
+            printf '虚拟网中转端口：%s\n' "${TRANSIT_PORT:-}"
             printf '转发：%s -> %s:%s（%s）\n' "${LOCAL_PORT:-}" "${NAT_ET_IP:-}" "${TRANSIT_PORT:-}" "$forward_proto_display"
             ;;
         nat-transit)
             forward_proto_display="$(proto_display "${FORWARD_PROTO:-both}")"
             printf 'NAT-IX 方向：%s\n' "$(nat_direction_label "${NAT_DIRECTION:-ingress-listener}")"
             if [[ "${NAT_DIRECTION:-ingress-listener}" == "nat-listener" ]]; then
-                printf 'NAT-IX 角色：NAT IX 中转机（listener）\n'
-                printf 'NAT IX listener：%s:%s\n' "${NAT_PUBLIC_HOST:-}" "${NAT_LISTENER_PORT:-}"
+                printf 'NAT-IX 角色：NAT IX 机器（生成接入码）\n'
+                printf '商家 NAT/IX 入口：%s:%s\n' "${NAT_PUBLIC_HOST:-}" "${NAT_LISTENER_PORT:-}"
             else
-                printf 'NAT-IX 角色：NAT IX 中转机（peer）\n'
-                printf '入口公网 listener：%s:%s\n' "${INGRESS_PUBLIC_HOST:-}" "${INGRESS_LISTENER_PORT:-}"
+                printf 'NAT-IX 角色：NAT IX 机器（兼容旧模式导入）\n'
+                printf '公网入口机监听地址：%s:%s\n' "${INGRESS_PUBLIC_HOST:-}" "${INGRESS_LISTENER_PORT:-}"
             fi
-            printf '入口机 ET IP：%s\n' "${INGRESS_ET_IP:-}"
-            printf 'NAT IX ET IP：%s\n' "${NAT_ET_IP:-}"
+            printf '公网入口机虚拟 IP：%s\n' "${INGRESS_ET_IP:-}"
+            printf 'NAT IX 虚拟 IP：%s\n' "${NAT_ET_IP:-}"
             printf '中转转发：%s:%s -> %s:%s（%s）\n' "${NAT_ET_IP:-}" "${TRANSIT_PORT:-}" "${LANDING_HOST:-}" "${LANDING_PORT:-}" "$forward_proto_display"
             [[ -n "${LOCAL_PORT:-}" ]] && printf '客户端连接：%s:%s\n' "${INGRESS_PUBLIC_HOST:-公网入口 VPS}" "$LOCAL_PORT"
             ;;
@@ -4748,20 +4822,20 @@ show_profile_summary() {
             printf 'systemd 状态：%s（开机自启：%s）\n' "${active:-unknown}" "${enabled_status:-unknown}"
             ;;
         nat-ingress)
-            printf '\n%s\n' "$(c_green "NAT-IX 入口线路已完成：${profile_id}")"
+            printf '\n%s\n' "$(c_green "公网入口线路已完成：${profile_id}")"
             print_box "【客户端连接】" "${INGRESS_PUBLIC_HOST:-公网入口 VPS}:$(c_cyan "${LOCAL_PORT:-LOCAL_PORT}")"
             if [[ "${NAT_DIRECTION:-ingress-listener}" == "nat-listener" ]]; then
-                print_box "【EasyTier peer】" \
-                    "连接 NAT IX listener：${NAT_PUBLIC_HOST:-NAT_PUBLIC_HOST}:${NAT_LISTENER_PORT:-NAT_LISTENER_PORT}" \
+                print_box "【连接 NAT IX】" \
+                    "商家 NAT/IX 入口：${NAT_PUBLIC_HOST:-NAT_PUBLIC_HOST}:${NAT_LISTENER_PORT:-NAT_LISTENER_PORT}" \
                     "协议：$(proto_display "${NAT_LISTENER_PROTO:-both}")"
             else
-                print_box "【EasyTier listener】" \
-                    "入口机：${INGRESS_PUBLIC_HOST:-INGRESS_PUBLIC_HOST}:${INGRESS_LISTENER_PORT:-INGRESS_LISTENER_PORT}" \
+                print_box "【兼容旧模式监听】" \
+                    "公网入口机：${INGRESS_PUBLIC_HOST:-INGRESS_PUBLIC_HOST}:${INGRESS_LISTENER_PORT:-INGRESS_LISTENER_PORT}" \
                     "协议：$(proto_display "${INGRESS_LISTENER_PROTO:-both}")"
             fi
-            print_box "【内部转发】" "${LOCAL_PORT:-LOCAL_PORT} -> ${NAT_ET_IP:-NAT_ET_IP}:${TRANSIT_PORT:-TRANSIT_PORT}"
+            print_box "【虚拟网转发】" "客户端入口端口 ${LOCAL_PORT:-LOCAL_PORT} -> ${NAT_ET_IP:-NAT_ET_IP}:${TRANSIT_PORT:-TRANSIT_PORT}"
             if [[ "${NAT_DIRECTION:-ingress-listener}" == "nat-listener" ]]; then
-                printf '\n当前连接方向：NAT IX listener，公网入口机 peer to NAT IX。\n'
+                printf '\n当前连接方向：NAT IX 机器监听，公网入口机连接 NAT IX。\n'
             else
                 printf '\nNAT IX 机器下一步：bash install.sh add-nat-transit-profile-from-code\n'
             fi
@@ -4769,18 +4843,19 @@ show_profile_summary() {
             printf 'systemd 状态：%s（开机自启：%s）\n' "${active:-unknown}" "${enabled_status:-unknown}"
             ;;
         nat-transit)
-            printf '\n%s\n' "$(c_green "NAT-IX 中转线路已完成：${profile_id}")"
+            printf '\n%s\n' "$(c_green "NAT IX 中转线路已完成：${profile_id}")"
             if [[ "${NAT_DIRECTION:-ingress-listener}" == "nat-listener" ]]; then
-                print_box "【EasyTier listener】" \
-                    "NAT IX listener：${NAT_PUBLIC_HOST:-NAT_PUBLIC_HOST}:${NAT_LISTENER_PORT:-NAT_LISTENER_PORT}" \
+                print_box "【商家入口】" \
+                    "商家 NAT/IX 入口：${NAT_PUBLIC_HOST:-NAT_PUBLIC_HOST}:${NAT_LISTENER_PORT:-NAT_LISTENER_PORT}" \
                     "协议：$(proto_display "${NAT_LISTENER_PROTO:-both}")"
-                print_box "【公网入口机下一步】" "bash install.sh add-nat-ingress-from-listener-code"
+                print_box "【公网入口机下一步】" "选择“公网入口机导入 NAT IX 接入码”"
             else
-                print_box "【EasyTier peer】" "连接入口机：${INGRESS_PUBLIC_HOST:-INGRESS_PUBLIC_HOST}:${INGRESS_LISTENER_PORT:-INGRESS_LISTENER_PORT}"
+                print_box "【兼容旧模式】" "连接公网入口机：${INGRESS_PUBLIC_HOST:-INGRESS_PUBLIC_HOST}:${INGRESS_LISTENER_PORT:-INGRESS_LISTENER_PORT}"
             fi
-            print_box "【中转转发】" "${NAT_ET_IP:-NAT_ET_IP}:${TRANSIT_PORT:-TRANSIT_PORT} -> ${LANDING_HOST:-LANDING_HOST}:${LANDING_PORT:-LANDING_PORT}"
+            print_box "【虚拟网中转】" "${NAT_ET_IP:-NAT_ET_IP}:${TRANSIT_PORT:-TRANSIT_PORT} -> ${LANDING_HOST:-LANDING_HOST}:${LANDING_PORT:-LANDING_PORT}"
+            printf '说明：虚拟网中转端口只在 EasyTier 虚拟网内部使用，不需要公网放行。\n'
             if [[ "${NAT_DIRECTION:-ingress-listener}" == "nat-listener" ]]; then
-                print_box "【客户端连接】" "公网入口机导入后，客户端连接入口机公网 IP:LOCAL_PORT"
+                print_box "【客户端连接】" "公网入口机导入后，客户端连接公网入口机公网 IP:客户端入口端口"
             else
                 print_box "【客户端连接】" "${INGRESS_PUBLIC_HOST:-公网入口 VPS}:${LOCAL_PORT:-LOCAL_PORT}"
             fi
@@ -4817,7 +4892,7 @@ print_profile_next_steps() {
         nat-ingress)
             if [[ "${NAT_DIRECTION:-ingress-listener}" == "nat-listener" ]]; then
                 print_next_steps "下一步：" \
-                    "确认公网入口机已 peer 到 NAT IX listener：${NAT_PUBLIC_HOST:-NAT_PUBLIC_HOST}:${NAT_LISTENER_PORT:-NAT_LISTENER_PORT}" \
+                    "确认公网入口机已连接商家 NAT/IX 入口：${NAT_PUBLIC_HOST:-NAT_PUBLIC_HOST}:${NAT_LISTENER_PORT:-NAT_LISTENER_PORT}" \
                     "运行 bash install.sh health ${profile_id}" \
                     "客户端连接 ${INGRESS_PUBLIC_HOST:-公网入口 VPS}:${LOCAL_PORT:-LOCAL_PORT}"
             else
@@ -4831,8 +4906,8 @@ print_profile_next_steps() {
         nat-transit)
             if [[ "${NAT_DIRECTION:-ingress-listener}" == "nat-listener" ]]; then
                 print_next_steps "下一步：" \
-                    "把模式 B NAT-IX 接入码复制到公网入口机" \
-                    "在公网入口机运行 bash install.sh add-nat-ingress-from-listener-code" \
+                    "把 NAT-IX 接入码复制到公网入口机" \
+                    "在公网入口机选择“公网入口机导入 NAT IX 接入码”" \
                     "确认落地机允许 NAT IX 机器出口 IP 访问 ${LANDING_HOST:-LANDING_HOST}:${LANDING_PORT:-LANDING_PORT}" \
                     "运行 bash install.sh health ${profile_id}"
             else
@@ -5093,16 +5168,16 @@ nat_guide_profile() {
         nat-ingress)
             if [[ "${NAT_DIRECTION:-ingress-listener}" == "nat-listener" ]]; then
                 cat <<EOF
-当前 Profile：${profile_id}（NAT-IX 入口，连接 NAT IX listener）
+当前 Profile：${profile_id}（公网入口线路，连接 NAT IX）
 
 公网入口机：
-- EasyTier peer：${NAT_PUBLIC_HOST:-NAT_PUBLIC_HOST}:${NAT_LISTENER_PORT:-NAT_LISTENER_PORT}
+- 商家 NAT/IX 入口：${NAT_PUBLIC_HOST:-NAT_PUBLIC_HOST}:${NAT_LISTENER_PORT:-NAT_LISTENER_PORT}
 - 入口机 ET IP：${INGRESS_ET_IP:-INGRESS_ET_IP}
 - NAT IX ET IP：${NAT_ET_IP:-NAT_ET_IP}
 - nftables 转发：LOCAL_PORT ${LOCAL_PORT:-LOCAL_PORT} -> ${NAT_ET_IP:-NAT_ET_IP}:${TRANSIT_PORT:-TRANSIT_PORT}
 
 NAT IX 机器：
-- EasyTier listener：${NAT_PUBLIC_HOST:-NAT_PUBLIC_HOST}:${NAT_LISTENER_PORT:-NAT_LISTENER_PORT}
+- 商家 NAT/IX 入口：${NAT_PUBLIC_HOST:-NAT_PUBLIC_HOST}:${NAT_LISTENER_PORT:-NAT_LISTENER_PORT}
 - nftables 转发：${NAT_ET_IP:-NAT_ET_IP}:${TRANSIT_PORT:-TRANSIT_PORT} -> ${LANDING_HOST:-LANDING_HOST}:${LANDING_PORT:-LANDING_PORT}
 
 客户端：
@@ -5130,17 +5205,17 @@ EOF
         nat-transit)
             if [[ "${NAT_DIRECTION:-ingress-listener}" == "nat-listener" ]]; then
                 cat <<EOF
-当前 Profile：${profile_id}（NAT-IX 监听中转）
+当前 Profile：${profile_id}（NAT IX 中转线路）
 
 NAT IX 机器：
-- EasyTier listener：${NAT_PUBLIC_HOST:-NAT_PUBLIC_HOST}:${NAT_LISTENER_PORT:-NAT_LISTENER_PORT}
+- 商家 NAT/IX 入口：${NAT_PUBLIC_HOST:-NAT_PUBLIC_HOST}:${NAT_LISTENER_PORT:-NAT_LISTENER_PORT}
 - NAT IX ET IP：${NAT_ET_IP:-NAT_ET_IP}
 - 入口机 ET IP：${INGRESS_ET_IP:-INGRESS_ET_IP}
 - nftables 转发：${NAT_ET_IP:-NAT_ET_IP}:${TRANSIT_PORT:-TRANSIT_PORT} -> ${LANDING_HOST:-LANDING_HOST}:${LANDING_PORT:-LANDING_PORT}
 
 公网入口机：
 - 运行 bash install.sh add-nat-ingress-from-listener-code
-- 粘贴 show-code ${profile_id} 输出的模式 B NAT-IX 接入码。
+- 粘贴 show-code ${profile_id} 输出的 NAT-IX 接入码。
 
 落地机：
 - 不需要安装本项目。
@@ -5486,9 +5561,8 @@ add_nat_listener_profile() {
     run_profile_install_preflight nat-transit
     require_tty add-nat-listener-profile
     ensure_profile_dirs
-    collect_profile_identity "nat-listener" || return 1
+    confirm_recommended_nat_listener_role || return 0
     collect_nat_listener_inputs || return 1
-    PROFILE_ID="${PROFILE_ID}"
     PROFILE_NAME="${PROFILE_NAME:-$PROFILE_ID}"
     ENABLED="true"
     validate_profile_config "$PROFILE_ID"
@@ -5502,9 +5576,7 @@ add_nat_listener_profile() {
     apply_nft_all
     start_profile "$PROFILE_ID"
     show_profile_summary "$PROFILE_ID"
-    printf '\n模式 B 接入码：\n'
     show_code "$PROFILE_ID" || true
-    print_access_code_security_hint
     printf '\n端口映射：\n'
     show_port_map "$PROFILE_ID" --compact || true
     printf '\n健康检查摘要：\n'
@@ -5523,7 +5595,7 @@ add_nat_transit_profile_from_code() {
     profile_id="$PROFILE_ID"
     code="$(read_nat_code_from_args_or_prompt)" || die_user "未读取到 NAT-IX 接入码。"
     parse_nat_code "$code"
-    [[ "${CODE_NAT_DIRECTION:-ingress-listener}" == "ingress-listener" ]] || die_user "该命令只接受 NAT_DIRECTION=ingress-listener 的模式 A 接入码；模式 B 请运行 add-nat-ingress-from-listener-code。"
+    [[ "${CODE_NAT_DIRECTION:-ingress-listener}" == "ingress-listener" ]] || die_user "这是推荐模式的接入码，应在“公网入口机导入 NAT IX 接入码”中使用。"
 
     ROLE="nat-transit"
     NAT_DIRECTION="ingress-listener"
@@ -5583,16 +5655,29 @@ add_nat_transit_profile_from_code() {
 }
 
 add_nat_ingress_from_listener_code() {
-    local profile_id code default_local_port detected_public env_public
+    local profile_id code default_local_port detected_public env_public advanced
     require_root "$@"
     run_profile_install_preflight nat-ingress
     require_tty add-nat-ingress-from-listener-code
     ensure_profile_dirs
-    collect_profile_identity "nat-ingress" || return 1
-    profile_id="$PROFILE_ID"
-    code="$(read_nat_code_from_args_or_prompt)" || die_user "未读取到 NAT-IX 模式 B 接入码。"
+    confirm_recommended_ingress_import_role || return 0
+    code="$(read_nat_code_from_args_or_prompt)" || die_user "未读取到 NAT-IX 推荐模式接入码。"
     parse_nat_code "$code"
-    [[ "${CODE_NAT_DIRECTION:-}" == "nat-listener" ]] || die_user "该命令只接受 NAT_DIRECTION=nat-listener 的模式 B 接入码。"
+    [[ "${CODE_NAT_DIRECTION:-}" == "nat-listener" ]] || die_user "这是旧模式接入码，请选择兼容旧模式导入，或重新在 NAT IX 机器生成推荐模式接入码。"
+    default_local_port="$(pick_random_port || true)"
+    LOCAL_PORT="$(prompt_random_port "请输入客户端入口端口" "$default_local_port")" || return 1
+    advanced="$(prompt_yes_no "是否自定义高级参数" "false")" || return 1
+    if [[ "$advanced" == "true" ]]; then
+        collect_profile_identity "nat-ingress" || return 1
+        profile_id="$PROFILE_ID"
+        ET_HOSTNAME="$(prompt_validated "请输入节点名" "ix-nat-ingress-${profile_id}" validate_hostname_value "请输入 1-64 个字符，仅允许字母、数字、点、下划线或短横线。")" || return 1
+        FORWARD_PROTO="$(prompt_forward_proto "请选择转发协议（tcp / udp / both / tcp/udp）" "${CODE_FORWARD_PROTO:-both}")" || return 1
+    else
+        assign_auto_profile_identity "nat-ingress"
+        profile_id="$PROFILE_ID"
+        ET_HOSTNAME="ix-nat-ingress-${PROFILE_ID}"
+        FORWARD_PROTO="${CODE_FORWARD_PROTO:-both}"
+    fi
 
     ROLE="nat-ingress"
     NAT_DIRECTION="nat-listener"
@@ -5601,7 +5686,6 @@ add_nat_ingress_from_listener_code() {
     ENABLED="true"
     ET_NETWORK_NAME="$CODE_NETWORK_NAME"
     ET_NETWORK_SECRET="$CODE_NETWORK_SECRET"
-    ET_HOSTNAME="$(prompt_validated "请输入当前节点名称" "ix-nat-ingress-${PROFILE_ID}" validate_hostname_value "请输入 1-64 个字符，仅允许字母、数字、点、下划线或短横线。")" || return 1
     ET_IPV4="$CODE_INGRESS_ET_CIDR"
     ET_SUBNET="$(cidr_network24 "$ET_IPV4")"
     INGRESS_HOSTNAME="$ET_HOSTNAME"
@@ -5616,9 +5700,6 @@ add_nat_ingress_from_listener_code() {
     TRANSIT_PORT="$CODE_TRANSIT_PORT"
     LANDING_HOST="$CODE_LANDING_HOST"
     LANDING_PORT="$CODE_LANDING_PORT"
-    default_local_port="$(pick_random_port || true)"
-    LOCAL_PORT="$(prompt_random_port "请输入入口机公网业务端口 LOCAL_PORT" "$default_local_port")" || return 1
-    FORWARD_PROTO="$(prompt_forward_proto "请选择业务转发协议（tcp / udp / both / tcp/udp）" "${CODE_FORWARD_PROTO:-both}")" || return 1
     if env_public="$(detect_env_ingress_public_host)"; then
         INGRESS_PUBLIC_HOST="$env_public"
         printf '使用环境变量指定的公网入口地址：%s\n' "$INGRESS_PUBLIC_HOST" >&2
@@ -7254,7 +7335,7 @@ latency_report() {
     printf 'NAT-IX latency-report: %s\n' "$profile_id"
     printf 'read-only: no switching, no service restart, no nftables apply\n'
     if [[ "${NAT_DIRECTION:-ingress-listener}" == "nat-listener" ]]; then
-        printf '当前连接方向：NAT IX listener，公网入口机 peer to NAT IX。\n'
+        printf '当前连接方向：NAT IX 机器监听，公网入口机连接 NAT IX。\n'
         printf '这与 Realm-xwPF 服务端模式接近。\n'
     else
         printf '当前连接方向：公网入口机 listener，NAT IX 机器 peer to ingress。\n'
@@ -7277,7 +7358,7 @@ latency_report() {
             printf 'tcp NAT_ET_IP:TRANSIT_PORT (%s:%s): %s\n' "${NAT_ET_IP:-}" "${TRANSIT_PORT:-}" "$(tcp_connect_time "${NAT_ET_IP:-}" "${TRANSIT_PORT:-}" 3)"
 
             if [[ "${NAT_DIRECTION:-ingress-listener}" == "nat-listener" ]]; then
-                printf '\n===== NAT IX listener 可达性 =====\n'
+                printf '\n===== 商家入口可达性 =====\n'
                 printf 'tcp NAT_PUBLIC_HOST:NAT_LISTENER_PORT (%s:%s): %s\n' "${NAT_PUBLIC_HOST:-}" "${NAT_LISTENER_PORT:-}" "$(tcp_connect_time "${NAT_PUBLIC_HOST:-}" "${NAT_LISTENER_PORT:-}" 3)"
                 printf 'EasyTier peer target: %s\n' "${ET_PEERS:-}"
             else
@@ -7301,7 +7382,7 @@ latency_report() {
                 printf 'warning: ICMP ping 不通但 route/peer 可能存在；不单独判失败。\n'
             fi
             if [[ "${NAT_DIRECTION:-ingress-listener}" == "nat-listener" ]]; then
-                printf '\n===== NAT IX listener 本机检查 =====\n'
+                printf '\n===== NAT IX 监听本机检查 =====\n'
                 print_listener_check "${NAT_LISTENER_PORT:-}" "${NAT_LISTENER_PROTO:-both}"
                 if [[ "${NAT_LISTENER_PROTO:-both}" != "udp" ]]; then
                     printf 'tcp 127.0.0.1:NAT_LISTENER_PORT reference: %s\n' "$(tcp_connect_time 127.0.0.1 "${NAT_LISTENER_PORT:-}" 2)"
@@ -7565,9 +7646,9 @@ run_line_health_check() {
             local nat_route_ok="false" nat_tcp_ok="false" nat_counter_state nat_counter_packets nat_counter_bytes
             if [[ "${NAT_DIRECTION:-ingress-listener}" == "nat-listener" ]]; then
                 if [[ -n "${ET_PEERS:-}" ]]; then
-                    health_line "EasyTier peer to NAT IX" "存在（${NAT_PUBLIC_HOST:-}:${NAT_LISTENER_PORT:-}）"
+                    health_line "连接 NAT IX" "存在（${NAT_PUBLIC_HOST:-}:${NAT_LISTENER_PORT:-}）"
                 else
-                    health_line "EasyTier peer to NAT IX" "不存在"
+                    health_line "连接 NAT IX" "不存在"
                     health_mark down "ET_PEERS 不存在"
                 fi
                 if [[ -n "${NAT_PUBLIC_HOST:-}" && -n "${NAT_LISTENER_PORT:-}" ]]; then
@@ -7577,15 +7658,15 @@ run_line_health_check() {
                                 health_line "NAT_PUBLIC_HOST:NAT_LISTENER_PORT TCP" "可达"
                             else
                                 health_line "NAT_PUBLIC_HOST:NAT_LISTENER_PORT TCP" "不可达"
-                                health_mark warning "NAT IX listener TCP 探测失败；请检查商家入口端口和 NAT IX 机器 listener。"
+                                health_mark warning "NAT IX 监听 TCP 探测失败；请检查商家入口端口和 NAT IX 机器监听。"
                             fi
                         else
                             health_line "NAT_PUBLIC_HOST:NAT_LISTENER_PORT TCP" "nc 不可用"
-                            health_mark warning "nc 不可用，跳过 NAT IX listener TCP 探测"
+                            health_mark warning "nc 不可用，跳过 NAT IX 监听 TCP 探测"
                         fi
                     fi
                     if [[ "${NAT_LISTENER_PROTO:-both}" == "udp" || "${NAT_LISTENER_PROTO:-both}" == "both" ]]; then
-                        health_line "NAT IX listener UDP 探测" "跳过（UDP 不可靠）"
+                        health_line "NAT IX 监听 UDP 探测" "跳过（UDP 不可靠）"
                     fi
                 fi
                 if command_exists ip && [[ -n "${NAT_ET_IP:-}" ]]; then
@@ -7633,7 +7714,7 @@ run_line_health_check() {
                     *) health_line "nftables counter" "未找到" ;;
                 esac
                 if [[ "$nat_route_ok" != "true" && "$nat_tcp_ok" != "true" && "$nat_counter_state" != "hit" ]]; then
-                    health_mark warning "EasyTier peer/route 未完全确认，请检查 NAT IX listener 和商家入口端口。"
+                    health_mark warning "EasyTier peer/route 未完全确认，请检查 NAT IX 监听和商家入口端口。"
                 fi
                 if [[ "${FORWARD_ENABLED:-true}" == "true" && -n "${LOCAL_PORT:-}" ]] && command_exists ss; then
                     if ss -lntup 2>/dev/null | grep -Eq "[:.]${LOCAL_PORT}[[:space:]]"; then
@@ -7736,7 +7817,7 @@ run_line_health_check() {
                 case "$rc" in
                     0) health_line "NAT_LISTENER_PORT 监听" "已检测到" ;;
                     2) health_line "NAT_LISTENER_PORT 监听" "无法检查（ss 命令不可用）"; health_mark warning "无法检查 listener" ;;
-                    *) health_line "NAT_LISTENER_PORT 监听" "未检测到"; health_mark down "NAT IX listener 未监听" ;;
+                    *) health_line "NAT_LISTENER_PORT 监听" "未检测到"; health_mark down "NAT IX 监听未检测到" ;;
                 esac
                 if command_exists ip && [[ -n "${INGRESS_ET_IP:-}" ]]; then
                     if ip route get "$INGRESS_ET_IP" >/dev/null 2>&1; then
@@ -7793,7 +7874,7 @@ run_line_health_check() {
                     unavailable) health_line "nftables counter" "不可读" ;;
                     *) health_line "nftables counter" "未找到" ;;
                 esac
-                [[ "$transit_route_ok" == "true" ]] || health_mark warning "pending peer：公网入口机可能尚未导入模式 B 接入码。"
+                [[ "$transit_route_ok" == "true" ]] || health_mark warning "pending peer：公网入口机可能尚未导入推荐模式接入码。"
             else
             if [[ -n "${ET_PEERS:-}" ]]; then
                 health_line "EasyTier peers" "存在"
@@ -11976,64 +12057,61 @@ show_port_map() {
     fi
     if [[ "${ROLE:-}" == "nat-ingress" || "${ROLE:-}" == "nat-transit" ]]; then
         if [[ "${NAT_DIRECTION:-ingress-listener}" == "nat-listener" ]]; then
-            cat <<EOF
-Profile：${PROFILE_ID:-default}（${ROLE:-未设置}，enabled=${ENABLED:-true}）
+            if [[ "${ROLE:-}" == "nat-transit" ]]; then
+                cat <<EOF
+线路：${PROFILE_ID:-default}（NAT IX 中转线路，enabled=${ENABLED:-true}）
 
-NAT-IX Transit Mode 链路（模式 B：NAT IX 监听 / 公网入口机连接 NAT IX）：
+商家入口：
+${NAT_PUBLIC_HOST:-商家 NAT/IX 入口地址}:${NAT_LISTENER_PORT:-商家分配入口端口}
+用途：公网入口机通过 EasyTier 连接到这里。
 
-客户端
--> ${INGRESS_PUBLIC_HOST:-公网入口机公网 IP}:${LOCAL_PORT:-LOCAL_PORT}
--> 公网入口机 nftables
--> ${NAT_ET_IP:-NAT_ET_IP}:${TRANSIT_PORT:-TRANSIT_PORT}
--> EasyTier 隧道（公网入口机 peer to NAT IX）
--> NAT IX listener ${NAT_PUBLIC_HOST:-NAT_PUBLIC_HOST}:${NAT_LISTENER_PORT:-NAT_LISTENER_PORT}
--> NAT IX 机器 nftables
--> ${LANDING_HOST:-LANDING_HOST}:${LANDING_PORT:-LANDING_PORT}
+虚拟网：
+NAT IX 虚拟 IP：${NAT_ET_IP:-未配置}
+公网入口机虚拟 IP：${INGRESS_ET_IP:-未配置}
 
-字段：
-  NAT_DIRECTION=${NAT_DIRECTION:-nat-listener}
-  NAT_PUBLIC_HOST=${NAT_PUBLIC_HOST:-未配置}
-  NAT_LISTENER_PORT=${NAT_LISTENER_PORT:-未配置}
-  LOCAL_PORT=${LOCAL_PORT:-未配置}
-  INGRESS_ET_IP=${INGRESS_ET_IP:-未配置}
-  NAT_ET_IP=${NAT_ET_IP:-未配置}
-  TRANSIT_PORT=${TRANSIT_PORT:-未配置}
-  LANDING_HOST=${LANDING_HOST:-未配置}
-  LANDING_PORT=${LANDING_PORT:-未配置}
-  FORWARD_PROTO=${FORWARD_PROTO:-both}
+虚拟网中转：
+${NAT_ET_IP:-NAT IX 虚拟 IP}:${TRANSIT_PORT:-虚拟网中转端口} -> ${LANDING_HOST:-落地机地址}:${LANDING_PORT:-落地业务端口}
+说明：虚拟网中转端口只在 EasyTier 虚拟网内部使用，不需要公网放行。
 
-注意：
-  NAT_PUBLIC_HOST 是商家分配的 NAT/IX 入站访问地址，不一定等于 NAT IX 机器 curl 出口 IP。
-  NAT IX 机器不需要安装代理服务，只做 nftables 中转。
+客户端连接：
+公网入口机导入接入码后，客户端连接：公网入口机公网 IP:${LOCAL_PORT:-客户端入口端口}
 EOF
+            else
+                cat <<EOF
+线路：${PROFILE_ID:-default}（公网入口线路，enabled=${ENABLED:-true}）
+
+客户端连接：
+公网入口机公网 IP:${LOCAL_PORT:-客户端入口端口}
+
+连接 NAT IX：
+${NAT_PUBLIC_HOST:-商家 NAT/IX 入口地址}:${NAT_LISTENER_PORT:-商家分配入口端口}
+
+虚拟网转发：
+客户端入口端口 ${LOCAL_PORT:-未配置} -> ${NAT_ET_IP:-NAT IX 虚拟 IP}:${TRANSIT_PORT:-虚拟网中转端口}
+
+最终落地：
+${LANDING_HOST:-落地机地址}:${LANDING_PORT:-落地业务端口}
+
+说明：虚拟网中转端口只在 EasyTier 虚拟网内部使用，不是公网端口，不是商家入口端口。
+EOF
+            fi
             return 0
         fi
         cat <<EOF
-Profile：${PROFILE_ID:-default}（${ROLE:-未设置}，enabled=${ENABLED:-true}）
-
-NAT-IX Transit Mode 链路：
+线路：${PROFILE_ID:-default}（兼容旧模式，enabled=${ENABLED:-true}）
 
 客户端
--> ${INGRESS_PUBLIC_HOST:-公网入口机公网 IP}:${LOCAL_PORT:-LOCAL_PORT}
+-> ${INGRESS_PUBLIC_HOST:-公网入口机公网 IP}:${LOCAL_PORT:-客户端入口端口}
 -> 公网入口机 nftables
--> ${NAT_ET_IP:-NAT_ET_IP}:${TRANSIT_PORT:-TRANSIT_PORT}
+-> ${NAT_ET_IP:-NAT IX 虚拟 IP}:${TRANSIT_PORT:-虚拟网中转端口}
 -> EasyTier 隧道
 -> NAT IX 机器 nftables
--> ${LANDING_HOST:-LANDING_HOST}:${LANDING_PORT:-LANDING_PORT}
-
-字段：
-  NAT_DIRECTION=${NAT_DIRECTION:-ingress-listener}
-  LOCAL_PORT=${LOCAL_PORT:-未配置}
-  INGRESS_ET_IP=${INGRESS_ET_IP:-未配置}
-  NAT_ET_IP=${NAT_ET_IP:-未配置}
-  TRANSIT_PORT=${TRANSIT_PORT:-未配置}
-  LANDING_HOST=${LANDING_HOST:-未配置}
-  LANDING_PORT=${LANDING_PORT:-未配置}
-  FORWARD_PROTO=${FORWARD_PROTO:-both}
+-> ${LANDING_HOST:-落地机地址}:${LANDING_PORT:-落地业务端口}
 
 注意：
   NAT IX 机器不需要安装代理服务，只做 nftables 中转。
-  LANDING_HOST 如果是域名，应用 nftables 时会解析为 LANDING_IP；域名 IP 变化后请重新运行 apply-nft-all 或更新 Profile。
+  虚拟网中转端口只在 EasyTier 虚拟网内部使用，不是公网端口，不是商家入口端口。
+  落地机地址如果是域名，应用 nftables 时会解析为 LANDING_IP；域名 IP 变化后请重新运行 apply-nft-all 或更新 Profile。
 EOF
         return 0
     fi
@@ -12227,7 +12305,7 @@ uninstall() {
     if [[ "$remove_et" == "true" ]]; then
         rm -f -- "$EASYTIER_TARGET"
         log_ok "已删除：${EASYTIER_TARGET}"
-    elif [[ -e "$EASYTIER_TARGET" ]]; then
+    elif [[ "${IXTF_SKIP_EASYTIER_DELETE_PROMPT:-}" != "1" && -e "$EASYTIER_TARGET" ]]; then
         log_info "保留 easytier-core：${EASYTIER_TARGET}"
     fi
 
@@ -12254,7 +12332,7 @@ purge() {
     require_root "$@"
     require_tty
 
-    local confirm answer remove_et
+    local confirm answer remove_et remove_script script_path
     printf '这会删除 ix-transit-fabric 的配置、profiles、codes、state、notify.env、history、项目文件和所有备份。\n' >&2
     printf '请输入 DELETE 继续：' >&2
     IFS= read -r confirm
@@ -12269,10 +12347,24 @@ purge() {
         answer="$(prompt_yes_no "是否删除 /usr/local/bin/easytier-core" "false")" || answer="false"
         remove_et="$answer"
     fi
+    script_path="${BASH_SOURCE[0]:-$0}"
+    if [[ "$script_path" != /* ]]; then
+        script_path="$(pwd -P)/$script_path"
+    fi
+    cat >&2 <<EOF
+${script_path} 是用户手动下载或执行的安装脚本，不属于 systemd 服务或项目运行文件。
+完全清理默认不会删除你手动下载的 install.sh，除非你确认删除。
+EOF
+    remove_script="$(prompt_yes_no "是否删除当前安装脚本 ${script_path}" "false")" || remove_script="false"
 
     IXTF_SKIP_EASYTIER_DELETE_PROMPT=1 uninstall
     if [[ "$remove_et" == "true" ]]; then
         rm -f -- "$EASYTIER_TARGET"
+        log_ok "已删除 easytier-core：${EASYTIER_TARGET}"
+    elif [[ -e "$EASYTIER_TARGET" ]]; then
+        log_info "已保留 easytier-core：${EASYTIER_TARGET}"
+    else
+        log_info "未发现 easytier-core：${EASYTIER_TARGET}"
     fi
     rm -f -- "$NFT_FILE" "$SYSCTL_FILE" "$SYSTEMD_SERVICE" "$PROFILE_SERVICE_TEMPLATE" "$MONITOR_SERVICE_FILE" "$MONITOR_TIMER_FILE" "$WRAPPER_FILE" "$ENV_FILE" "$LANDING_CODE_FILE"
     safe_remove_project_dir "$CONFIG_DIR"
@@ -12284,6 +12376,14 @@ purge() {
     if command_exists systemctl; then
         systemctl daemon-reload
     fi
+    if [[ "$remove_script" == "true" ]]; then
+        if [[ -f "$script_path" && "$script_path" != /dev/fd/* && "$script_path" != /proc/* ]]; then
+            rm -f -- "$script_path"
+            log_ok "已删除当前安装脚本：${script_path}"
+        else
+            log_info "当前脚本不是普通文件，跳过自删除。"
+        fi
+    fi
 
     cat <<EOF
 完全清理完成：
@@ -12292,7 +12392,8 @@ purge() {
   已删除备份目录：${BACKUP_DIR}
   已删除 nftables 文件：${NFT_FILE}
   已删除 sysctl 文件：${SYSCTL_FILE}
-  easytier-core：$([[ "$remove_et" == "true" ]] && printf '已删除' || printf '保留')
+  easytier-core：$([[ "$remove_et" == "true" ]] && printf '已删除' || printf '已保留')
+  install.sh：$([[ "$remove_script" == "true" ]] && printf '已按确认处理' || printf '已保留')
 EOF
 }
 
@@ -12392,10 +12493,10 @@ run_nat_mode_a_menu() {
     local choice
     cat >&2 <<'MENU'
 
-模式 A：公网入口机监听 / NAT IX 连接入口机
+兼容旧模式：公网入口机监听 / NAT IX 连接公网入口机
 
-  1) 公网入口机：创建 NAT-IX 入口线路 / 生成接入码
-  2) NAT IX 机器：粘贴接入码并配置中转
+  1) 公网入口机：生成兼容旧模式接入码
+  2) NAT IX 机器：导入入口机接入码
   3) 返回
 MENU
     printf '请选择：' >&2
@@ -12412,10 +12513,10 @@ run_nat_mode_b_menu() {
     local choice
     cat >&2 <<'MENU'
 
-模式 B：NAT IX 监听 / 公网入口机连接 NAT IX
+推荐模式：NAT IX 监听 / 公网入口机连接 NAT IX
 
-  1) NAT IX 机器：创建监听线路 / 生成接入码
-  2) 公网入口机：粘贴接入码并配置入口转发
+  1) NAT IX 机器：生成接入码
+  2) 公网入口机：导入 NAT IX 接入码
   3) 返回
 MENU
     printf '请选择：' >&2
@@ -12428,24 +12529,48 @@ MENU
     esac
 }
 
+show_nat_advanced_explanation() {
+    cat <<'EOF'
+NAT-IX 高级说明
+
+推荐模式：
+  NAT IX 机器监听，公网入口机连接 NAT IX。
+  适合商家给了 NAT/IX 入口 IP:端口。
+
+兼容旧模式：
+  公网入口机监听，NAT IX 机器连接公网入口机。
+  仅当 NAT IX 出口到公网入口机质量好时使用。
+
+端口命名：
+  客户端入口端口：最终客户端连接公网入口机的端口。
+  商家 NAT/IX 入口地址和商家分配入口端口：商家给 NAT IX 机器使用的入站地址和端口。
+  虚拟网中转端口：只在 EasyTier 虚拟网内部使用，不是公网端口，不是商家入口端口。
+  落地机地址和落地业务端口：NAT IX 机器最终转发到的真实服务。
+
+技术字段只在 show-config、导出配置、脱敏诊断和高级排障中显示。
+EOF
+}
+
 run_nat_menu_action() {
     local choice="$1" profile_id
     case "$choice" in
-        1) run_nat_mode_a_menu ;;
-        2) run_nat_mode_b_menu ;;
-        3) show_port_map --all --compact ;;
-        4) nat_guide_cmd --all ;;
-        5)
+        1) add_nat_listener_profile ;;
+        2) add_nat_ingress_from_listener_code ;;
+        3) add_nat_ingress_profile ;;
+        4) add_nat_transit_profile_from_code ;;
+        5) show_port_map --all --compact ;;
+        6)
             printf '请输入 PROFILE_ID（留空时自动选择唯一 Profile）：' >&2
             IFS= read -r profile_id || return 1
             health_profile "$profile_id"
             ;;
-        6)
+        7)
             printf '请输入 PROFILE_ID（留空时自动选择唯一 Profile）：' >&2
             IFS= read -r profile_id || return 1
             latency_report "$profile_id"
             ;;
-        7) return 10 ;;
+        8) show_nat_advanced_explanation ;;
+        9) return 10 ;;
         0) return 10 ;;
         *) log_warn "未知选项，请重新选择。"; return 0 ;;
     esac
@@ -12458,13 +12583,18 @@ show_nat_menu() {
 
 NAT-IX 中转模式
 
-  1) 模式 A：公网入口机监听 / NAT IX 连接入口机
-  2) 模式 B：NAT IX 监听 / 公网入口机连接 NAT IX
-  3) 查看 NAT-IX 端口地图
-  4) 查看 NAT-IX 配置指引
-  5) 健康检查
-  6) NAT-IX 延迟诊断
-  7) 返回
+推荐模式：NAT IX 机器监听，公网入口机连接 NAT IX。适合商家给了 NAT/IX 入口 IP:端口。
+兼容旧模式：公网入口机监听，NAT IX 机器连接公网入口机。仅当 NAT IX 出口到公网入口机质量好时使用。
+
+  1) 推荐：NAT IX 机器生成接入码（商家给了入口 IP:端口）
+  2) 推荐：公网入口机导入 NAT IX 接入码
+  3) 兼容：公网入口机生成接入码（旧模式）
+  4) 兼容：NAT IX 机器导入入口机接入码（旧模式）
+  5) 查看端口地图
+  6) 健康检查
+  7) 延迟诊断
+  8) 高级说明
+  9) 返回
 MENU
         printf '请选择：' >&2
         IFS= read -r choice || return 0

@@ -12,7 +12,7 @@ fi
 bash -n install.sh
 
 version_output="$(bash install.sh --version)"
-[[ "$version_output" == "ix-transit-fabric 1.1.0-alpha.4" ]]
+[[ "$version_output" == "ix-transit-fabric 1.1.0-alpha.5" ]]
 
 bash install.sh --help >/dev/null
 
@@ -43,8 +43,8 @@ for token in \
     nat-listener \
     NAT_PUBLIC_HOST \
     NAT_LISTENER_PORT \
-    "NAT IX listener" \
-    "peer to NAT IX" \
+    "商家入口可达性" \
+    "连接 NAT IX" \
     "show-port-map 支持 nat" \
     "verify-nft-profiles 支持 nat" \
     "traffic-report 支持 nat" \
@@ -180,7 +180,6 @@ for token in \
     "ICMP ping 不通" \
     "NAT_ET_IP:TRANSIT_PORT" \
     "可能不命中 PREROUTING" \
-    "INGRESS_LISTENER_PORT 未配置" \
     profile_counter_health_status \
     pending_peer \
     mode_nat_transit \
@@ -190,7 +189,18 @@ for token in \
     show_easytier_command \
     show-easytier-command \
     EasyTier_peer_not_established \
-    show_code_skip_security; do
+    show_code_skip_security \
+    "推荐：NAT IX 机器生成接入码" \
+    "推荐：公网入口机导入 NAT IX 接入码" \
+    "虚拟网中转端口" \
+    "是否自定义高级参数" \
+    "商家 NAT/IX 入口地址" \
+    "商家分配入口端口" \
+    "当前操作适用于 NAT IX 机器" \
+    "当前操作适用于公网入口机" \
+    "是否删除当前安装脚本" \
+    "已删除 easytier-core" \
+    "已保留 easytier-core"; do
     grep -q -- "$token" install.sh
 done
 
@@ -205,11 +215,13 @@ for token in \
     "不全局 kill" \
     "NAT-IX Transit Mode" \
     "NAT-IX 中转模式" \
-    "模式 A" \
-    "模式 B" \
-    "NAT IX 机器监听" \
+    "推荐模式" \
+    "NAT IX 机器生成接入码" \
+    "公网入口机导入 NAT IX 接入码" \
     "NAT_PUBLIC_HOST" \
     "NAT_LISTENER_PORT" \
+    "虚拟网中转端口" \
+    "普通用户无需关心" \
     "Realm-xwPF" \
     "商家分配的入站端口" \
     "公网入口机" \
@@ -224,7 +236,7 @@ for token in \
     "安全边界" \
     "Roadmap" \
     "raw.githubusercontent.com/ike-sh/ix-transit-fabric/main/install.sh" \
-    "1.1.0-alpha.4" \
+    "1.1.0-alpha.5" \
     "IXTF_PUBLIC_IP" \
     "IXTF_INGRESS_PUBLIC_HOST" \
     "NAT-IX 延迟诊断" \
@@ -234,13 +246,11 @@ for token in \
     "ICMP ping 不是业务延迟" \
     "协议 A/B 测试" \
     "PREROUTING" \
-    "pending peer" \
-    "NAT IX 机器需要能访问入口机 EasyTier listener" \
-    "落地机需要允许 NAT IX 机器出口 IP 访问 LANDING_PORT" \
+    "商家 NAT/IX 入口地址" \
+    "落地机地址:落地业务端口" \
     "refresh-nat-code" \
     "NAT-IX Alpha 注意事项" \
-    "NAT IX 机器本机" \
-    "EasyTier peer 未建立"; do
+    "NAT IX 机器本机"; do
     grep -q "$token" README.md
 done
 
@@ -324,9 +334,13 @@ fi
 
 ! grep -R -E -q "${forbidden_old_051}|${forbidden_old_056}" README.md install.sh examples
 
-[[ "$(tr -d '\r\n' < VERSION)" == "1.1.0-alpha.4" ]]
+[[ "$(tr -d '\r\n' < VERSION)" == "1.1.0-alpha.5" ]]
 
 ! grep -R -E -q '（默认 [^）]+）（默认' install.sh README.md tests examples CHANGELOG.md
+! grep -q '模式 B 接入码' install.sh
+! grep -q 'NAT-IX 模式 B 接入码' install.sh
+! grep -q '模式 A' install.sh README.md
+! grep -q '模式 B' install.sh README.md
 
 grep -q 'ix-transit-easytier@%s.service' install.sh
 grep -q 'show_profile_summary "$PROFILE_ID"' install.sh
@@ -378,12 +392,15 @@ grep -q '主备组检查已跳过' README.md
 grep -q 'LINE_GROUP' README.md
 grep -q '1.0.0' README.md
 grep -q '1.1.0-alpha.1' README.md
-grep -q '1.1.0-alpha.4' README.md
-grep -q '模式 A' README.md
-grep -q '模式 B' README.md
-grep -q 'NAT IX 机器监听' README.md
+grep -q '1.1.0-alpha.5' README.md
+grep -q '推荐模式' README.md
+grep -q 'NAT IX 机器生成接入码' README.md
+grep -q '公网入口机导入 NAT IX 接入码' README.md
+grep -q '虚拟网中转端口' README.md
+grep -q '普通用户无需关心' README.md
 grep -q 'NAT_PUBLIC_HOST' README.md
 grep -q 'NAT_LISTENER_PORT' README.md
+grep -q '完全清理默认不会删除你手动下载的 install.sh' README.md
 grep -q 'Realm-xwPF' README.md
 grep -q '商家分配的入站端口' README.md
 grep -q 'NAT-IX 延迟诊断' README.md
@@ -738,7 +755,7 @@ EOF_PROFILE
     grep -q 'tcp dport 30000 counter dnat to 10.88.0.2:20000' "$nft_render"
     grep -q 'udp dport 30000 counter dnat to 10.88.0.2:20000' "$nft_render"
     nat_ingress_map="$(show_port_map --compact nat-in)"
-    grep -q 'NAT-IX 入口' <<<"$nat_ingress_map"
+    grep -q '公网入口线路' <<<"$nat_ingress_map"
     grep -q '30000 -> 10.88.0.2:20000' <<<"$nat_ingress_map"
     mkdir -p "$NFT_DIR"
     render_nft_all_file "$NFT_FILE" "$NFT_TABLE"
@@ -762,8 +779,8 @@ EOF_PROFILE
     grep -q 'ip daddr 10.88.0.2 tcp dport 20000 counter dnat to 10.88.0.1:50000' "$nft_render"
     grep -q 'ip daddr 10.88.0.2 udp dport 20000 counter dnat to 10.88.0.1:50000' "$nft_render"
     nat_transit_map="$(show_port_map --compact nat-mid)"
-    grep -q 'NAT-IX 中转' <<<"$nat_transit_map"
-    grep -q 'EasyTier peer' <<<"$nat_transit_map"
+    grep -q 'NAT IX 中转线路' <<<"$nat_transit_map"
+    grep -q '连接公网入口机' <<<"$nat_transit_map"
     grep -q 'ingress.example:20000' <<<"$nat_transit_map"
     grep -q '10.88.0.2:20000 -> 10.88.0.1:50000' <<<"$nat_transit_map"
     ! grep -q ':LISTENER_PORT' <<<"$nat_transit_map"
@@ -796,13 +813,13 @@ EOF_PROFILE
     grep -q 'profile: nat-listen' "$nft_render"
     grep -q 'ip daddr 10.89.0.2 tcp dport 21000 counter dnat to 10.89.0.3:50000' "$nft_render"
     nat_listener_map="$(show_port_map --compact nat-listen)"
-    grep -q 'NAT-IX 监听中转' <<<"$nat_listener_map"
-    grep -q 'NAT IX listener' <<<"$nat_listener_map"
+    grep -q 'NAT IX 中转线路' <<<"$nat_listener_map"
+    grep -q '商家入口' <<<"$nat_listener_map"
     grep -q 'nat-ix.example:31000' <<<"$nat_listener_map"
     latency_nat_listener_output="$(latency_report nat-listen --sample 0)"
     grep -q 'NAT_DIRECTION=nat-listener' <<<"$latency_nat_listener_output"
     grep -q 'NAT_PUBLIC_HOST=nat-ix.example' <<<"$latency_nat_listener_output"
-    grep -q '当前连接方向：NAT IX listener，公网入口机 peer to NAT IX。' <<<"$latency_nat_listener_output"
+    grep -q '当前连接方向：NAT IX 机器监听，公网入口机连接 NAT IX。' <<<"$latency_nat_listener_output"
 
     rm -f "${PROFILES_DIR}"/*.env
     make_nat_ingress_listener_profile nat-in-b 32000 true 10.89.0.0/24 10.89.0.1/24 10.89.0.2 21000
@@ -816,8 +833,8 @@ EOF_PROFILE
     grep -q 'profile: nat-in-b' "$nft_render"
     grep -q 'tcp dport 32000 counter dnat to 10.89.0.2:21000' "$nft_render"
     nat_ingress_listener_map="$(show_port_map --compact nat-in-b)"
-    grep -q 'NAT-IX 入口，连接 NAT IX listener' <<<"$nat_ingress_listener_map"
-    grep -q 'EasyTier peer' <<<"$nat_ingress_listener_map"
+    grep -q '公网入口线路' <<<"$nat_ingress_listener_map"
+    grep -q '连接 NAT IX' <<<"$nat_ingress_listener_map"
     grep -q 'nat-ix.example:31000' <<<"$nat_ingress_listener_map"
     mkdir -p "$NFT_DIR"
     render_nft_all_file "$NFT_FILE" "$NFT_TABLE"

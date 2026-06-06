@@ -1,6 +1,6 @@
 # ix-transit-fabric
 
-当前版本：`1.1.0-alpha.4`
+当前版本：`1.1.0-alpha.5`
 
 `ix-transit-fabric` 是一个面向 CNIX / IX 转发面板场景的 EasyTier 隧道编排脚本。它用于将商家常见的 WireGuard 隧道接入方式替换为 EasyTier，并自动完成公网入口机上的 nftables 转发。
 
@@ -14,9 +14,9 @@
 
 ### NAT-IX Transit Mode
 
-适用于用户有一台单独 NAT IX / 沪日 IX / 类似中转服务器。公网入口机与 NAT IX 机器通过 EasyTier 组网，公网入口机把客户端流量转发到 NAT IX 机器的 EasyTier IP:TRANSIT_PORT，NAT IX 机器再通过自身 IX 路由转发到落地机公网 IP:LANDING_PORT。
+适用于用户有一台单独 NAT IX / 沪日 IX / 类似中转服务器。推荐模式是 NAT IX 机器生成接入码，公网入口机导入接入码；公网入口机把客户端流量转发到 NAT IX 机器的虚拟网中转端口，NAT IX 机器再转发到落地机地址:落地业务端口。
 
-这个模式不需要 CNIX 面板出口配置。NAT IX 机器不安装代理服务，只做 nftables 中转；`LANDING_HOST:LANDING_PORT` 是最终落地服务，`TRANSIT_PORT` 是 NAT IX 机器在 EasyTier 虚拟网内接收入口机转发流量的端口。
+这个模式不需要 CNIX 面板出口配置。NAT IX 机器不安装代理服务，只做 nftables 中转；落地机地址（`LANDING_HOST`）和落地业务端口（`LANDING_PORT`）是最终服务，虚拟网中转端口（`TRANSIT_PORT`）只在 EasyTier 虚拟网内部使用，不需要公网放行。
 
 ## 项目简介
 
@@ -130,7 +130,9 @@ access code 包含 EasyTier 组网密钥，不要公开。正式使用前如果�
 
 ## NAT-IX 快速开始
 
-公网入口机：
+推荐模式：商家给了 NAT/IX 入口 IP:端口。
+
+第一步，在 NAT IX 机器执行：
 
 ```bash
 curl -fsSL -o install.sh https://raw.githubusercontent.com/ike-sh/ix-transit-fabric/main/install.sh && bash install.sh --menu
@@ -139,10 +141,18 @@ curl -fsSL -o install.sh https://raw.githubusercontent.com/ike-sh/ix-transit-fab
 菜单选择：
 
 ```text
-NAT-IX 中转模式 -> 公网入口机：创建 NAT-IX 入口线路 / 生成接入码
+NAT-IX 中转模式 -> 推荐：NAT IX 机器生成接入码
 ```
 
-NAT IX 机器：
+按提示输入：
+
+1. 商家 NAT/IX 入口地址。
+2. 商家分配入口端口。
+3. 落地机地址。
+4. 落地业务端口。
+5. 复制 NAT-IX 接入码。
+
+第二步，在公网入口机执行：
 
 ```bash
 curl -fsSL -o install.sh https://raw.githubusercontent.com/ike-sh/ix-transit-fabric/main/install.sh && bash install.sh --menu
@@ -151,37 +161,38 @@ curl -fsSL -o install.sh https://raw.githubusercontent.com/ike-sh/ix-transit-fab
 菜单选择：
 
 ```text
-NAT-IX 中转模式 -> NAT IX 机器：粘贴接入码并配置中转
+NAT-IX 中转模式 -> 推荐：公网入口机导入 NAT IX 接入码
 ```
 
-客户端连接：
+按提示粘贴接入码，输入客户端入口端口。客户端最终连接：
 
 ```text
-公网入口 VPS:LOCAL_PORT
+公网入口机 IP:客户端入口端口
 ```
 
-NAT-IX 链路：
+端口解释：
+
+- 商家入口端口：商家分配给 NAT IX 机器的入站端口。
+- 虚拟网中转端口：脚本自动生成，普通用户无需关心；它只在 EasyTier 虚拟网内使用，不是公网端口，也不是商家入口端口。
+- 落地业务端口：Xray / sing-box / Remnawave 等真实服务端口。
+- 客户端入口端口：最终客户端连接公网入口机的端口。
+
+推荐模式四端口图示：
 
 ```text
-客户端
--> 公网入口机公网 IP:LOCAL_PORT
--> 公网入口机 nftables
--> NAT IX 机器 EasyTier IP:TRANSIT_PORT
--> EasyTier 隧道
--> NAT IX 机器 nftables
--> 落地机公网 IP:LANDING_PORT
+商家入口：商家 NAT/IX 入口地址:商家分配入口端口
+虚拟网：公网入口机虚拟 IP <-> NAT IX 虚拟 IP
+虚拟网中转：NAT IX 虚拟 IP:虚拟网中转端口 -> 落地机地址:落地业务端口
+客户端连接：公网入口机 IP:客户端入口端口
 ```
 
-NAT-IX 字段：
+公网入口机导入后的三端口视角：
 
-- `LOCAL_PORT`：客户端连接公网入口机的端口。
-- `INGRESS_ET_IP`：公网入口机 EasyTier 虚拟 IP。
-- `NAT_ET_IP`：NAT IX 机器 EasyTier 虚拟 IP。
-- `TRANSIT_PORT`：NAT IX 机器在 EasyTier 虚拟网内接收转发流量的端口，通常不需要公网放行。
-- `LANDING_HOST`：落地机公网 IP 或域名。
-- `LANDING_PORT`：落地机业务服务端口，例如 Remnawave / VLESS / Xray / sing-box 的真实服务端口。
+```text
+客户端入口端口 -> NAT IX 虚拟 IP:虚拟网中转端口 -> 落地机地址:落地业务端口
+```
 
-如果落地机只允许特定来源访问，需要允许 NAT IX 机器出口 IP。`LANDING_HOST` 是域名时，应用 nftables 会解析到当前 IPv4；域名 IP 变化后请重新运行 `apply-nft-all` 或更新 Profile。
+README 和脚本仍在高级诊断、导出配置、show-config 中保留变量名，例如客户端入口端口（`LOCAL_PORT`）、虚拟网中转端口（`TRANSIT_PORT`）、落地机地址（`LANDING_HOST`）、落地业务端口（`LANDING_PORT`）、商家 NAT/IX 入口地址（`NAT_PUBLIC_HOST`）和商家分配入口端口（`NAT_LISTENER_PORT`）。
 
 ## 落地机配置
 
@@ -430,6 +441,8 @@ bash install.sh purge
 
 `uninstall` 保留备份。`purge` 会要求输入大写 `DELETE`，并删除配置、Profile、codes、state、notify.env、history、项目文件和备份。
 
+完全清理默认不会删除你手动下载的 install.sh，因为当前执行的安装脚本（例如 `/root/install.sh`）不属于 systemd 服务或项目运行文件。`purge` 结束前会询问是否删除当前安装脚本，只有确认后才会处理。
+
 ## FAQ
 
 **CNIX 面板出口填哪个端口？**
@@ -454,36 +467,28 @@ bash install.sh purge
 
 ## NAT-IX Alpha 注意事项
 
-1.1.0-alpha.4 是 NAT-IX 连接方向增强版，新增 `NAT_DIRECTION=nat-listener`，并保留旧的 `ingress-listener` 方向。
+1.1.0-alpha.5 把 NAT-IX 菜单改成普通用户视角：推荐模式优先，兼容旧模式保留。
 
-- 模式 A：公网入口机监听，NAT IX 机器连接入口机。适合 NAT IX 机器可以稳定访问公网入口机，且路径质量好。
-- 模式 B：NAT IX 机器监听，公网入口机连接 NAT IX 商家入口。适合商家给 NAT IX 机器分配了入站 IP/端口，且该方向延迟更低。
-- 如果 Realm-xwPF 使用服务端模式延迟明显更低，推荐测试模式 B。
-- `NAT_PUBLIC_HOST` 不一定等于 NAT IX 机器 `curl` 出口 IP；它应填写商家分配给你入站访问的 NAT/IX IP 或域名。
-- `NAT_LISTENER_PORT` 应填写商家分配的入站端口。
-- 模式 A 推荐先在入口机创建 nat-ingress，再在 NAT IX 机器导入。
-- 模式 B 推荐先在 NAT IX 机器运行 `bash install.sh add-nat-listener-profile`，再在公网入口机运行 `bash install.sh add-nat-ingress-from-listener-code`。
-- `add-nat-ingress-profile` 会自动检测 `INGRESS_PUBLIC_HOST`，检测到公网 IPv4 后可直接回车使用；也可以设置 `IXTF_PUBLIC_IP=203.0.113.10` 或 `IXTF_INGRESS_PUBLIC_HOST=ingress.example` 覆盖自动检测。1.1.0-alpha.4 修复了 `INGRESS_PUBLIC_HOST` prompt 默认值重复显示。
-- nat-ingress 第一端创建后，NAT_ET_IP ping 失败属于正常 pending peer 状态，等 nat-transit 导入后再测试。
-- nat-transit 创建后，如果 NAT_ET_IP 不存在，优先看 EasyTier service 日志和 `bash install.sh show-easytier-command PROFILE_ID`。
-- ICMP ping 不是 NAT-IX 成功的唯一标准；如果 EasyTier route/peer、nftables 规则、`LANDING_HOST:LANDING_PORT` TCP 和 traffic counter 正常，应以这些业务信号为准。
-- 只有 EasyTier peer 配置和到入口机 ET IP 的 route 都不存在时，才应按 `EasyTier peer 未建立` 方向排查。
-- NAT IX 机器本机 `nc NAT_ET_IP:TRANSIT_PORT` 失败不一定代表链路失败，因为本机直连可能不命中 PREROUTING DNAT；推荐从入口机或客户端侧测试。
-- 入口机侧可以运行 `nc -vz -w 3 NAT_ET_IP TRANSIT_PORT`，客户端侧以连接 `INGRESS_PUBLIC_HOST:LOCAL_PORT` 为准。
-- `show-port-map --compact` 已修复 nat-transit 的 EasyTier peer 端口显示；缺少端口时会显示 `INGRESS_LISTENER_PORT 未配置`。
-- NAT IX 机器需要能访问入口机 EasyTier listener。
-- 落地机需要允许 NAT IX 机器出口 IP 访问 LANDING_PORT。
+- 推荐模式：NAT IX 机器生成接入码，公网入口机导入 NAT IX 接入码。适合商家给了 NAT/IX 入口 IP:端口。
+- 兼容旧模式：公网入口机生成接入码，NAT IX 机器导入入口机接入码。仅当 NAT IX 出口到公网入口机质量好时使用。
+- 如果 Realm-xwPF 使用服务端模式延迟明显更低，优先测试推荐模式。
+- 商家 NAT/IX 入口地址（`NAT_PUBLIC_HOST`）不一定等于 NAT IX 机器 `curl` 出口 IP；它应填写商家分配给你入站访问的 NAT/IX IP 或域名。
+- 商家分配入口端口（`NAT_LISTENER_PORT`）应填写商家分配的入站端口。
+- 虚拟网中转端口（`TRANSIT_PORT`）由脚本默认随机生成，普通用户无需关心；它不是公网端口，也不是商家入口端口。
+- `add-nat-ingress-profile` 仍保留为兼容旧模式，会自动检测 `INGRESS_PUBLIC_HOST`；也可以设置 `IXTF_PUBLIC_IP=203.0.113.10` 或 `IXTF_INGRESS_PUBLIC_HOST=ingress.example` 覆盖自动检测。
+- ICMP ping 不是 NAT-IX 成功的唯一标准；如果 EasyTier route/peer、nftables 规则、落地机地址:落地业务端口 TCP 和 traffic counter 正常，应以这些业务信号为准。
+- NAT IX 机器本机 `nc NAT_ET_IP TRANSIT_PORT` 失败不一定代表链路失败，因为本机直连可能不命中 PREROUTING DNAT；推荐从入口机或客户端侧测试。
 - NAT IX 机器不需要安装代理服务，只做 nftables 中转。
-- NAT-IX 接入码包含 EasyTier `network_secret`；如果接入码发到聊天、工单或日志，请正式使用前运行 `bash install.sh refresh-nat-code PROFILE_ID` 刷新或重建 nat-ingress Profile。
-- `refresh-nat-code` 会生成新 `network_secret`，旧接入码失效，旧 nat-transit Profile 需要重新导入新的接入码。
+- NAT-IX 接入码包含 EasyTier `network_secret`；如果接入码发到聊天、工单或日志，请正式使用前运行 `bash install.sh refresh-nat-code PROFILE_ID` 刷新或重建 Profile。
+- `refresh-nat-code` 会生成新 `network_secret`，旧接入码失效，另一侧 Profile 需要重新导入新的接入码。
 
-模式 B 对比：
+推荐模式对比：
 
 ```text
 Realm-xwPF 服务端模式：
 公网入口机 -> NAT IX 商家入口 IP:端口 -> NAT IX 机器 -> 落地
 
-ix-transit-fabric 模式 B：
+ix-transit-fabric 推荐模式：
 公网入口机 -> NAT IX 商家入口 IP:端口 -> EasyTier listener -> nftables -> 落地
 ```
 

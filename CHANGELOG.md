@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.1.0-alpha.5
+
+### Changed
+
+- Reworked NAT-IX menus from user-role perspective.
+- Hid advanced internal NAT-IX fields from normal setup.
+- Renamed user-facing NAT-IX fields to Chinese descriptions.
+- Made TRANSIT_PORT an advanced virtual-network-only setting.
+- Improved uninstall/purge wording and optional install.sh cleanup.
+
+### Fixed
+
+- Prevented users from mixing recommended NAT-listener codes with old ingress-listener workflows.
+- Removed duplicate NAT-IX access-code and security reminder headings.
+- Fixed contradictory easytier-core purge output.
+
 ## 1.1.0-alpha.4
 
 ### Added
