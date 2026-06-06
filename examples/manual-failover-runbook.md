@@ -72,4 +72,4 @@ The report is designed to be copied into a troubleshooting conversation. It shou
 
 ## Reminder
 
-0.5.1-alpha still does not do automatic failover. The operator decides whether to switch after reading health, dry-run and nftables verification output.
+ix-transit-fabric 1.0.0 does not do automatic failover. The operator decides whether to switch after reading health, dry-run and nftables verification output.

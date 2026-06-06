@@ -159,6 +159,28 @@ for file in \
     [[ -f "$file" ]]
 done
 
+expected_examples="$(
+    printf '%s\n' \
+        README.md \
+        profile-landing.env \
+        profile-ingress.env \
+        multi-line-notes.md \
+        primary-backup-notes.md \
+        profile-ingress-primary.env \
+        profile-ingress-backup.env \
+        switch-runbook.md \
+        manual-failover-runbook.md \
+        notify.env.example \
+        monitor-runbook.md \
+        traffic-notes.md | sort
+)"
+actual_examples="$(find examples -maxdepth 1 -type f -print | sed 's#^examples/##' | sort)"
+if [[ "$actual_examples" != "$expected_examples" ]]; then
+    echo "examples directory does not match release package list" >&2
+    diff -u <(printf '%s\n' "$expected_examples") <(printf '%s\n' "$actual_examples") >&2 || true
+    exit 1
+fi
+
 forbidden_client_name="$(printf '\345\260\217\347\201\253\347\256\255')"
 forbidden_real_code_prefix="$(printf '\111\130\124\106\061\072\145\171\112')"
 forbidden_nft_reset="$(printf '\146\154\165\163\150\040\162\165\154\145\163\145\164')"
@@ -169,6 +191,8 @@ forbidden_killall_et="$(printf '\153\151\154\154\141\154\154\040\145\141\163\171
 forbidden_tg_token="$(printf '\061\062\063\064\065\066\072\101\102\103')"
 forbidden_tg_token_pattern="$(printf '\124\107\137\102\117\124\137\124\117\113\105\116\075\056\052\133\060\055\071\135\056\052\072')"
 forbidden_real_deploy_pattern="$(printf '\061\066\063[.]\062\062\063[.]|\061\060[.]\061\062\064[.]\063\070[.]|\062\066\066\070\064|\062\067\060\070\071|\065\060\063\062\071|\063\067\065\071\062')"
+forbidden_old_051="$(printf '\060[.]\065[.]\061\055\141\154\160\150\141')"
+forbidden_old_056="$(printf '\060[.]\065[.]\066\055\141\154\160\150\141')"
 
 ! grep -R -q "$forbidden_client_name" README.md install.sh tests examples CHANGELOG.md
 ! grep -R -q "$forbidden_real_code_prefix" README.md tests examples CHANGELOG.md
@@ -186,10 +210,12 @@ if grep -R -Eq '8[.]163[.]46[.]205|163[.]223[.]125[.]6|103[.]100[.]176[.]107' RE
     exit 1
 fi
 
-if grep -R -Eq 'ET_NETWORK_SECRET=(?!change-me)' examples 2>/dev/null; then
+if grep -R -n '^ET_NETWORK_SECRET=' examples | grep -v '=change-me$' >/dev/null; then
     echo "examples contain non-placeholder secret" >&2
     exit 1
 fi
+
+! grep -R -E -q "${forbidden_old_051}|${forbidden_old_056}" README.md install.sh examples
 
 [[ "$(tr -d '\r\n' < VERSION)" == "1.0.0" ]]
 
@@ -211,6 +237,8 @@ grep -q 'install-netcat' install.sh
 grep -q 'IXTF_ASSUME_YES=true / IXTF_AUTO_INSTALL_EASYTIER=true' install.sh
 grep -q 'nc 不可用，跳过 TCP 业务端口探测' install.sh
 grep -q 'log_warn "已取消完全清理' install.sh
+grep -q 'examples/profile-landing.env' install.sh
+grep -q 'examples/profile-ingress.env' install.sh
 
 add_landing_body="$(sed -n '/^add_landing_profile()/,/^add_ingress_profile_from_code()/p' install.sh)"
 ! grep -q 'post_install_summary' <<<"$add_landing_body"

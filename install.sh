@@ -266,10 +266,10 @@ is_interactive_input() {
 
 fail_need_tty() {
     local cmd="${1:-install-panel-landing}"
-    local example="bash install.sh install-panel-landing --env-file examples/panel-landing.env"
+    local example="bash install.sh install-panel-landing --env-file examples/profile-landing.env"
     case "$cmd" in
         install-panel-ingress)
-            example="bash install.sh install-panel-ingress --env-file examples/panel-ingress.env"
+            example="bash install.sh install-panel-ingress --env-file examples/profile-ingress.env"
             ;;
         install-panel-ingress-from-code)
             example="bash install.sh install-panel-ingress-from-code --code-file /root/landing.code"
@@ -2671,7 +2671,7 @@ analyze_recent_easytier_logs() {
     logs_text="$(recent_service_logs_text 80)"
     [[ -n "$logs_text" ]] || return 0
     if grep -qi -- 'private-mode' <<<"$logs_text"; then
-        log_warn "检测到 EasyTier 参数 private-mode 相关日志：旧版本可能生成过裸 --private-mode。请使用 0.5.1-alpha 重新重配。"
+        log_warn "检测到 EasyTier 参数 private-mode 相关日志：旧版本可能生成过裸 --private-mode。请使用当前 1.0.0 脚本重新配置。"
     fi
     if grep -Eqi 'Address in use|failed to listen' <<<"$logs_text"; then
         log_warn "检测到 listener 端口被占用或监听失败。请更换 EasyTier listener 端口，不要直接杀业务进程。"
@@ -8578,7 +8578,7 @@ doctor_profile() {
 
 status_all() {
     require_root "$@"
-    local verbose="${1:-}" id service active enabled_label forward_label health total=0 enabled_count=0 forwarding_count=0
+    local verbose="${1:-}" id service active enabled_label forward_label group_display health total=0 enabled_count=0 forwarding_count=0
     local healthy=0 warning=0 down=0 unknown=0 groups_count abnormal_groups=0 group
     [[ "$verbose" == "--verbose" || -z "$verbose" ]] || die_user "用法：status-all [--verbose]"
     printf 'PROFILE_ID\tROLE\tGROUP\tLINE_ROLE\tENABLED\tFORWARD\tSERVICE\tHEALTH\tLAST_CHECK\n'
@@ -8593,6 +8593,7 @@ status_all() {
         active="$(profile_service_status "$service")"
         enabled_label="$(enabled_display "${ENABLED:-true}")"
         forward_label="$(forward_display "${ROLE:-}" "${ENABLED:-true}" "${FORWARD_ENABLED:-true}")"
+        group_display="${LINE_GROUP:-standalone}"
         [[ "${ENABLED:-true}" == "true" ]] && enabled_count=$((enabled_count + 1))
         [[ "$forward_label" == "active" ]] && forwarding_count=$((forwarding_count + 1))
         health="${HEALTH_STATUS:-unknown}"
@@ -8603,7 +8604,7 @@ status_all() {
             *) unknown=$((unknown + 1)) ;;
         esac
         printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-            "$id" "${ROLE:-}" "${LINE_GROUP:-}" "${LINE_ROLE:-standalone}" "$enabled_label" "$forward_label" \
+            "$id" "${ROLE:-}" "$group_display" "${LINE_ROLE:-standalone}" "$enabled_label" "$forward_label" \
             "${active:-unknown}" "$health" "${LAST_HEALTH_CHECK_AT:--}"
     done
     groups_count="$(profile_groups | awk 'NF{c++} END{print c+0}')"

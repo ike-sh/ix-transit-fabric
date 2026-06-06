@@ -93,4 +93,4 @@ bash install.sh apply-nft-all
 bash install.sh verify-nft-profiles
 ```
 
-0.5.1-alpha still has no automatic failover. Every switch is a local CLI operation and requires operator confirmation.
+ix-transit-fabric 1.0.0 has no automatic failover. Every switch is a local CLI operation and requires operator confirmation.

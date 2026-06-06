@@ -49,6 +49,6 @@ bash install.sh show-group example-group
 bash install.sh switch-history example-group
 ```
 
-0.5.1-alpha still does not do automatic failover. Switches are manual and require operator confirmation.
+ix-transit-fabric 1.0.0 does not do automatic failover. Switches are manual and require operator confirmation.
 
 `switch-dry-run` is read-only. It does not write Profile files, does not restart services, and does not apply nftables. `switch-line` is the command that changes `FORWARD_ENABLED` and runs `apply-nft-all`.

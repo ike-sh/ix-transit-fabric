@@ -17,7 +17,7 @@ Traffic counters come from nftables:
 nft list table ip ix_transit_fabric
 ```
 
-The project rules include `counter` on DNAT and masquerade rules after `apply-nft-all` has rendered the 0.5.1-alpha table.
+The project rules include `counter` on DNAT and masquerade rules after `apply-nft-all` has rendered the ix-transit-fabric 1.0.0 table.
 
 ## Reset
 
@@ -25,7 +25,7 @@ The project rules include `counter` on DNAT and masquerade rules after `apply-nf
 bash install.sh traffic-reset-all
 ```
 
-The current alpha resets all project counters by reapplying the project nftables table. Single Profile reset is not precise yet.
+The current release resets all project counters by reapplying the project nftables table. Single Profile reset is not precise yet.
 
 ## Limits
 
