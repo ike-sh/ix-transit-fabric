@@ -1,6 +1,6 @@
 # ix-transit-fabric
 
-当前版本：`1.1.0-rc.2`
+当前版本：`1.1.0-rc.3`
 
 `ix-transit-fabric` 用于管理 NAT-IX 中转线路：公网入口机接收客户端连接，通过 EasyTier 连接 NAT IX 机器，NAT IX 机器再用 nftables 转发到落地机业务端口。
 
@@ -56,9 +56,11 @@ IXTF_EASYTIER_VERSION=v2.6.4 bash install.sh install-easytier
 IXTF_EASYTIER_DOWNLOAD_URL=https://example.com/easytier.tar.gz bash install.sh install-easytier
 ```
 
+如果下载失败，可使用 `IXTF_DEBUG=true bash install.sh install-easytier` 查看详细下载日志。
+
 ## 快速开始
 
-第一步，在 NAT IX 机器执行：
+1. 在 NAT IX 机器创建中转线路：
 
 ```bash
 bash install.sh
@@ -70,16 +72,9 @@ bash install.sh
 创建 NAT IX 中转线路
 ```
 
-按提示输入：
-
-1. 商家 NAT/IX 入口地址。
-2. 商家分配入口端口。
-3. 落地机地址。
-4. 落地业务端口。
-
 脚本会自动生成线路 ID、线路名称、EasyTier 网络名、网络密钥、NAT IX 虚拟 IP、公网入口机虚拟 IP、虚拟网中转端口和默认 TCP/UDP 协议。完成后复制整段 NAT IX 接入码。
 
-第二步，在公网入口机执行：
+2. 在公网入口机导入接入码：
 
 ```bash
 bash install.sh
@@ -93,7 +88,7 @@ bash install.sh
 
 按提示粘贴接入码，并输入客户端入口端口。直接回车会随机生成端口。
 
-第三步，客户端连接：
+3. 客户端连接公网入口机端口：
 
 ```text
 公网入口机公网 IP:客户端入口端口
@@ -104,7 +99,14 @@ bash install.sh
 ```text
 接入码包含 EasyTier 组网密钥。
 不要把接入码发到聊天记录、工单、截图或公开日志。
-如果已经发出，请正式使用前重新生成接入码或重建线路。
+建议复制后立即清屏：clear
+如果终端日志会被保存，请正式使用前刷新接入码。
+```
+
+刷新接入码：
+
+```bash
+bash install.sh refresh-nat-code 线路ID
 ```
 
 ## 端口解释
@@ -237,15 +239,7 @@ bash install.sh purge
 
 ## 旧版兼容说明
 
-CNIX Panel Mode 与 alpha 阶段旧 NAT-IX 方向仍保留兼容命令，但不再作为正式推荐流程。新用户只应使用 NAT IX listener 正式流程：NAT IX 机器生成接入码，公网入口机导入接入码。
-
-旧版工具入口：
-
-```text
-高级维护 -> 旧版兼容工具
-```
-
-这些入口仅用于迁移 alpha 旧配置或历史 CNIX 面板线路，不推荐新线路使用。
+历史配置仍尽量兼容，但新部署只推荐 NAT IX listener 流程。旧模式不再作为交互入口。
 
 ## 技术附录
 
@@ -272,8 +266,8 @@ CNIX Panel Mode 与 alpha 阶段旧 NAT-IX 方向仍保留兼容命令，但不�
 
 **接入码可以公开吗？**
 
-不可以。接入码包含 EasyTier 组网密钥。不要把接入码发到聊天记录、工单、截图或公开日志；如果已经发出，请正式使用前重新生成接入码或重建线路。
+不可以。接入码包含 EasyTier 组网密钥。不要把接入码发到聊天记录、工单、截图或公开日志；建议复制后立即清屏：`clear`。如果终端日志会被保存，请正式使用前刷新接入码。
 
 **CNIX Panel Mode 还能用吗？**
 
-能。它在高级维护的旧版兼容工具里保留，但正式推荐流程是 NAT-IX listener mode。
+历史配置仍尽量兼容，但新部署只推荐 NAT IX listener 流程；旧模式不再作为交互入口。

@@ -12,7 +12,7 @@ fi
 bash -n install.sh
 
 version_output="$(bash install.sh --version)"
-[[ "$version_output" == "ix-transit-fabric 1.1.0-rc.2" ]]
+[[ "$version_output" == "ix-transit-fabric 1.1.0-rc.3" ]]
 
 bash install.sh --help >/dev/null
 
@@ -46,7 +46,7 @@ for token in \
     "商家入口可达性" \
     "连接 NAT IX" \
     "普通菜单只展示 NAT IX listener 正式流程" \
-    "CNIX 面板模式和旧 NAT-IX 方向仅作为高级维护中的旧版兼容工具保留" \
+    "历史配置仍尽量兼容，但新部署只推荐 NAT IX listener 流程" \
     "show-port-map / verify-nft-profiles / traffic-report 支持 NAT-IX 线路" \
     latency-report \
     nat-latency \
@@ -190,9 +190,13 @@ for token in \
     show-easytier-command \
     EasyTier_peer_not_established \
     show_code_skip_security \
+    debug_enabled \
+    IXTF_DEBUG \
+    "正在安装 EasyTier..." \
+    "正在尝试多个下载源，请稍候..." \
+    "EasyTier 安装完成。" \
     "创建 NAT IX 中转线路" \
     "公网入口机导入接入码" \
-    "旧版兼容工具" \
     "线路列表 / 状态" \
     "流量统计" \
     "卸载服务（保留配置备份）" \
@@ -206,10 +210,20 @@ for token in \
     "预检类型：%s" \
     "公网入口线路" \
     "NAT IX 中转线路" \
+    "系统服务管理" \
+    "网络工具" \
+    "防火墙工具" \
+    "下载工具" \
+    "解压工具" \
+    "EasyTier：未安装，将自动安装" \
+    "诊断工具" \
+    "预检结果：通过" \
     "查看详细 nftables 校验" \
     "nftables 转发规则：正常" \
     "不会修改配置或 nftables" \
-    "不要把接入码发到聊天记录、工单、截图或公开日志"; do
+    "不要把接入码发到聊天记录、工单、截图或公开日志" \
+    "建议复制后立即清屏：clear" \
+    "如果终端日志会被保存，请正式使用前刷新接入码。"; do
     grep -q -- "$token" install.sh
 done
 
@@ -219,9 +233,9 @@ for token in \
     "适用场景" \
     "架构图" \
     "快速开始" \
-    "第一步，在 NAT IX 机器执行" \
-    "第二步，在公网入口机执行" \
-    "第三步，客户端连接" \
+    "在 NAT IX 机器创建中转线路" \
+    "在公网入口机导入接入码" \
+    "客户端连接公网入口机端口" \
     "端口解释" \
     "健康检查" \
     "延迟诊断" \
@@ -231,8 +245,8 @@ for token in \
     "不自动切换线路" \
     "不清空全局 nftables ruleset" \
     "不全局 kill" \
-    "NAT-IX listener mode" \
-    "NAT IX 机器生成接入码，公网入口机导入接入码" \
+    "历史配置仍尽量兼容" \
+    "旧模式不再作为交互入口" \
     "NAT_PUBLIC_HOST" \
     "NAT_LISTENER_PORT" \
     "虚拟网中转端口" \
@@ -243,16 +257,18 @@ for token in \
     "LANDING_PORT" \
     "接入码包含 EasyTier 组网密钥" \
     "不要把接入码发到聊天记录、工单、截图或公开日志" \
+    "建议复制后立即清屏：clear" \
+    "如果终端日志会被保存，请正式使用前刷新接入码" \
+    "IXTF_DEBUG=true bash install.sh install-easytier" \
     "export-diagnostic" \
     "安全边界" \
     "raw.githubusercontent.com/ike-sh/ix-transit-fabric/main/install.sh" \
-    "1.1.0-rc.2" \
+    "1.1.0-rc.3" \
     "NAT-IX 延迟诊断：线路ID" \
     "latency-report" \
     "traffic-report --sample" \
     "商家 NAT/IX 入口地址" \
-    "落地机地址:落地业务端口" \
-    "高级维护 -> 旧版兼容工具"; do
+    "落地机地址:落地业务端口"; do
     grep -q "$token" README.md
 done
 
@@ -319,7 +335,7 @@ fi
 
 ! grep -R -E -q "${forbidden_old_051}|${forbidden_old_056}" README.md install.sh examples
 
-[[ "$(tr -d '\r\n' < VERSION)" == "1.1.0-rc.2" ]]
+[[ "$(tr -d '\r\n' < VERSION)" == "1.1.0-rc.3" ]]
 
 ! grep -q 'mode: nat-ingress' install.sh
 ! grep -q 'mode: nat-transit' install.sh
@@ -345,6 +361,34 @@ grep -q '高级维护' <<<"$main_menu_block"
 ! grep -q '模式 B' <<<"$main_menu_block"
 ! grep -q '兼容：公网入口机生成接入码' <<<"$main_menu_block"
 ! grep -q '兼容：NAT IX 机器导入入口机接入码' <<<"$main_menu_block"
+
+advanced_menu_block="$(sed -n '/^run_advanced_menu_action()/,/^manage_profiles_menu()/p' install.sh)"
+grep -q '线路列表' <<<"$advanced_menu_block"
+grep -q '查看指定线路配置' <<<"$advanced_menu_block"
+grep -q '查看所有状态' <<<"$advanced_menu_block"
+grep -q '查看端口地图' <<<"$advanced_menu_block"
+grep -q '查看 nftables 项目表' <<<"$advanced_menu_block"
+grep -q '导出脱敏诊断报告' <<<"$advanced_menu_block"
+grep -q '安装诊断工具' <<<"$advanced_menu_block"
+grep -q '卸载服务' <<<"$advanced_menu_block"
+grep -q '完全清理' <<<"$advanced_menu_block"
+grep -q '最终自检' <<<"$advanced_menu_block"
+grep -q '清理 history' <<<"$advanced_menu_block"
+grep -q '清理 state' <<<"$advanced_menu_block"
+
+for forbidden_menu_token in \
+    '旧版兼容工具' \
+    'CNIX 面板模式' \
+    '旧版 CNIX' \
+    '旧 NAT-IX' \
+    '兼容旧模式' \
+    '模式 A' \
+    '模式 B' \
+    '公网入口机生成接入码' \
+    'NAT IX 机器导入入口机接入码'; do
+    ! grep -q "$forbidden_menu_token" <<<"$main_menu_block"
+    ! grep -q "$forbidden_menu_token" <<<"$advanced_menu_block"
+done
 
 grep -q 'ix-transit-easytier@%s.service' install.sh
 grep -q 'show_profile_summary "$PROFILE_ID"' install.sh
@@ -394,7 +438,9 @@ grep -q '完全清理默认不会删除你手动下载的 install.sh' README.md
 grep -q 'NAT-IX 延迟诊断：线路ID' README.md
 grep -q 'latency-report' README.md
 grep -q 'traffic-report --sample' README.md
-grep -q '旧版兼容工具' README.md
+grep -q '历史配置仍尽量兼容，但新部署只推荐 NAT IX listener 流程' README.md
+! grep -q '高级维护 -> 旧版兼容工具' README.md
+! grep -q '旧版兼容工具' README.md
 
 unit_tmp="$(mktemp -d)"
 cleanup_unit_tmp() {
@@ -458,16 +504,73 @@ trap cleanup_unit_tmp EXIT
 
     ensure_profile_dirs
 
+    command_exists() {
+        case "$1" in
+            systemctl|nft|ss|sysctl|journalctl|ip|ping|nc|curl|tar|unzip) return 0 ;;
+            easytier-core) return 1 ;;
+            *) command -v "$1" >/dev/null 2>&1 ;;
+        esac
+    }
     preflight_ingress_output="$(preflight_check nat-ingress 2>&1 || true)"
     grep -q '预检类型：公网入口线路' <<<"$preflight_ingress_output"
     grep -q '说明：仅检查环境，不会修改配置或 nftables。' <<<"$preflight_ingress_output"
+    grep -q '系统服务管理：正常' <<<"$preflight_ingress_output"
+    grep -q '网络工具：正常' <<<"$preflight_ingress_output"
+    grep -q '防火墙工具：正常' <<<"$preflight_ingress_output"
+    grep -q '下载工具：正常' <<<"$preflight_ingress_output"
+    grep -q '解压工具：正常' <<<"$preflight_ingress_output"
+    grep -q 'EasyTier：未安装，将自动安装' <<<"$preflight_ingress_output"
+    grep -q '诊断工具：正常' <<<"$preflight_ingress_output"
+    grep -q '预检结果：通过' <<<"$preflight_ingress_output"
     ! grep -q 'mode: nat-ingress' <<<"$preflight_ingress_output"
     ! grep -q 'read-only: no Profile changes' <<<"$preflight_ingress_output"
+    ! grep -q 'systemctl:' <<<"$preflight_ingress_output"
+    ! grep -q 'curl/wget: available' <<<"$preflight_ingress_output"
+    ! grep -q 'tar:' <<<"$preflight_ingress_output"
+    ! grep -q 'unzip:' <<<"$preflight_ingress_output"
+    ! grep -q 'easytier-core: missing' <<<"$preflight_ingress_output"
+    ! grep -q 'nc/ncat: nc' <<<"$preflight_ingress_output"
+    ! grep -q 'preflight result: OK' <<<"$preflight_ingress_output"
+
+    IXTF_DEBUG=true
+    preflight_debug_output="$(preflight_check nat-ingress 2>&1 || true)"
+    unset IXTF_DEBUG
+    grep -q '\[OK\] systemctl' <<<"$preflight_debug_output"
+    grep -q 'curl/wget: available' <<<"$preflight_debug_output"
+    grep -q 'preflight result: OK' <<<"$preflight_debug_output"
 
     preflight_transit_output="$(preflight_check nat-transit 2>&1 || true)"
     grep -q '预检类型：NAT IX 中转线路' <<<"$preflight_transit_output"
     grep -q '不会修改配置或 nftables' <<<"$preflight_transit_output"
     ! grep -q 'mode: nat-transit' <<<"$preflight_transit_output"
+
+    install_easytier_output="$(
+        EASYTIER_TARGET="${unit_tmp}/bin/easytier-core"
+        mkdir -p "$(dirname "$EASYTIER_TARGET")"
+        resolve_easytier_download_url() { printf 'https://example.invalid/easytier-linux-x86_64-v0.0.0.zip\n'; }
+        download_with_mirrors() { : >"$2"; }
+        extract_easytier_archive() {
+            mkdir -p "$3/pkg"
+            printf '#!/usr/bin/env sh\nprintf "easytier-core test\\n"\n' >"$3/pkg/easytier-core"
+            chmod +x "$3/pkg/easytier-core"
+        }
+        backup_binary() { :; }
+        get_easytier_version() { printf 'easytier-core test\n'; }
+        install_easytier 2>&1
+    )"
+    grep -q '正在安装 EasyTier...' <<<"$install_easytier_output"
+    grep -q '正在尝试多个下载源，请稍候...' <<<"$install_easytier_output"
+    grep -q 'EasyTier 安装完成。' <<<"$install_easytier_output"
+    ! grep -q '下载地址：https://example.invalid' <<<"$install_easytier_output"
+    ! grep -q 'curl: (22)' <<<"$install_easytier_output"
+    ! grep -q 'The requested URL returned error' <<<"$install_easytier_output"
+
+    command_exists() {
+        case "$1" in
+            systemctl|nft|ss|sysctl|journalctl|ip|ping|nc) return 1 ;;
+            *) command -v "$1" >/dev/null 2>&1 ;;
+        esac
+    }
 
     ROLE=panel-ingress
     ET_NETWORK_NAME=ix-old
@@ -817,7 +920,8 @@ EOF_PROFILE
     grep -q 'bash install.sh verify-nft-profiles' <<<"$nat_listener_summary_output"
     grep -q '接入码包含 EasyTier 组网密钥。' <<<"$nat_listener_summary_output"
     grep -q '不要把接入码发到聊天记录、工单、截图或公开日志。' <<<"$nat_listener_summary_output"
-    grep -q '如果已经发出，请正式使用前重新生成接入码或重建线路。' <<<"$nat_listener_summary_output"
+    grep -q '建议复制后立即清屏：clear' <<<"$nat_listener_summary_output"
+    grep -q '如果终端日志会被保存，请正式使用前刷新接入码。' <<<"$nat_listener_summary_output"
     [[ "$(grep -c '接入码包含 EasyTier 组网密钥。' <<<"$nat_listener_summary_output")" == "1" ]]
     for forbidden in \
         'nftables profile verification' \
@@ -830,7 +934,9 @@ EOF_PROFILE
         ! grep -q "$forbidden" <<<"$nat_listener_summary_output"
     done
     refresh_nat_output="$(refresh_nat_code nat-listen 2>&1)"
-    grep -q '旧接入码会失效，公网入口机需要重新导入新接入码。' <<<"$refresh_nat_output"
+    grep -q '已生成新的接入码。' <<<"$refresh_nat_output"
+    grep -q '旧接入码已失效。' <<<"$refresh_nat_output"
+    grep -q '公网入口机需要重新导入新的接入码。' <<<"$refresh_nat_output"
     latency_nat_listener_output="$(latency_report nat-listen --sample 0)"
     grep -q 'NAT-IX 延迟诊断：nat-listen' <<<"$latency_nat_listener_output"
     grep -q '分段 1：公网入口机 -> NAT IX 虚拟 IP' <<<"$latency_nat_listener_output"

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-SCRIPT_VERSION="1.1.0-rc.2"
+SCRIPT_VERSION="1.1.0-rc.3"
 APP_NAME="ix-transit-fabric"
 
 CONFIG_DIR="/etc/ix-transit-fabric"
@@ -224,6 +224,16 @@ color_init
 log_info() { print_info "$*"; }
 log_warn() { print_warn "$*"; }
 log_error() { print_error "$*"; }
+debug_enabled() {
+    case "${IXTF_DEBUG:-false}" in
+        1|true|TRUE|yes|YES|on|ON|debug|DEBUG) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+log_debug() {
+    debug_enabled || return 0
+    print_info "$*"
+}
 log_ok() { print_ok "$*"; }
 
 on_error() {
@@ -256,6 +266,7 @@ ix-transit-fabric - NAT-IX + EasyTier + nftables 中转线路管理脚本
   bash install.sh --help
   bash install.sh --version
   bash install.sh --menu
+  bash install.sh --debug install-easytier
 
 安装 / 更新：
   bash install.sh install-easytier
@@ -341,7 +352,7 @@ ix-transit-fabric - NAT-IX + EasyTier + nftables 中转线路管理脚本
   - 无参数且当前是交互式 TTY 时进入菜单。
   - monitor / notify 只做检查和提醒，不会自动切换。
 	  - 普通菜单只展示 NAT IX listener 正式流程。
-	  - CNIX 面板模式和旧 NAT-IX 方向仅作为高级维护中的旧版兼容工具保留。
+	  - 历史配置仍尽量兼容，但新部署只推荐 NAT IX listener 流程。
 	  - show-port-map / verify-nft-profiles / traffic-report 支持 NAT-IX 线路。
 	  - latency-report / nat-latency / latency-all 提供 NAT-IX 分段延迟诊断。
 	  - purge 会删除配置、线路、接入码、state、notify.env、history 和备份，执行前必须确认。
@@ -545,7 +556,7 @@ backup_binary() {
     target="${BACKUP_DIR}/easytier-core.${stamp}"
     cp -a -- "$path" "$target"
     chmod 700 "$target" 2>/dev/null || true
-    log_info "已备份旧版本：${target}"
+    log_debug "已备份旧版本：${target}"
 }
 
 backup_and_remove_file() {
@@ -626,23 +637,36 @@ verify_download() {
 download_with_mirrors() {
     local original_url="$1"
     local dest="$2"
-    local attempt_url part mirror direct_first
+    local attempt_url part mirror direct_first err_file failures=""
 
     part="${dest}.part.$$"
+    err_file="${part}.err"
     direct_first="${IXTF_GITHUB_DIRECT_FIRST:-false}"
 
     try_download_source() {
         local label="$1"
         local url="$2"
-        log_info "正在尝试下载源：${label}"
-        log_info "下载地址：${url}"
-        if download_file "$url" "$part" && verify_download "$original_url" "$part"; then
+        local detail
+        log_debug "正在尝试下载源：${label}"
+        log_debug "下载地址：${url}"
+        rm -f -- "$err_file"
+        if download_file "$url" "$part" 2>"$err_file" && verify_download "$original_url" "$part" 2>>"$err_file"; then
             mv -f -- "$part" "$dest"
-            log_ok "下载完成，已通过基本校验：${label}"
+            rm -f -- "$err_file"
+            log_debug "下载完成，已通过基本校验：${label}"
             return 0
         fi
         rm -f -- "$part"
-        log_warn "下载源失败：${label}"
+        detail="$(sed -n '1,3p' "$err_file" 2>/dev/null | tr '\n' ' ' | sed 's/[[:space:]]\+/ /g' || true)"
+        failures="${failures}下载源失败：${label}
+URL：${url}
+原因：${detail:-下载或校验失败}
+"
+        if debug_enabled; then
+            log_warn "下载源失败：${label}"
+            [[ -n "$detail" ]] && log_warn "$detail"
+        fi
+        rm -f -- "$err_file"
         return 1
     }
 
@@ -660,9 +684,11 @@ download_with_mirrors() {
     fi
 
     log_error "所有下载源均失败。"
+    [[ -n "$failures" ]] && printf '%s' "$failures" >&2
     log_error "可设置 IXTF_GITHUB_MIRRORS 指定镜像，或设置 IXTF_EASYTIER_DOWNLOAD_URL 指定 release archive。"
     log_error "也可设置 IXTF_EASYTIER_VERSION 指定版本，或设置 IXTF_GITHUB_DIRECT_FIRST=true 先走原始 GitHub。"
     log_error "手工方案：在另一台机器安装后复制 /usr/local/bin/easytier-core 到本机同路径，并 chmod +x。"
+    rm -f -- "$err_file"
     return 1
 }
 
@@ -677,7 +703,7 @@ detect_os() {
 
 detect_arch() {
     local arch
-    log_info "正在检测系统架构。"
+    log_debug "正在检测系统架构。"
     arch="$(uname -m 2>/dev/null || true)"
     case "$arch" in
         x86_64|amd64) printf 'amd64\n' ;;
@@ -732,7 +758,7 @@ resolve_easytier_download_url() {
     if [[ -n "${IXTF_EASYTIER_VERSION:-}" ]]; then
         version="$(normalize_easytier_version "$IXTF_EASYTIER_VERSION")"
     else
-        log_info "正在解析 EasyTier 最新版本。"
+        log_debug "正在解析 EasyTier 最新版本。"
         if ! version="$(latest_easytier_version)"; then
             die_user "无法解析 EasyTier 最新版本。请设置 IXTF_EASYTIER_VERSION 或 IXTF_EASYTIER_DOWNLOAD_URL。"
         fi
@@ -802,17 +828,19 @@ install_easytier() {
 
     local url archive workdir binary new_target installed_version
     ensure_config_dir
+    printf '正在安装 EasyTier...\n'
+    printf '正在尝试多个下载源，请稍候...\n'
     url="$(resolve_easytier_download_url)"
     archive="$(make_tmp_file "ix-transit-fabric.easytier")"
     workdir="$(make_tmp_dir "ix-transit-fabric.extract")"
 
-    log_info "EasyTier 下载地址：${url}"
+    log_debug "EasyTier 下载地址：${url}"
     if ! download_with_mirrors "$url" "$archive"; then
         rm -rf -- "$archive" "$workdir"
         die_user "EasyTier 下载失败，已有 easytier-core 不会被改动。可设置 IXTF_EASYTIER_VERSION / IXTF_EASYTIER_DOWNLOAD_URL 后重试，或手动复制 easytier-core 到 ${EASYTIER_TARGET} 并 chmod +x。"
     fi
 
-    log_info "下载完成，正在解压和校验。"
+    log_debug "下载完成，正在解压和校验。"
     extract_easytier_archive "$archive" "$url" "$workdir"
     binary="$(find "$workdir" -type f -name easytier-core 2>/dev/null | head -n 1 || true)"
     [[ -n "$binary" ]] || {
@@ -822,13 +850,14 @@ install_easytier() {
 
     backup_binary "$EASYTIER_TARGET"
     new_target="${EASYTIER_TARGET}.new.$$"
-    log_info "正在安装 easytier-core。"
+    log_debug "正在安装 easytier-core。"
     install -m 0755 "$binary" "$new_target"
     mv -f -- "$new_target" "$EASYTIER_TARGET"
 
     rm -rf -- "$archive" "$workdir"
     installed_version="$(get_easytier_version "$EASYTIER_TARGET")"
-    log_ok "EasyTier 安装完成：${EASYTIER_TARGET}（${installed_version}）"
+    printf 'EasyTier 安装完成。\n'
+    log_debug "EasyTier 安装路径：${EASYTIER_TARGET}（${installed_version}）"
 }
 
 update_easytier() {
@@ -840,13 +869,14 @@ ensure_easytier() {
         return 0
     fi
 
-    log_warn "未找到 easytier-core，这是本项目必需组件。"
     if auto_install_easytier_enabled || assume_yes_enabled; then
+        printf 'EasyTier：未安装，将自动安装\n'
         install_easytier
         return 0
     fi
 
     if is_tty; then
+        printf 'EasyTier：未安装，可自动安装\n'
         if [[ "$(prompt_yes_no "是否现在自动下载并安装 EasyTier" "true")" == "true" ]]; then
             install_easytier
             return 0
@@ -886,12 +916,18 @@ preflight_mode_label() {
 
 preflight_check() {
     require_root "$@"
-    local mode="${1:-all}" missing_core=0 cmd nft_required="false"
+    local mode="${1:-all}" missing_core=0 cmd nft_required="false" network_missing=0
     printf 'ix-transit-fabric preflight\n'
     printf '预检类型：%s\n' "$(preflight_mode_label "$mode")"
     printf '说明：仅检查环境，不会修改配置或 nftables。\n'
 
     preflight_line() {
+        local item="$1" detail="$2"
+        printf '%s：%s\n' "$item" "$detail"
+    }
+
+    preflight_debug_line() {
+        debug_enabled || return 0
         local status="$1" item="$2" detail="${3:-}"
         if [[ -n "$detail" ]]; then
             printf '[%s] %s: %s\n' "$status" "$item" "$detail"
@@ -900,57 +936,98 @@ preflight_check() {
         fi
     }
 
-    for cmd in systemctl ip ss; do
+    if command_exists systemctl; then
+        preflight_line "系统服务管理" "正常"
+        preflight_debug_line OK "systemctl" "$(command -v systemctl 2>/dev/null || true)"
+    else
+        preflight_line "系统服务管理" "不可用，请先安装 systemd/systemctl"
+        preflight_debug_line ERROR "systemctl" "missing"
+        missing_core=$((missing_core + 1))
+    fi
+
+    for cmd in ip ss; do
         if command_exists "$cmd"; then
-            preflight_line OK "$cmd" "$(command -v "$cmd" 2>/dev/null || true)"
+            preflight_debug_line OK "$cmd" "$(command -v "$cmd" 2>/dev/null || true)"
         else
-            preflight_line FAIL "$cmd" "missing"
-            missing_core=$((missing_core + 1))
+            preflight_debug_line ERROR "$cmd" "missing"
+            network_missing=$((network_missing + 1))
         fi
     done
+    if [[ "$network_missing" -eq 0 ]]; then
+        preflight_line "网络工具" "正常"
+    else
+        preflight_line "网络工具" "不可用，请先安装 iproute2"
+        missing_core=$((missing_core + 1))
+    fi
+
     case "$mode" in
         ingress|nat-ingress|nat-transit|all) nft_required="true" ;;
     esac
     if [[ "$nft_required" == "true" ]]; then
         if command_exists nft; then
-            preflight_line OK "nft" "$(command -v nft 2>/dev/null || true)"
+            preflight_line "防火墙工具" "正常"
+            preflight_debug_line OK "nft" "$(command -v nft 2>/dev/null || true)"
         elif command_exists apt-get; then
-            preflight_line WARN "nftables" "未安装；继续安装线路时会按需安装。"
+            preflight_line "防火墙工具" "未安装，将在安装线路时自动安装"
+            preflight_debug_line WARN "nftables" "missing; apt-get available"
         else
-            preflight_line FAIL "nft" "${mode} 需要 nftables，请先手动安装。"
+            preflight_line "防火墙工具" "不可用，请先手动安装 nftables"
+            preflight_debug_line ERROR "nft" "${mode} requires nftables"
             missing_core=$((missing_core + 1))
         fi
     else
-        command_exists nft && preflight_line OK "nft" "$(command -v nft 2>/dev/null || true)" || preflight_line INFO "nft" "landing-only 可稍后安装"
+        if command_exists nft; then
+            preflight_line "防火墙工具" "正常"
+            preflight_debug_line OK "nft" "$(command -v nft 2>/dev/null || true)"
+        else
+            preflight_line "防火墙工具" "未安装，当前预检可继续"
+            preflight_debug_line INFO "nft" "landing-only can install later"
+        fi
     fi
     if command_exists curl || command_exists wget; then
-        preflight_line OK "curl/wget" "available"
+        preflight_line "下载工具" "正常"
+        preflight_debug_line OK "curl/wget" "available"
     else
-        preflight_line FAIL "curl/wget" "missing"
+        preflight_line "下载工具" "不可用，请先安装 curl 或 wget"
+        preflight_debug_line ERROR "curl/wget" "missing"
         missing_core=$((missing_core + 1))
     fi
     if command_exists tar; then
-        preflight_line OK "tar" "$(command -v tar 2>/dev/null || true)"
+        preflight_debug_line OK "tar" "$(command -v tar 2>/dev/null || true)"
     else
-        preflight_line FAIL "tar" "missing"
+        preflight_debug_line ERROR "tar" "missing"
         missing_core=$((missing_core + 1))
     fi
-    command_exists unzip && preflight_line OK "unzip" "$(command -v unzip 2>/dev/null || true)" || preflight_line WARN "unzip" "zip release 包需要 unzip"
-    if detect_easytier_binary >/dev/null 2>&1; then
-        preflight_line OK "easytier-core" "$(detect_easytier_binary)"
+    if command_exists tar && command_exists unzip; then
+        preflight_line "解压工具" "正常"
+        preflight_debug_line OK "unzip" "$(command -v unzip 2>/dev/null || true)"
+    elif command_exists tar; then
+        preflight_line "解压工具" "tar 正常，unzip 未安装（zip 包需要时请安装）"
+        preflight_debug_line WARN "unzip" "zip release package needs unzip"
     else
-        preflight_line WARN "easytier-core" "missing; run bash install.sh install-easytier"
+        preflight_line "解压工具" "不可用，请先安装 tar"
+    fi
+    if detect_easytier_binary >/dev/null 2>&1; then
+        preflight_line "EasyTier" "正常"
+        preflight_debug_line OK "easytier-core" "$(detect_easytier_binary)"
+    else
+        preflight_line "EasyTier" "未安装，将自动安装"
+        preflight_debug_line INFO "easytier-core" "missing; install when needed"
     fi
     if detect_nc_cmd >/dev/null 2>&1; then
-        preflight_line OK "nc/ncat" "$(detect_nc_cmd)"
+        preflight_line "诊断工具" "正常"
+        preflight_debug_line OK "nc/ncat" "$(detect_nc_cmd)"
     else
-        preflight_line WARN "nc/ncat" "missing; run bash install.sh install-netcat"
+        preflight_line "诊断工具" "未安装，可稍后运行 bash install.sh install-netcat"
+        preflight_debug_line INFO "nc/ncat" "missing; run bash install.sh install-netcat"
     fi
     if [[ "$missing_core" -gt 0 ]]; then
-        printf 'preflight result: core dependency issue(s)=%s\n' "$missing_core"
+        printf '预检结果：未通过（核心依赖问题：%s）\n' "$missing_core"
+        debug_enabled && printf 'preflight result: core dependency issue(s)=%s\n' "$missing_core"
         return 1
     fi
-    printf 'preflight result: OK\n'
+    printf '预检结果：通过\n'
+    debug_enabled && printf 'preflight result: OK\n'
 }
 
 run_profile_install_preflight() {
@@ -4176,12 +4253,8 @@ NAT IX 虚拟 IP：${NAT_ET_IP}
 公网入口机虚拟 IP：${INGRESS_ET_IP}
 虚拟网中转端口：${TRANSIT_PORT}
 落地目标：${LANDING_HOST}:${LANDING_PORT}
-
-安全提醒：
-接入码包含 EasyTier 组网密钥。
-不要把接入码发到聊天记录、工单、截图或公开日志。
-如果已经发出，请正式使用前重新生成接入码或重建线路。
 EOF
+            print_access_code_security_hint
             return 0
         fi
         if [[ "${show_code_skip_security:-}" == "true" ]]; then
@@ -4209,12 +4282,8 @@ NAT IX 机器导入后会连接：
 公网入口机虚拟 IP：${INGRESS_ET_IP}
 NAT IX 虚拟 IP：${NAT_ET_IP}
 虚拟网中转端口：${TRANSIT_PORT}
-
-安全提醒：
-接入码包含 EasyTier 组网密钥。
-不要把接入码发到聊天记录、工单、截图或公开日志。
-如果已经发出，请正式使用前重新生成接入码或重建线路。
 EOF
+            print_access_code_security_hint
         fi
         return 0
     fi
@@ -4933,9 +5002,10 @@ print_profile_next_steps() {
 print_access_code_security_hint() {
     cat <<'EOF'
 安全提醒：
-  接入码包含 EasyTier 组网密钥。
-  不要把接入码发到聊天记录、工单、截图或公开日志。
-  如果已经发出，请正式使用前重新生成接入码或重建线路。
+接入码包含 EasyTier 组网密钥。
+不要把接入码发到聊天记录、工单、截图或公开日志。
+建议复制后立即清屏：clear
+如果终端日志会被保存，请正式使用前刷新接入码。
 EOF
 }
 
@@ -5977,11 +6047,13 @@ refresh_code() {
         ET_NETWORK_SECRET="$(generate_secret)"
         save_profile_env "$PROFILE_ID"
         save_profile_code_file "$PROFILE_ID" "$(generate_nat_code)"
-        printf '[OK] 已生成新 network_secret，并刷新 NAT-IX 接入码。\n'
+        printf '已生成新的接入码。\n'
         if [[ "${NAT_DIRECTION:-ingress-listener}" == "nat-listener" ]]; then
-            printf '[WARN] 旧接入码会失效，公网入口机需要重新导入新接入码。\n'
+            printf '旧接入码已失效。\n'
+            printf '公网入口机需要重新导入新的接入码。\n'
         else
-            printf '[WARN] 旧接入码会失效，NAT IX 机器需要重新导入新接入码。\n'
+            printf '旧接入码已失效。\n'
+            printf 'NAT IX 机器需要重新导入新的接入码。\n'
         fi
         if command_exists systemctl; then
             render_profile_service_files
@@ -12713,60 +12785,6 @@ EOF
 EOF
 }
 
-run_legacy_menu_action() {
-    local choice="$1"
-    case "$choice" in
-        1) add_landing_profile ;;
-        2) add_ingress_profile_from_code ;;
-        3) add_nat_ingress_profile ;;
-        4) add_nat_transit_profile_from_code ;;
-        5) change_landing ;;
-        6) change_ingress ;;
-        7) change_cnix_entry ;;
-        8) apply_nft_all ;;
-        0) return 10 ;;
-        *) log_warn "未知选项，请重新选择。"; return 0 ;;
-    esac
-}
-
-show_legacy_menu() {
-    local choice rc
-    while true; do
-        cat >&2 <<'MENU'
-
-旧版兼容工具
-
-不推荐新用户使用，仅用于迁移 alpha 旧配置或历史 CNIX 面板线路。
-
-  1) 旧版 CNIX 面板模式：新增落地线路 / 生成接入码
-  2) 旧版 CNIX 面板模式：新增入口线路 / 粘贴接入码
-  3) alpha 旧 NAT-IX：公网入口机生成接入码
-  4) alpha 旧 NAT-IX：NAT IX 机器导入入口机接入码
-  5) 更换落地机 / 刷新接入码
-  6) 更换入口机 / 入口配置
-  7) 更换 CNIX 入口配置
-  8) 手动重新应用全部 nftables 规则
-  0) 返回高级维护
-MENU
-        printf '请选择：' >&2
-        IFS= read -r choice || return 0
-
-        set +e
-        trap - ERR
-        export IXTF_IN_MENU=1
-        export IXTF_ALLOW_INTERACTIVE=1
-        ( trap - ERR; set +e; run_legacy_menu_action "$choice" )
-        rc=$?
-        trap 'on_error $LINENO' ERR
-        set -e
-
-        [[ "$rc" -eq 10 ]] && return 0
-        if [[ "$rc" -ne 0 ]]; then
-            log_error "旧版兼容操作失败（退出码 ${rc}），已返回菜单。"
-        fi
-    done
-}
-
 run_advanced_menu_action() {
     local choice="$1"
     case "$choice" in
@@ -12779,10 +12797,9 @@ run_advanced_menu_action() {
         7) install_nc_tool ;;
         8) uninstall ;;
         9) purge ;;
-        10) show_legacy_menu ;;
-        11) self_check ;;
-        12) cleanup_history ;;
-        13) cleanup_state ;;
+        10) self_check ;;
+        11) cleanup_history ;;
+        12) cleanup_state ;;
         0) return 10 ;;
         *) log_warn "未知选项，请重新选择。"; return 0 ;;
     esac
@@ -12804,10 +12821,9 @@ ix-transit-fabric 高级维护
   7) 安装诊断工具
   8) 卸载服务（保留配置备份）
   9) 完全清理（删除配置、服务和备份）
- 10) 旧版兼容工具
- 11) 最终自检
- 12) 清理 history
- 13) 清理 state
+ 10) 最终自检
+ 11) 清理 history
+ 12) 清理 state
   0) 返回主菜单
 MENU
         printf '请选择：' >&2
@@ -12853,26 +12869,6 @@ MENU
     esac
 }
 
-run_nat_mode_a_menu() {
-    local choice
-    cat >&2 <<'MENU'
-
-兼容旧模式：公网入口机监听 / NAT IX 连接公网入口机
-
-  1) 公网入口机：生成兼容旧模式接入码
-  2) NAT IX 机器：导入入口机接入码
-  3) 返回
-MENU
-    printf '请选择：' >&2
-    IFS= read -r choice || return 1
-    case "$choice" in
-        1) add_nat_ingress_profile ;;
-        2) add_nat_transit_profile_from_code ;;
-        3|0|"") return 0 ;;
-        *) log_warn "未知选项，请重新选择。"; return 0 ;;
-    esac
-}
-
 run_nat_mode_b_menu() {
     local choice
     cat >&2 <<'MENU'
@@ -12901,9 +12897,8 @@ NAT-IX 高级说明
   NAT IX 机器监听，公网入口机连接 NAT IX。
   适合商家给了 NAT/IX 入口 IP:端口。
 
-兼容旧模式：
-  公网入口机监听，NAT IX 机器连接公网入口机。
-  仅当 NAT IX 出口到公网入口机质量好时使用。
+历史配置：
+  已存在配置仍尽量兼容；新部署只推荐 NAT IX listener 流程。
 
 端口命名：
   客户端入口端口：最终客户端连接公网入口机的端口。
@@ -13219,6 +13214,11 @@ main() {
                 CODE_FILE_ARG="$1"
                 shift
                 ;;
+            --debug)
+                IXTF_DEBUG="true"
+                export IXTF_DEBUG
+                shift
+                ;;
             *)
                 args+=("$arg")
                 shift
@@ -13475,7 +13475,7 @@ main() {
             refresh_code "${args[1]:-}"
             ;;
         refresh-nat-code)
-            refresh_code "${args[1]:-}"
+            refresh_nat_code "${args[1]:-}"
             ;;
         update-from-code)
             update_from_code "${args[1]:-}"

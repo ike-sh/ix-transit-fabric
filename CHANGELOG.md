@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.1.0-rc.3
+
+### Changed
+
+- Simplified EasyTier install logs for normal users.
+- Chinese-ified preflight output.
+- Removed legacy mode entries from all interactive menus.
+- Strengthened access-code safety reminder.
+
+### Compatibility
+
+- Legacy profile compatibility code may remain internally, but legacy workflows are no longer exposed in interactive menus.
+
 ## 1.1.0-rc.2
 
 ### Changed
