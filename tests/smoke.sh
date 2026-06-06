@@ -12,7 +12,7 @@ fi
 bash -n install.sh
 
 version_output="$(bash install.sh --version)"
-[[ "$version_output" == "ix-transit-fabric 1.1.0-alpha.5" ]]
+[[ "$version_output" == "ix-transit-fabric 1.1.0-rc.1" ]]
 
 bash install.sh --help >/dev/null
 
@@ -45,10 +45,9 @@ for token in \
     NAT_LISTENER_PORT \
     "商家入口可达性" \
     "连接 NAT IX" \
-    "show-port-map 支持 nat" \
-    "verify-nft-profiles 支持 nat" \
-    "traffic-report 支持 nat" \
-    "traffic-report 支持 nat-ingress / nat-transit，可用 --sample N" \
+    "普通菜单只展示 NAT IX listener 正式流程" \
+    "CNIX 面板模式和旧 NAT-IX 方向仅作为高级维护中的旧版兼容工具保留" \
+    "show-port-map / verify-nft-profiles / traffic-report 支持 NAT-IX 线路" \
     latency-report \
     nat-latency \
     latency-all \
@@ -190,14 +189,16 @@ for token in \
     show-easytier-command \
     EasyTier_peer_not_established \
     show_code_skip_security \
-    "推荐：NAT IX 机器生成接入码" \
-    "推荐：公网入口机导入 NAT IX 接入码" \
+    "创建 NAT IX 中转线路" \
+    "公网入口机导入接入码" \
+    "旧版兼容工具" \
+    "线路列表 / 状态" \
+    "流量统计" \
+    "卸载服务（保留配置备份）" \
     "虚拟网中转端口" \
     "是否自定义高级参数" \
     "商家 NAT/IX 入口地址" \
     "商家分配入口端口" \
-    "当前操作适用于 NAT IX 机器" \
-    "当前操作适用于公网入口机" \
     "是否删除当前安装脚本" \
     "已删除 easytier-core" \
     "已保留 easytier-core"; do
@@ -206,90 +207,65 @@ done
 
 for token in \
     "一行安装" \
-    "EasyTier 替代 WireGuard" \
-    "四端口说明" \
-    "主备线路与手动切换" \
-    "监控 / 通知 / 流量统计" \
-    "不做自动切换" \
+    "当前版本" \
+    "适用场景" \
+    "架构图" \
+    "快速开始" \
+    "第一步，在 NAT IX 机器执行" \
+    "第二步，在公网入口机执行" \
+    "第三步，客户端连接" \
+    "端口解释" \
+    "健康检查" \
+    "延迟诊断" \
+    "流量统计" \
+    "卸载与完全清理" \
+    "旧版兼容说明" \
+    "不自动切换线路" \
     "不清空全局 nftables ruleset" \
     "不全局 kill" \
-    "NAT-IX Transit Mode" \
-    "NAT-IX 中转模式" \
-    "推荐模式" \
-    "NAT IX 机器生成接入码" \
-    "公网入口机导入 NAT IX 接入码" \
+    "NAT-IX listener mode" \
+    "NAT IX 机器生成接入码，公网入口机导入接入码" \
     "NAT_PUBLIC_HOST" \
     "NAT_LISTENER_PORT" \
     "虚拟网中转端口" \
-    "普通用户无需关心" \
-    "Realm-xwPF" \
-    "商家分配的入站端口" \
     "公网入口机" \
     "NAT IX 机器" \
     "TRANSIT_PORT" \
     "LANDING_HOST" \
     "LANDING_PORT" \
-    "不需要 CNIX 面板出口配置" \
-    "access code 包含 EasyTier 组网密钥" \
-    "self-check" \
+    "NAT IX 接入码包含 EasyTier 组网密钥" \
     "export-diagnostic" \
     "安全边界" \
-    "Roadmap" \
     "raw.githubusercontent.com/ike-sh/ix-transit-fabric/main/install.sh" \
-    "1.1.0-alpha.5" \
-    "IXTF_PUBLIC_IP" \
-    "IXTF_INGRESS_PUBLIC_HOST" \
-    "NAT-IX 延迟诊断" \
+    "1.1.0-rc.1" \
+    "NAT-IX 延迟诊断：线路ID" \
     "latency-report" \
     "traffic-report --sample" \
-    "TCP-over-TCP" \
-    "ICMP ping 不是业务延迟" \
-    "协议 A/B 测试" \
-    "PREROUTING" \
     "商家 NAT/IX 入口地址" \
     "落地机地址:落地业务端口" \
-    "refresh-nat-code" \
-    "NAT-IX Alpha 注意事项" \
-    "NAT IX 机器本机"; do
+    "高级维护 -> 旧版兼容工具"; do
     grep -q "$token" README.md
 done
 
 for file in \
-    examples/profile-landing.env \
-    examples/profile-ingress.env \
-    examples/multi-line-notes.md \
-    examples/primary-backup-notes.md \
-    examples/switch-runbook.md \
-    examples/manual-failover-runbook.md \
-    examples/notify.env.example \
-    examples/monitor-runbook.md \
-    examples/traffic-notes.md \
-    examples/nat-ingress.env \
-    examples/nat-transit.env \
-    examples/nat-transit-runbook.md \
+    examples/nat-ix-listener.env \
+    examples/public-ingress.env \
+    examples/operations.md \
+    examples/diagnostics.md \
     examples/README.md \
-    examples/profile-ingress-primary.env \
-    examples/profile-ingress-backup.env; do
+    examples/legacy/README.md \
+    examples/legacy/profile-landing.env \
+    examples/legacy/profile-ingress.env; do
     [[ -f "$file" ]]
 done
 
 expected_examples="$(
     printf '%s\n' \
         README.md \
-        profile-landing.env \
-        profile-ingress.env \
-        multi-line-notes.md \
-        primary-backup-notes.md \
-        profile-ingress-primary.env \
-        profile-ingress-backup.env \
-        switch-runbook.md \
-        manual-failover-runbook.md \
-        notify.env.example \
-        monitor-runbook.md \
-        traffic-notes.md \
-        nat-ingress.env \
-        nat-transit.env \
-        nat-transit-runbook.md | sort
+        nat-ix-listener.env \
+        public-ingress.env \
+        operations.md \
+        diagnostics.md | sort
 )"
 actual_examples="$(find examples -maxdepth 1 -type f -print | sed 's#^examples/##' | sort)"
 if [[ "$actual_examples" != "$expected_examples" ]]; then
@@ -334,13 +310,28 @@ fi
 
 ! grep -R -E -q "${forbidden_old_051}|${forbidden_old_056}" README.md install.sh examples
 
-[[ "$(tr -d '\r\n' < VERSION)" == "1.1.0-alpha.5" ]]
+[[ "$(tr -d '\r\n' < VERSION)" == "1.1.0-rc.1" ]]
 
 ! grep -R -E -q '（默认 [^）]+）（默认' install.sh README.md tests examples CHANGELOG.md
 ! grep -q '模式 B 接入码' install.sh
 ! grep -q 'NAT-IX 模式 B 接入码' install.sh
 ! grep -q '模式 A' install.sh README.md
 ! grep -q '模式 B' install.sh README.md
+
+main_menu_block="$(sed -n '/^show_menu()/,/^main()/p' install.sh)"
+grep -q '创建 NAT IX 中转线路' <<<"$main_menu_block"
+grep -q '公网入口机导入接入码' <<<"$main_menu_block"
+grep -q '线路列表 / 状态' <<<"$main_menu_block"
+grep -q '健康检查' <<<"$main_menu_block"
+grep -q '延迟诊断' <<<"$main_menu_block"
+grep -q '流量统计' <<<"$main_menu_block"
+grep -q '高级维护' <<<"$main_menu_block"
+! grep -q 'CNIX 面板模式：新增落地线路' <<<"$main_menu_block"
+! grep -q 'CNIX 面板模式：新增入口线路' <<<"$main_menu_block"
+! grep -q '模式 A' <<<"$main_menu_block"
+! grep -q '模式 B' <<<"$main_menu_block"
+! grep -q '兼容：公网入口机生成接入码' <<<"$main_menu_block"
+! grep -q '兼容：NAT IX 机器导入入口机接入码' <<<"$main_menu_block"
 
 grep -q 'ix-transit-easytier@%s.service' install.sh
 grep -q 'show_profile_summary "$PROFILE_ID"' install.sh
@@ -360,8 +351,8 @@ grep -q 'install-netcat' install.sh
 grep -q 'IXTF_ASSUME_YES=true / IXTF_AUTO_INSTALL_EASYTIER=true' install.sh
 grep -q 'nc 不可用，跳过 TCP 业务端口探测' install.sh
 grep -q 'log_warn "已取消完全清理' install.sh
-grep -q 'examples/profile-landing.env' install.sh
-grep -q 'examples/profile-ingress.env' install.sh
+grep -q 'examples/legacy/profile-landing.env' install.sh
+grep -q 'examples/legacy/profile-ingress.env' install.sh
 
 add_landing_body="$(sed -n '/^add_landing_profile()/,/^add_ingress_profile_from_code()/p' install.sh)"
 ! grep -q 'post_install_summary' <<<"$add_landing_body"
@@ -372,45 +363,24 @@ add_ingress_body="$(sed -n '/^add_ingress_profile_from_code()/,/^install_panel_i
 ! grep -q 'load_env_or_warn' <<<"$add_ingress_body"
 
 grep -q '一行安装' README.md
-grep -q 'CNIX 面板出口' README.md
+grep -q '商家 NAT/IX 入口地址' README.md
 grep -q 'EasyTier listener' README.md
-grep -q '`REMOTE_PORT` 是落地业务服务端口' README.md
-grep -q 'netcat-openbsd' README.md
+grep -q '落地业务端口' README.md
 grep -q 'IXTF_EASYTIER_DOWNLOAD_URL' README.md
 grep -q 'IXTF_EASYTIER_VERSION' README.md
-grep -q 'access code 包含 EasyTier 组网密钥' README.md
-grep -q 'CNIX 面板出口：落地 VPS:LISTENER_PORT' README.md
-grep -q '客户端：入口 VPS:LOCAL_PORT' README.md
-grep -q '落地机配置' README.md
-grep -q '入口机配置' README.md
-grep -q 'nftables 转发校验已跳过' README.md
+grep -q 'NAT IX 接入码包含 EasyTier 组网密钥' README.md
 grep -q 'list-profiles' README.md
 grep -q 'show-port-map --compact' README.md
-grep -q 'standalone Profile' README.md
-grep -q '没有线路组' README.md
-grep -q '主备组检查已跳过' README.md
-grep -q 'LINE_GROUP' README.md
-grep -q '1.0.0' README.md
-grep -q '1.1.0-alpha.1' README.md
-grep -q '1.1.0-alpha.5' README.md
-grep -q '推荐模式' README.md
-grep -q 'NAT IX 机器生成接入码' README.md
-grep -q '公网入口机导入 NAT IX 接入码' README.md
+grep -q '创建 NAT IX 中转线路' README.md
+grep -q '公网入口机导入接入码' README.md
 grep -q '虚拟网中转端口' README.md
-grep -q '普通用户无需关心' README.md
 grep -q 'NAT_PUBLIC_HOST' README.md
 grep -q 'NAT_LISTENER_PORT' README.md
 grep -q '完全清理默认不会删除你手动下载的 install.sh' README.md
-grep -q 'Realm-xwPF' README.md
-grep -q '商家分配的入站端口' README.md
-grep -q 'NAT-IX 延迟诊断' README.md
+grep -q 'NAT-IX 延迟诊断：线路ID' README.md
 grep -q 'latency-report' README.md
 grep -q 'traffic-report --sample' README.md
-grep -q 'TCP-over-TCP' README.md
-grep -q 'ICMP ping 不是业务延迟' README.md
-grep -q '协议 A/B 测试' README.md
-grep -q 'install-netcat' README.md
-grep -q 'preflight' README.md
+grep -q '旧版兼容工具' README.md
 
 unit_tmp="$(mktemp -d)"
 cleanup_unit_tmp() {
@@ -817,9 +787,11 @@ EOF_PROFILE
     grep -q '商家入口' <<<"$nat_listener_map"
     grep -q 'nat-ix.example:31000' <<<"$nat_listener_map"
     latency_nat_listener_output="$(latency_report nat-listen --sample 0)"
-    grep -q 'NAT_DIRECTION=nat-listener' <<<"$latency_nat_listener_output"
-    grep -q 'NAT_PUBLIC_HOST=nat-ix.example' <<<"$latency_nat_listener_output"
-    grep -q '当前连接方向：NAT IX 机器监听，公网入口机连接 NAT IX。' <<<"$latency_nat_listener_output"
+    grep -q 'NAT-IX 延迟诊断：nat-listen' <<<"$latency_nat_listener_output"
+    grep -q '分段 1：公网入口机 -> NAT IX 虚拟 IP' <<<"$latency_nat_listener_output"
+    grep -q '分段 2：NAT IX 机器 -> 落地机' <<<"$latency_nat_listener_output"
+    grep -q '分段 3：客户端流量命中' <<<"$latency_nat_listener_output"
+    grep -q 'sample delta：未采样' <<<"$latency_nat_listener_output"
 
     rm -f "${PROFILES_DIR}"/*.env
     make_nat_ingress_listener_profile nat-in-b 32000 true 10.89.0.0/24 10.89.0.1/24 10.89.0.2 21000

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-SCRIPT_VERSION="1.1.0-alpha.5"
+SCRIPT_VERSION="1.1.0-rc.1"
 APP_NAME="ix-transit-fabric"
 
 CONFIG_DIR="/etc/ix-transit-fabric"
@@ -196,7 +196,7 @@ print_port_map_compact() {
                 printf '  公网入口机虚拟 IP：%s\n\n' "$ingress_et_ip"
                 printf '虚拟网中转：\n'
                 printf '  %s:%s -> %s:%s\n' "$nat_et_ip" "$(c_cyan "$transit_port")" "$landing_host" "$landing_port"
-                printf '  说明：虚拟网中转端口只在 EasyTier 虚拟网内部使用，不需要公网放行。\n\n'
+                printf '  说明：虚拟网中转端口只在 EasyTier 虚拟网内部使用，不是公网端口，不需要商家放行。\n\n'
                 printf '客户端连接：\n'
                 printf '  公网入口机导入接入码后，客户端连接：公网入口机公网 IP:%s\n' "$local_port"
             else
@@ -250,7 +250,7 @@ return_or_exit() {
 
 usage() {
     cat <<'USAGE'
-ix-transit-fabric - CNIX/IX 转发面板 + EasyTier + nftables 一键脚本
+ix-transit-fabric - NAT-IX + EasyTier + nftables 中转线路管理脚本
 
 基础：
   bash install.sh --help
@@ -264,42 +264,44 @@ ix-transit-fabric - CNIX/IX 转发面板 + EasyTier + nftables 一键脚本
   bash install.sh install-diagnostics-tools
   bash install.sh preflight [landing|ingress|all]
 
-单线路：
-  bash install.sh add-landing-profile
-  bash install.sh add-ingress-profile-from-code [--code IXTF1:...] [--code-file PATH]
-  bash install.sh add-nat-ingress-profile
-  bash install.sh add-nat-transit-profile-from-code [--code IXTF1:...] [--code-file PATH]
-  bash install.sh add-nat-listener-profile
-  bash install.sh add-nat-ingress-from-listener-code [--code IXTF1:...] [--code-file PATH]
-  bash install.sh show-code [PROFILE_ID]
-  bash install.sh show-nat-code [PROFILE_ID]
-  bash install.sh import-code [--code IXTF1:...] [--code-file PATH]
-  bash install.sh show-port-map [PROFILE_ID] [--compact]
-  bash install.sh show-port-map --all [--compact]
-  bash install.sh show-port-map-compact [PROFILE_ID]
-  bash install.sh nat-guide [PROFILE_ID]
-  bash install.sh panel-guide [--all|PROFILE_ID]
-  bash install.sh check-port [--all|PROFILE_ID]
-  bash install.sh check-business [--all|PROFILE_ID]
+	NAT-IX 正式流程：
+	  bash install.sh add-nat-listener-profile
+	  bash install.sh add-nat-ingress-from-listener-code [--code IXTF1:...] [--code-file PATH]
+	  bash install.sh show-code [线路ID]
+	  bash install.sh show-nat-code [线路ID]
+	  bash install.sh show-port-map [线路ID] [--compact]
+	  bash install.sh show-port-map --all [--compact]
+	  bash install.sh show-port-map-compact [线路ID]
+	  bash install.sh nat-guide [线路ID]
+	  bash install.sh check-port [--all|线路ID]
+	  bash install.sh check-business [--all|线路ID]
 
-多线路：
-  bash install.sh list-profiles
-  bash install.sh show-profile PROFILE_ID
-  bash install.sh enable-profile PROFILE_ID
-  bash install.sh disable-profile PROFILE_ID
-  bash install.sh delete-profile PROFILE_ID
+	旧版兼容命令（不推荐新用户使用）：
+	  bash install.sh add-landing-profile
+	  bash install.sh add-ingress-profile-from-code [--code IXTF1:...] [--code-file PATH]
+	  bash install.sh add-nat-ingress-profile
+	  bash install.sh add-nat-transit-profile-from-code [--code IXTF1:...] [--code-file PATH]
+	  bash install.sh import-code [--code IXTF1:...] [--code-file PATH]
+	  bash install.sh panel-guide [--all|线路ID]
+
+	多线路：
+	  bash install.sh list-profiles
+	  bash install.sh show-profile 线路ID
+	  bash install.sh enable-profile 线路ID
+	  bash install.sh disable-profile 线路ID
+	  bash install.sh delete-profile 线路ID
   bash install.sh status-all
   bash install.sh doctor-all
 
 更换：
-  bash install.sh change-landing [PROFILE_ID]
-  bash install.sh change-ingress [PROFILE_ID]
-  bash install.sh change-cnix-entry [PROFILE_ID]
+	  bash install.sh change-landing [线路ID]
+	  bash install.sh change-ingress [线路ID]
+	  bash install.sh change-cnix-entry [线路ID]
   bash install.sh update-from-code [--code IXTF1:...] [--code-file PATH]
-  bash install.sh refresh-code [PROFILE_ID]
-  bash install.sh refresh-nat-code [PROFILE_ID]
-  bash install.sh show-easytier-command [PROFILE_ID]
-  bash install.sh show-easytier-status [PROFILE_ID]
+	  bash install.sh refresh-code [线路ID]
+	  bash install.sh refresh-nat-code [线路ID]
+	  bash install.sh show-easytier-command [线路ID]
+	  bash install.sh show-easytier-status [线路ID]
 
 主备：
   bash install.sh health-all
@@ -319,10 +321,10 @@ ix-transit-fabric - CNIX/IX 转发面板 + EasyTier + nftables 一键脚本
   bash install.sh notify-config
   bash install.sh notify-test
   bash install.sh notify-status
-  bash install.sh health-history [PROFILE_ID|--group GROUP] [--limit N]
-  bash install.sh traffic-report [--group GROUP] [--sample N]
-  bash install.sh latency-report PROFILE_ID [--sample N]
-  bash install.sh nat-latency PROFILE_ID [--sample N]
+	  bash install.sh health-history [线路ID|--group GROUP] [--limit N]
+	  bash install.sh traffic-report [--group GROUP] [--sample N]
+	  bash install.sh latency-report 线路ID [--sample N]
+	  bash install.sh nat-latency 线路ID [--sample N]
   bash install.sh latency-all [--sample N]
 
 维护：
@@ -338,11 +340,11 @@ ix-transit-fabric - CNIX/IX 转发面板 + EasyTier + nftables 一键脚本
 说明：
   - 无参数且当前是交互式 TTY 时进入菜单。
   - monitor / notify 只做检查和提醒，不会自动切换。
-  - show-port-map 支持 nat-ingress / nat-transit。
-  - verify-nft-profiles 支持 nat-ingress / nat-transit。
-  - traffic-report 支持 nat-ingress / nat-transit，可用 --sample N 观察 counter 增量。
-  - latency-report / nat-latency / latency-all 提供 NAT-IX 分段延迟诊断。
-  - purge 会删除配置、Profile、codes、state、notify.env、history 和备份，执行前必须确认。
+	  - 普通菜单只展示 NAT IX listener 正式流程。
+	  - CNIX 面板模式和旧 NAT-IX 方向仅作为高级维护中的旧版兼容工具保留。
+	  - show-port-map / verify-nft-profiles / traffic-report 支持 NAT-IX 线路。
+	  - latency-report / nat-latency / latency-all 提供 NAT-IX 分段延迟诊断。
+	  - purge 会删除配置、线路、接入码、state、notify.env、history 和备份，执行前必须确认。
 USAGE
 }
 
@@ -360,10 +362,10 @@ is_interactive_input() {
 
 fail_need_tty() {
     local cmd="${1:-install-panel-landing}"
-    local example="bash install.sh install-panel-landing --env-file examples/profile-landing.env"
+    local example="bash install.sh install-panel-landing --env-file examples/legacy/profile-landing.env"
     case "$cmd" in
         install-panel-ingress)
-            example="bash install.sh install-panel-ingress --env-file examples/profile-ingress.env"
+            example="bash install.sh install-panel-ingress --env-file examples/legacy/profile-ingress.env"
             ;;
         install-panel-ingress-from-code)
             example="bash install.sh install-panel-ingress-from-code --code-file /root/landing.code"
@@ -2103,18 +2105,22 @@ prompt_yes_no() {
 
 confirm_recommended_nat_listener_role() {
     cat >&2 <<'EOF'
-当前操作适用于 NAT IX 机器，不适用于公网入口机。
-如果你正在公网入口机上操作，请返回并选择“公网入口机导入 NAT IX 接入码”。
+创建 NAT IX 中转线路
+
+请在 NAT IX 机器上执行本步骤。
+该机器负责监听商家分配的 NAT/IX 入口，并把流量转发到落地机。
 EOF
-    [[ "$(prompt_yes_no "是否继续" "false")" == "true" ]]
+    return 0
 }
 
 confirm_recommended_ingress_import_role() {
     cat >&2 <<'EOF'
-当前操作适用于公网入口机，不适用于 NAT IX 机器。
-如果你正在 NAT IX 机器上操作，请返回并选择“NAT IX 机器生成接入码”。
+公网入口机导入接入码
+
+请在公网入口机上执行本步骤。
+该机器负责接收客户端连接，并通过 EasyTier 转发到 NAT IX 机器。
 EOF
-    [[ "$(prompt_yes_no "是否继续" "false")" == "true" ]]
+    return 0
 }
 
 assign_auto_profile_identity() {
@@ -4164,9 +4170,8 @@ NAT IX 虚拟 IP：${NAT_ET_IP}
 落地目标：${LANDING_HOST}:${LANDING_PORT}
 
 安全提醒：
-这段接入码包含 EasyTier 组网密钥，不是加密 token。
-不要公开，不要发到工单或群里。
-如果泄露，请 refresh-nat-code 或重建 Profile。
+接入码包含 EasyTier 组网密钥，请不要公开。
+如果接入码出现在聊天、日志或工单，请正式使用前刷新接入码或重建线路。
 EOF
             return 0
         fi
@@ -4197,9 +4202,8 @@ NAT IX 虚拟 IP：${NAT_ET_IP}
 虚拟网中转端口：${TRANSIT_PORT}
 
 安全提醒：
-这段接入码包含 EasyTier 组网密钥，不是加密 token。
-不要公开，不要发到工单或群里。
-如果泄露，请 refresh-nat-code 或重建 Profile。
+接入码包含 EasyTier 组网密钥，请不要公开。
+如果接入码出现在聊天、日志或工单，请正式使用前刷新接入码或重建线路。
 EOF
         fi
         return 0
@@ -4633,14 +4637,9 @@ collect_nat_listener_inputs() {
     default_nat_cidr="$(cidr_from_subnet_host "$default_subnet" 2)"
     default_transit_port="$(pick_random_port || true)"
 
-    cat >&2 <<EOF
-推荐模式：NAT IX 机器监听，公网入口机连接 NAT IX。
-适合商家给了 NAT/IX 入口 IP:端口。
-
-EOF
-    NAT_PUBLIC_HOST="$(prompt_validated "请输入商家 NAT/IX 入口地址" "" validate_host "请输入商家分配给你的入口 IP 或域名。")" || return 1
-    NAT_LISTENER_PORT="$(prompt_port "请输入商家分配入口端口" "")" || return 1
-    LANDING_HOST="$(prompt_validated "请输入落地机地址" "" validate_host "请输入落地机 IP 或域名。")" || return 1
+    NAT_PUBLIC_HOST="$(prompt_validated "请输入商家分配给你的 NAT/IX 入口地址" "" validate_host "请输入商家分配给你的入口 IP 或域名。")" || return 1
+    NAT_LISTENER_PORT="$(prompt_port "请输入商家分配给你的入口端口" "")" || return 1
+    LANDING_HOST="$(prompt_validated "请输入落地机公网 IP 或域名" "" validate_host "请输入落地机 IP 或域名。")" || return 1
     LANDING_PORT="$(prompt_port "请输入落地业务端口" "")" || return 1
     advanced="$(prompt_yes_no "是否自定义高级参数" "false")" || return 1
     if [[ "$advanced" == "true" ]]; then
@@ -4924,8 +4923,48 @@ print_profile_next_steps() {
 print_access_code_security_hint() {
     cat <<'EOF'
 安全提醒：
-  接入码包含组网密钥，不要公开。
-  如果接入码曾经发到聊天、日志或工单，正式使用前请运行 bash install.sh refresh-nat-code PROFILE_ID，或重建 Profile 重新生成 secret。
+  接入码包含 EasyTier 组网密钥，请不要公开。
+  如果接入码出现在聊天、日志或工单，请正式使用前刷新接入码或重建线路。
+EOF
+}
+
+print_nat_listener_created_summary() {
+    local profile_id="$1"
+    load_profile_or_die "$profile_id"
+    normalize_profile_compat_vars
+    printf '\n%s\n\n' "$(c_green "NAT IX 中转线路已创建")"
+    printf '请复制下面接入码到公网入口机：\n'
+    show_code "$profile_id" || true
+    cat <<EOF
+
+当前线路：
+* 商家入口：${NAT_PUBLIC_HOST:-商家 NAT/IX 入口地址}:${NAT_LISTENER_PORT:-商家分配入口端口}
+* 落地目标：${LANDING_HOST:-落地机地址}:${LANDING_PORT:-落地业务端口}
+* NAT IX 虚拟 IP：${NAT_ET_IP:-未配置}
+* 虚拟网中转：${NAT_ET_IP:-NAT IX 虚拟 IP}:${TRANSIT_PORT:-虚拟网中转端口} -> ${LANDING_HOST:-落地机地址}:${LANDING_PORT:-落地业务端口}
+
+下一步：
+在公网入口机运行：
+bash install.sh
+选择：
+公网入口机导入接入码
+EOF
+}
+
+print_nat_ingress_created_summary() {
+    local profile_id="$1" ingress_host
+    load_profile_or_die "$profile_id"
+    normalize_profile_compat_vars
+    ingress_host="${INGRESS_PUBLIC_HOST:-公网入口机公网 IP}"
+    printf '\n%s\n\n' "$(c_green "公网入口线路已创建")"
+    cat <<EOF
+客户端连接：
+${ingress_host}:${LOCAL_PORT:-客户端入口端口}
+
+当前线路：
+* 连接 NAT IX：${NAT_PUBLIC_HOST:-商家 NAT/IX 入口地址}:${NAT_LISTENER_PORT:-商家分配入口端口}
+* 虚拟网转发：客户端入口端口 ${LOCAL_PORT:-客户端入口端口} -> ${NAT_ET_IP:-NAT IX 虚拟 IP}:${TRANSIT_PORT:-虚拟网中转端口}
+* 最终落地：${LANDING_HOST:-落地机地址}:${LANDING_PORT:-落地业务端口}
 EOF
 }
 
@@ -5408,11 +5447,11 @@ install_panel_landing() {
 collect_profile_identity() {
     local role_prefix="$1" default_id
     default_id="$(generate_profile_id "$role_prefix")"
-    PROFILE_ID="$(prompt_validated "请输入 Profile ID" "$default_id" validate_profile_id "PROFILE_ID 只能包含小写字母、数字、短横线，长度 3-32。")" || return 1
+    PROFILE_ID="$(prompt_validated "请输入线路 ID" "$default_id" validate_profile_id "线路 ID 只能包含小写字母、数字、短横线，长度 3-32。")" || return 1
     if [[ -f "$(profile_env_path "$PROFILE_ID")" ]]; then
-        die_user "Profile 已存在：${PROFILE_ID}"
+        die_user "线路已存在：${PROFILE_ID}"
     fi
-    PROFILE_NAME="$(prompt_required "请输入 Profile 名称" "$PROFILE_ID")" || return 1
+    PROFILE_NAME="$(prompt_required "请输入线路名称" "$PROFILE_ID")" || return 1
     ENABLED="true"
 }
 
@@ -5575,14 +5614,7 @@ add_nat_listener_profile() {
     render_profile_service_files
     apply_nft_all
     start_profile "$PROFILE_ID"
-    show_profile_summary "$PROFILE_ID"
-    show_code "$PROFILE_ID" || true
-    printf '\n端口映射：\n'
-    show_port_map "$PROFILE_ID" --compact || true
-    printf '\n健康检查摘要：\n'
-    run_line_health_check "$PROFILE_ID" false || true
-    print_nat_ix_troubleshooting_hint "$PROFILE_ID"
-    print_profile_next_steps "$PROFILE_ID"
+    print_nat_listener_created_summary "$PROFILE_ID"
 }
 
 add_nat_transit_profile_from_code() {
@@ -5643,15 +5675,7 @@ add_nat_transit_profile_from_code() {
     render_profile_service_files
     apply_nft_all
     start_profile "$PROFILE_ID"
-    show_profile_summary "$PROFILE_ID"
-    printf '\n端口映射：\n'
-    show_port_map "$PROFILE_ID" --compact || true
-    printf '\n健康检查摘要：\n'
-    run_line_health_check "$PROFILE_ID" false || true
-    print_nat_ix_troubleshooting_hint "$PROFILE_ID"
-    printf '\nnftables：\n'
-    verify_nft_profiles_core || true
-    print_profile_next_steps "$PROFILE_ID"
+    print_nat_ingress_created_summary "$PROFILE_ID"
 }
 
 add_nat_ingress_from_listener_code() {
@@ -5665,7 +5689,7 @@ add_nat_ingress_from_listener_code() {
     parse_nat_code "$code"
     [[ "${CODE_NAT_DIRECTION:-}" == "nat-listener" ]] || die_user "这是旧模式接入码，请选择兼容旧模式导入，或重新在 NAT IX 机器生成推荐模式接入码。"
     default_local_port="$(pick_random_port || true)"
-    LOCAL_PORT="$(prompt_random_port "请输入客户端入口端口" "$default_local_port")" || return 1
+    LOCAL_PORT="$(prompt_random_port "请输入客户端连接公网入口机的端口" "$default_local_port")" || return 1
     advanced="$(prompt_yes_no "是否自定义高级参数" "false")" || return 1
     if [[ "$advanced" == "true" ]]; then
         collect_profile_identity "nat-ingress" || return 1
@@ -6254,20 +6278,29 @@ sorted_profile_ids() {
 list_profiles() {
     require_root "$@"
     ensure_profile_dirs
-    local id note enabled_label forward_label
-    printf 'PROFILE_ID\tROLE\tGROUP\tLINE_ROLE\tPRIORITY\tENABLED\tFORWARD\tHEALTH\tLOCAL_PORT\tREMOTE_PORT\tNOTE\n'
+    local id note enabled_label forward_label role_label local_label remote_label
+    printf '线路ID\t角色\t线路组\t主备角色\t优先级\t启用\t转发\t健康\t客户端入口端口\t落地业务端口\t备注\n'
     for id in $(sorted_profile_ids); do
         load_profile "$id" || continue
         enabled_label="$(enabled_display "${ENABLED:-true}")"
         forward_label="$(forward_display "${ROLE:-}" "${ENABLED:-true}" "${FORWARD_ENABLED:-true}")"
         note="${SWITCH_NOTE:-${REMARK:-}}"
+        case "${ROLE:-}" in
+            nat-ingress) role_label="公网入口线路" ;;
+            nat-transit) role_label="NAT IX 中转线路" ;;
+            panel-landing) role_label="旧版 CNIX 落地线路" ;;
+            panel-ingress) role_label="旧版 CNIX 入口线路" ;;
+            *) role_label="${ROLE:-未知}" ;;
+        esac
+        local_label="${LOCAL_PORT:-}"
+        remote_label="${LANDING_PORT:-${REMOTE_PORT:-${SERVICE_PORT:-}}}"
         printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-            "$id" "${ROLE:-}" "${LINE_GROUP:--}" "${LINE_ROLE:-standalone}" "${LINE_PRIORITY:-100}" \
+            "$id" "$role_label" "${LINE_GROUP:--}" "${LINE_ROLE:-standalone}" "${LINE_PRIORITY:-100}" \
             "$enabled_label" "$forward_label" "${HEALTH_STATUS:-unknown}" \
-            "${LOCAL_PORT:-}" "${REMOTE_PORT:-${SERVICE_PORT:-}}" "${note:-}"
+            "$local_label" "$remote_label" "${note:-}"
     done
     if [[ "$(profile_count)" == "0" ]]; then
-        printf '暂无 Profile。旧单线路配置可运行 migrate-single-profile 迁移。\n'
+        printf '暂无线路。旧单线路配置可在高级维护中迁移。\n'
     fi
 }
 
@@ -7322,6 +7355,65 @@ print_nat_latency_basic_info() {
     esac
 }
 
+print_formal_counter_sample() {
+    local sample="${1:-0}" before_text after_text before_packets before_bytes before_state after_packets after_bytes after_state
+    local delta_packets delta_bytes
+    before_text="$(nft_table_text 2>/dev/null || true)"
+    IFS=$'\t' read -r before_packets before_bytes before_state <<<"$(profile_counter_line_from_text "$before_text")"
+    if [[ "$sample" =~ ^[0-9]+$ && "$sample" -gt 0 ]]; then
+        printf '* nftables 计数器：采样前 packets=%s bytes=%s state=%s\n' "$before_packets" "$before_bytes" "$before_state"
+        sleep "$sample"
+        after_text="$(nft_table_text 2>/dev/null || true)"
+        IFS=$'\t' read -r after_packets after_bytes after_state <<<"$(profile_counter_line_from_text "$after_text")"
+        printf '* nftables 计数器：采样后 packets=%s bytes=%s state=%s\n' "$after_packets" "$after_bytes" "$after_state"
+        if [[ "$before_packets" =~ ^[0-9]+$ && "$after_packets" =~ ^[0-9]+$ && "$before_bytes" =~ ^[0-9]+$ && "$after_bytes" =~ ^[0-9]+$ ]]; then
+            delta_packets=$((after_packets - before_packets))
+            delta_bytes=$((after_bytes - before_bytes))
+            printf '* sample delta：packets=%s bytes=%s\n' "$delta_packets" "$delta_bytes"
+        else
+            printf '* sample delta：unavailable\n'
+        fi
+    else
+        printf '* nftables 计数器：packets=%s bytes=%s state=%s\n' "$before_packets" "$before_bytes" "$before_state"
+        printf '* sample delta：未采样\n'
+    fi
+}
+
+formal_nat_latency_report() {
+    local profile_id="$1" sample="${2:-0}" peer_ip landing_host landing_port
+    printf 'NAT-IX 延迟诊断：%s\n' "$profile_id"
+
+    printf '\n分段 1：公网入口机 -> NAT IX 虚拟 IP\n'
+    if [[ "${ROLE:-}" == "nat-ingress" ]]; then
+        print_latency_metric "ICMP RTT" "$(ping_summary "${NAT_ET_IP:-}" 5)"
+        printf '* TCP 建连耗时：%s\n' "$(tcp_connect_time "${NAT_ET_IP:-}" "${TRANSIT_PORT:-}" 3)"
+    else
+        peer_ip="${INGRESS_ET_IP:-}"
+        print_latency_metric "ICMP RTT（反向参考）" "$(ping_summary "$peer_ip" 5)"
+        printf '* TCP 建连耗时：请在公网入口机运行同一命令查看完整方向\n'
+    fi
+
+    printf '\n分段 2：NAT IX 机器 -> 落地机\n'
+    landing_host="${LANDING_HOST:-}"
+    landing_port="${LANDING_PORT:-}"
+    if [[ "${ROLE:-}" == "nat-transit" ]]; then
+        print_latency_metric "ICMP RTT" "$(ping_summary "$landing_host" 5)"
+        printf '* TCP 建连耗时：%s\n' "$(tcp_connect_time "$landing_host" "$landing_port" 3)"
+    else
+        printf '* ICMP RTT：请在 NAT IX 机器运行同一命令查看\n'
+        printf '* TCP 建连耗时：请在 NAT IX 机器运行同一命令查看\n'
+    fi
+
+    printf '\n分段 3：客户端流量命中\n'
+    print_formal_counter_sample "$sample"
+
+    cat <<'EOF'
+
+提示：
+客户端显示的节点延迟可能包含代理协议握手、TLS/REALITY、重传和应用处理，不等同于 ping。
+EOF
+}
+
 latency_report() {
     require_root "$@"
     local parsed profile_id sample metric
@@ -7332,6 +7424,11 @@ latency_report() {
         nat-ingress|nat-transit) ;;
         *) die_user "latency-report 仅支持 NAT-IX Profile（nat-ingress / nat-transit）。当前 ROLE=${ROLE:-unknown}" ;;
     esac
+    normalize_profile_compat_vars
+    if [[ "${NAT_DIRECTION:-ingress-listener}" == "nat-listener" ]]; then
+        formal_nat_latency_report "$profile_id" "$sample"
+        return 0
+    fi
     printf 'NAT-IX latency-report: %s\n' "$profile_id"
     printf 'read-only: no switching, no service restart, no nftables apply\n'
     if [[ "${NAT_DIRECTION:-ingress-listener}" == "nat-listener" ]]; then
@@ -7444,6 +7541,153 @@ latency_all() {
     [[ "$found" -eq 1 ]] || printf '未找到 NAT-IX Profile。\n'
 }
 
+run_formal_nat_health_check() {
+    local profile_id="$1" write_back="${2:-false}" service active rc nft_label nc_cmd now
+    local route_target="" tcp_target_host="" tcp_target_port="" counter_state counter_packets counter_bytes
+
+    service="$(profile_service_name "$profile_id")"
+    _IXTF_HEALTH_STATUS="healthy"
+    _IXTF_HEALTH_REASON=""
+
+    printf '线路健康检查：%s\n' "$profile_id"
+
+    printf '\n基础状态：\n'
+    if ( validate_profile_config "$profile_id" ) >/dev/null 2>&1; then
+        printf '* 配置文件：存在\n'
+    else
+        printf '* 配置文件：不完整\n'
+        health_mark down "配置文件不完整"
+    fi
+
+    active="$(profile_service_status "$service")"
+    case "$active" in
+        active) printf '* 服务状态：运行中\n' ;;
+        unknown) printf '* 服务状态：无法检查\n'; health_mark warning "无法检查 systemd 服务状态" ;;
+        *) printf '* 服务状态：%s\n' "$active"; health_mark down "服务未运行" ;;
+    esac
+
+    if check_easytier_process; then
+        printf '* EasyTier 进程：存在\n'
+    else
+        printf '* EasyTier 进程：未检测到\n'
+        health_mark down "EasyTier 进程不存在"
+    fi
+
+    set +e
+    check_et_ip_present
+    rc=$?
+    set -e
+    case "$rc" in
+        0) printf '* 本机虚拟 IP：存在\n' ;;
+        2) printf '* 本机虚拟 IP：无法检查\n'; health_mark warning "无法检查本机虚拟 IP" ;;
+        *) printf '* 本机虚拟 IP：不存在\n'; health_mark down "本机虚拟 IP 不存在" ;;
+    esac
+
+    printf '\n转发状态：\n'
+    nft_label="$(nft_profile_rule_status "$profile_id")"
+    case "$nft_label" in
+        present) printf '* nftables 规则：正常\n' ;;
+        missing) printf '* nftables 规则：缺失\n'; health_mark down "nftables 规则缺失" ;;
+        unknown) printf '* nftables 规则：无法检查\n'; health_mark warning "无法检查 nftables 规则" ;;
+        skipped) printf '* nftables 规则：跳过\n' ;;
+        *) printf '* nftables 规则：%s\n' "$nft_label" ;;
+    esac
+
+    case "${ROLE:-}" in
+        nat-transit)
+            set +e
+            check_listener_proto_port "${NAT_LISTENER_PROTO:-${ET_LISTENER_PROTO:-tcp}}" "${NAT_LISTENER_PORT:-${ET_LISTENER_PORT:-0}}"
+            rc=$?
+            set -e
+            case "$rc" in
+                0) printf '* 商家入口监听：正常\n' ;;
+                2) printf '* 商家入口监听：无法检查\n'; health_mark warning "无法检查商家入口监听" ;;
+                *) printf '* 商家入口监听：未检测到\n'; health_mark down "商家入口未监听" ;;
+            esac
+
+            route_target="${INGRESS_ET_IP:-}"
+            if command_exists ip && [[ -n "$route_target" ]]; then
+                if ip route get "$route_target" >/dev/null 2>&1; then
+                    printf '* 连接 NAT IX：正常\n'
+                else
+                    printf '* 连接 NAT IX：等待公网入口机接入\n'
+                    health_mark warning "公网入口机尚未接入或路由未建立"
+                fi
+            else
+                printf '* 连接 NAT IX：无法检查\n'
+                health_mark warning "无法检查公网入口机连接"
+            fi
+
+            tcp_target_host="${LANDING_HOST:-}"
+            tcp_target_port="${LANDING_PORT:-}"
+            ;;
+        nat-ingress)
+            if [[ -n "${NAT_PUBLIC_HOST:-}" && -n "${NAT_LISTENER_PORT:-}" ]]; then
+                if nc_cmd="$(detect_nc_cmd 2>/dev/null)" && [[ "${NAT_LISTENER_PROTO:-both}" != "udp" ]]; then
+                    if "$nc_cmd" -vz -w 3 "$NAT_PUBLIC_HOST" "$NAT_LISTENER_PORT" >/dev/null 2>&1; then
+                        printf '* 连接 NAT IX：正常\n'
+                    else
+                        printf '* 连接 NAT IX：不可达\n'
+                        health_mark warning "商家入口暂不可达"
+                    fi
+                else
+                    printf '* 连接 NAT IX：已配置\n'
+                fi
+            else
+                printf '* 连接 NAT IX：未配置\n'
+                health_mark down "商家入口未配置"
+            fi
+
+            tcp_target_host="${NAT_ET_IP:-}"
+            tcp_target_port="${TRANSIT_PORT:-}"
+            ;;
+    esac
+
+    if [[ -n "$tcp_target_host" && -n "$tcp_target_port" ]]; then
+        if nc_cmd="$(detect_nc_cmd 2>/dev/null)" && [[ "${FORWARD_PROTO:-both}" != "udp" ]]; then
+            if "$nc_cmd" -vz -w 3 "$tcp_target_host" "$tcp_target_port" >/dev/null 2>&1; then
+                printf '* 落地服务：可达\n'
+            else
+                printf '* 落地服务：不可达\n'
+                health_mark warning "落地服务 TCP 探测失败"
+            fi
+        else
+            printf '* 落地服务：已配置\n'
+        fi
+    else
+        printf '* 落地服务：未配置\n'
+        health_mark down "落地服务未配置"
+    fi
+
+    IFS=$'\t' read -r counter_state counter_packets counter_bytes <<<"$(profile_counter_health_status)"
+    case "$counter_state" in
+        hit) printf '* 客户端流量命中：有（packets=%s bytes=%s）\n' "$counter_packets" "$counter_bytes" ;;
+        readable) printf '* 客户端流量命中：等待流量\n' ;;
+        unavailable) printf '* 客户端流量命中：无法读取\n' ;;
+        *) printf '* 客户端流量命中：未找到计数器\n' ;;
+    esac
+
+    [[ -n "$_IXTF_HEALTH_REASON" ]] || _IXTF_HEALTH_REASON="检查通过"
+    printf '\n结果：\n'
+    printf 'HEALTH_STATUS=%s\n' "$_IXTF_HEALTH_STATUS"
+    printf '说明：%s\n' "$_IXTF_HEALTH_REASON"
+    printf '\n高级详情：\n'
+    printf 'bash install.sh export-diagnostic\n'
+    printf 'bash install.sh show-config %s\n' "$profile_id"
+
+    if [[ "$write_back" == "true" ]]; then
+        now="$(utc_now)"
+        HEALTH_STATUS="$_IXTF_HEALTH_STATUS"
+        LAST_HEALTH_REASON="$_IXTF_HEALTH_REASON"
+        LAST_HEALTH_CHECK_AT="$now"
+        if ( validate_profile_config "$profile_id" ) >/dev/null 2>&1; then
+            if ! save_profile_runtime_state "$profile_id"; then
+                save_profile_env "$profile_id"
+            fi
+        fi
+    fi
+}
+
 run_line_health_check() {
     local profile_id="$1" write_back="${2:-false}" service active rc nft_label tcp_needed="false" nc_cmd business_port
     local saved_status saved_reason now
@@ -7454,6 +7698,11 @@ run_line_health_check() {
     if ! load_profile "$profile_id"; then
         print_profile_selection_hint "$profile_id" health
         return_or_exit 2 || return $?
+    fi
+    normalize_profile_compat_vars
+    if [[ ( "${ROLE:-}" == "nat-ingress" || "${ROLE:-}" == "nat-transit" ) && "${NAT_DIRECTION:-ingress-listener}" == "nat-listener" ]]; then
+        run_formal_nat_health_check "$profile_id" "$write_back"
+        return 0
     fi
     service="$(profile_service_name "$profile_id")"
     _IXTF_HEALTH_STATUS="healthy"
@@ -10887,10 +11136,10 @@ self_check() {
     fi
     [[ "$profile_count" -gt 0 ]] && self_check_line OK "profiles" "${profile_count}" || self_check_line WARN "profiles" "none"
     read -r landing_count ingress_count other_count < <(profile_role_counts)
-    self_check_line INFO "landing Profile count" "${landing_count:-0}"
-    self_check_line INFO "ingress Profile count" "${ingress_count:-0}"
+    self_check_line INFO "landing line count" "${landing_count:-0}"
+    self_check_line INFO "ingress line count" "${ingress_count:-0}"
     case "${landing_count:-0}:${ingress_count:-0}" in
-        0:0) role_hint="no Profile yet; create a CNIX or NAT-IX Profile first" ;;
+        0:0) role_hint="尚未创建线路；请先创建 NAT IX 中转线路或导入接入码" ;;
         *:0) role_hint="当前机器是落地侧，不负责入口 nftables 转发" ;;
         0:*) role_hint="当前机器是入口侧，负责 LOCAL_PORT -> LANDING_ET_IP:REMOTE_PORT" ;;
         *) role_hint="当前机器同时承担落地和入口角色" ;;
@@ -10939,11 +11188,11 @@ self_check() {
     fi
 
     printf '\nSuggestions:\n'
-    [[ "$profile_count" -gt 0 ]] || printf '  - Add CNIX panel Profiles or NAT-IX transit Profiles before production use.\n'
+    [[ "$profile_count" -gt 0 ]] || printf '  - 正式使用前，请先创建 NAT IX 中转线路或在公网入口机导入接入码。\n'
     detect_nc_cmd >/dev/null 2>&1 || printf '  - For TCP port diagnostics, run: bash install.sh install-netcat\n'
     [[ -n "$et_path" ]] || printf '  - EasyTier is required before starting a line: bash install.sh install-easytier\n'
     printf '  - For issue reports, run: bash install.sh export-diagnostic\n'
-    printf '  - For full static checks, run: bash tests/smoke.sh\n'
+    printf '  - 开发验证可运行：bash tests/smoke.sh\n'
 }
 
 redact_diagnostic_stream() {
@@ -12059,7 +12308,7 @@ show_port_map() {
         if [[ "${NAT_DIRECTION:-ingress-listener}" == "nat-listener" ]]; then
             if [[ "${ROLE:-}" == "nat-transit" ]]; then
                 cat <<EOF
-线路：${PROFILE_ID:-default}（NAT IX 中转线路，enabled=${ENABLED:-true}）
+线路：${PROFILE_ID:-default}（NAT IX 中转线路）
 
 商家入口：
 ${NAT_PUBLIC_HOST:-商家 NAT/IX 入口地址}:${NAT_LISTENER_PORT:-商家分配入口端口}
@@ -12071,14 +12320,14 @@ NAT IX 虚拟 IP：${NAT_ET_IP:-未配置}
 
 虚拟网中转：
 ${NAT_ET_IP:-NAT IX 虚拟 IP}:${TRANSIT_PORT:-虚拟网中转端口} -> ${LANDING_HOST:-落地机地址}:${LANDING_PORT:-落地业务端口}
-说明：虚拟网中转端口只在 EasyTier 虚拟网内部使用，不需要公网放行。
+说明：虚拟网中转端口只在 EasyTier 虚拟网内部使用，不是公网端口，不需要商家放行。
 
 客户端连接：
 公网入口机导入接入码后，客户端连接：公网入口机公网 IP:${LOCAL_PORT:-客户端入口端口}
 EOF
             else
                 cat <<EOF
-线路：${PROFILE_ID:-default}（公网入口线路，enabled=${ENABLED:-true}）
+线路：${PROFILE_ID:-default}（公网入口线路）
 
 客户端连接：
 公网入口机公网 IP:${LOCAL_PORT:-客户端入口端口}
@@ -12333,7 +12582,19 @@ purge() {
     require_tty
 
     local confirm answer remove_et remove_script script_path
-    printf '这会删除 ix-transit-fabric 的配置、profiles、codes、state、notify.env、history、项目文件和所有备份。\n' >&2
+    cat >&2 <<'EOF'
+完全清理将删除：
+* systemd 服务
+* wrapper
+* 配置目录
+* 线路配置
+* 接入码
+* state/history
+* nftables 项目表
+* sysctl 文件
+* 备份目录
+
+EOF
     printf '请输入 DELETE 继续：' >&2
     IFS= read -r confirm
     confirm="$(trim_space "${confirm%$'\r'}")"
@@ -12397,25 +12658,76 @@ EOF
 EOF
 }
 
+run_legacy_menu_action() {
+    local choice="$1"
+    case "$choice" in
+        1) add_landing_profile ;;
+        2) add_ingress_profile_from_code ;;
+        3) add_nat_ingress_profile ;;
+        4) add_nat_transit_profile_from_code ;;
+        5) change_landing ;;
+        6) change_ingress ;;
+        7) change_cnix_entry ;;
+        8) apply_nft_all ;;
+        0) return 10 ;;
+        *) log_warn "未知选项，请重新选择。"; return 0 ;;
+    esac
+}
+
+show_legacy_menu() {
+    local choice rc
+    while true; do
+        cat >&2 <<'MENU'
+
+旧版兼容工具
+
+不推荐新用户使用，仅用于迁移 alpha 旧配置或历史 CNIX 面板线路。
+
+  1) 旧版 CNIX 面板模式：新增落地线路 / 生成接入码
+  2) 旧版 CNIX 面板模式：新增入口线路 / 粘贴接入码
+  3) alpha 旧 NAT-IX：公网入口机生成接入码
+  4) alpha 旧 NAT-IX：NAT IX 机器导入入口机接入码
+  5) 更换落地机 / 刷新接入码
+  6) 更换入口机 / 入口配置
+  7) 更换 CNIX 入口配置
+  8) 手动重新应用全部 nftables 规则
+  0) 返回高级维护
+MENU
+        printf '请选择：' >&2
+        IFS= read -r choice || return 0
+
+        set +e
+        trap - ERR
+        export IXTF_IN_MENU=1
+        export IXTF_ALLOW_INTERACTIVE=1
+        ( trap - ERR; set +e; run_legacy_menu_action "$choice" )
+        rc=$?
+        trap 'on_error $LINENO' ERR
+        set -e
+
+        [[ "$rc" -eq 10 ]] && return 0
+        if [[ "$rc" -ne 0 ]]; then
+            log_error "旧版兼容操作失败（退出码 ${rc}），已返回菜单。"
+        fi
+    done
+}
+
 run_advanced_menu_action() {
     local choice="$1"
     case "$choice" in
         1) list_profiles ;;
         2) show_profile ;;
         3) status_all ;;
-        4) status_profile ;;
-        5) doctor_all ;;
-        6) logs_profile ;;
-        7) show_nft ;;
-        8) apply_nft_all ;;
-        9) show_port_map_all ;;
-        10) migrate_single_profile ;;
-        11) uninstall ;;
-        12) purge ;;
-        13) self_check ;;
-        14) export_diagnostic ;;
-        15) cleanup_history ;;
-        16) cleanup_state ;;
+        4) show_port_map_all ;;
+        5) show_nft ;;
+        6) export_diagnostic ;;
+        7) install_nc_tool ;;
+        8) uninstall ;;
+        9) purge ;;
+        10) show_legacy_menu ;;
+        11) self_check ;;
+        12) cleanup_history ;;
+        13) cleanup_state ;;
         0) return 10 ;;
         *) log_warn "未知选项，请重新选择。"; return 0 ;;
     esac
@@ -12428,22 +12740,19 @@ show_advanced_menu() {
 
 ix-transit-fabric 高级维护
 
-  1) 查看所有 Profile
-  2) 查看指定 Profile
+  1) 线路列表
+  2) 查看指定线路配置
   3) 查看所有状态
-  4) 诊断指定线路
-  5) 诊断全部线路
-  6) 查看指定线路日志
-  7) 查看 nftables 项目表
-  8) 重新应用全部 nftables 规则
- 9) show-port-map
-10) 迁移旧单线路配置
-11) 卸载（保留备份）
-12) 完全清理
- 13) 最终自检 self-check
- 14) 导出脱敏诊断报告
- 15) 清理 history
- 16) 清理 state
+  4) 查看端口地图
+  5) 查看 nftables 项目表
+  6) 导出脱敏诊断报告
+  7) 安装诊断工具
+  8) 卸载服务（保留配置备份）
+  9) 完全清理（删除配置、服务和备份）
+ 10) 旧版兼容工具
+ 11) 最终自检
+ 12) 清理 history
+ 13) 清理 state
   0) 返回主菜单
 MENU
         printf '请选择：' >&2
@@ -12479,7 +12788,7 @@ MENU
     printf '请选择：' >&2
     IFS= read -r choice || return 0
     [[ "$choice" == "0" ]] && return 0
-    printf '请输入 PROFILE_ID：' >&2
+    printf '请输入线路 ID：' >&2
     IFS= read -r profile_id || return 1
     case "$choice" in
         1) enable_profile "$profile_id" ;;
@@ -12556,21 +12865,19 @@ run_nat_menu_action() {
     case "$choice" in
         1) add_nat_listener_profile ;;
         2) add_nat_ingress_from_listener_code ;;
-        3) add_nat_ingress_profile ;;
-        4) add_nat_transit_profile_from_code ;;
-        5) show_port_map --all --compact ;;
-        6)
-            printf '请输入 PROFILE_ID（留空时自动选择唯一 Profile）：' >&2
+        3) show_port_map --all --compact ;;
+        4)
+            printf '请输入线路 ID（留空时自动选择唯一线路）：' >&2
             IFS= read -r profile_id || return 1
             health_profile "$profile_id"
             ;;
-        7)
-            printf '请输入 PROFILE_ID（留空时自动选择唯一 Profile）：' >&2
+        5)
+            printf '请输入线路 ID（留空时自动选择唯一线路）：' >&2
             IFS= read -r profile_id || return 1
             latency_report "$profile_id"
             ;;
-        8) show_nat_advanced_explanation ;;
-        9) return 10 ;;
+        6) show_nat_advanced_explanation ;;
+        7) return 10 ;;
         0) return 10 ;;
         *) log_warn "未知选项，请重新选择。"; return 0 ;;
     esac
@@ -12583,18 +12890,15 @@ show_nat_menu() {
 
 NAT-IX 中转模式
 
-推荐模式：NAT IX 机器监听，公网入口机连接 NAT IX。适合商家给了 NAT/IX 入口 IP:端口。
-兼容旧模式：公网入口机监听，NAT IX 机器连接公网入口机。仅当 NAT IX 出口到公网入口机质量好时使用。
+正式流程：NAT IX 机器监听，公网入口机连接 NAT IX。适合商家给了 NAT/IX 入口 IP:端口。
 
-  1) 推荐：NAT IX 机器生成接入码（商家给了入口 IP:端口）
-  2) 推荐：公网入口机导入 NAT IX 接入码
-  3) 兼容：公网入口机生成接入码（旧模式）
-  4) 兼容：NAT IX 机器导入入口机接入码（旧模式）
-  5) 查看端口地图
-  6) 健康检查
-  7) 延迟诊断
-  8) 高级说明
-  9) 返回
+  1) 创建 NAT IX 中转线路
+  2) 公网入口机导入接入码
+  3) 查看端口地图
+  4) 健康检查
+  5) 延迟诊断
+  6) 高级说明
+  7) 返回
 MENU
         printf '请选择：' >&2
         IFS= read -r choice || return 0
@@ -12768,20 +13072,25 @@ MENU
 }
 
 run_menu_action() {
-    local choice="$1"
+    local choice="$1" profile_id
     case "$choice" in
-        1) add_landing_profile ;;
-        2) add_ingress_profile_from_code ;;
-        3) show_nat_menu ;;
-        4) status_all ;;
-        5) change_landing ;;
-        6) change_ingress ;;
-        7) manage_profiles_menu ;;
-        8) show_health_menu ;;
-        9) show_monitor_menu ;;
-        10) install_easytier ;;
-        11) show_advanced_menu ;;
-        12) return 10 ;;
+        1) add_nat_listener_profile ;;
+        2) add_nat_ingress_from_listener_code ;;
+        3) status_all ;;
+        4)
+            printf '请输入线路 ID（留空时自动选择唯一线路）：' >&2
+            IFS= read -r profile_id || return 1
+            health_profile "$profile_id"
+            ;;
+        5)
+            printf '请输入线路 ID（留空时自动选择唯一线路）：' >&2
+            IFS= read -r profile_id || return 1
+            latency_report "$profile_id"
+            ;;
+        6) traffic_report ;;
+        7) install_easytier ;;
+        8) show_advanced_menu ;;
+        9) return 10 ;;
         0) return 10 ;;
         *) log_warn "未知选项，请重新选择。"; return 0 ;;
     esac
@@ -12795,18 +13104,15 @@ show_menu() {
 
 ix-transit-fabric 管理菜单
 
-  1) CNIX 面板模式：新增落地线路 / 生成接入码
-  2) CNIX 面板模式：新增入口线路 / 粘贴接入码
-  3) NAT-IX 中转模式
-  4) 线路列表 / 状态
-  5) 更换落地机 / 刷新接入码
-  6) 更换入口机 / CNIX 入口配置
-  7) 启用 / 禁用 / 删除线路
-  8) 健康检查 / 主备切换
-  9) 监控 / 通知 / 流量统计
- 10) 安装 / 更新 EasyTier
- 11) 高级维护
- 12) 退出
+  1) 创建 NAT IX 中转线路
+  2) 公网入口机导入接入码
+  3) 线路列表 / 状态
+  4) 健康检查
+  5) 延迟诊断
+  6) 流量统计
+  7) 安装 / 更新 EasyTier
+  8) 高级维护
+  9) 退出
 MENU
         printf '请选择：' >&2
         IFS= read -r choice || return 0

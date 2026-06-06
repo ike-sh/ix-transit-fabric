@@ -1,5 +1,22 @@
 # Changelog
 
+## 1.1.0-rc.1
+
+### Changed
+
+- Promoted NAT IX listener workflow to the default and only recommended user flow.
+- Removed old NAT-IX direction from normal menus.
+- Moved CNIX Panel Mode and old NAT-IX flow to legacy/advanced compatibility.
+- Reworked user-facing menus, setup wizard, health output, port maps and README for formal release.
+- Hid internal virtual-network fields from normal setup.
+- Cleaned duplicate access-code/security output.
+- Improved purge cleanup wording and optional install.sh removal.
+
+### Compatibility
+
+- Legacy commands may remain available under advanced maintenance only.
+- Existing alpha profiles should be recreated for the formal workflow if possible.
+
 ## 1.1.0-alpha.5
 
 ### Changed
