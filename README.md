@@ -1,6 +1,6 @@
 # ix-transit-fabric
 
-当前版本：`1.1.0-rc.3`
+当前版本：`1.1.0`
 
 `ix-transit-fabric` 用于管理 NAT-IX 中转线路：公网入口机接收客户端连接，通过 EasyTier 连接 NAT IX 机器，NAT IX 机器再用 nftables 转发到落地机业务端口。
 
@@ -267,7 +267,3 @@ bash install.sh purge
 **接入码可以公开吗？**
 
 不可以。接入码包含 EasyTier 组网密钥。不要把接入码发到聊天记录、工单、截图或公开日志；建议复制后立即清屏：`clear`。如果终端日志会被保存，请正式使用前刷新接入码。
-
-**CNIX Panel Mode 还能用吗？**
-
-历史配置仍尽量兼容，但新部署只推荐 NAT IX listener 流程；旧模式不再作为交互入口。

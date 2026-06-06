@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-SCRIPT_VERSION="1.1.0-rc.3"
+SCRIPT_VERSION="1.1.0"
 APP_NAME="ix-transit-fabric"
 
 CONFIG_DIR="/etc/ix-transit-fabric"
@@ -917,7 +917,7 @@ preflight_mode_label() {
 preflight_check() {
     require_root "$@"
     local mode="${1:-all}" missing_core=0 cmd nft_required="false" network_missing=0
-    printf 'ix-transit-fabric preflight\n'
+    printf 'ix-transit-fabric 环境预检\n'
     printf '预检类型：%s\n' "$(preflight_mode_label "$mode")"
     printf '说明：仅检查环境，不会修改配置或 nftables。\n'
 
@@ -2677,7 +2677,7 @@ save_profile_env() {
     backup_file "$path"
     mv -f -- "$tmp" "$path"
     chmod 600 "$path"
-    log_ok "已写入 Profile：${path}"
+    log_ok "已写入线路配置：${path}"
 }
 
 save_profile_runtime_state() {

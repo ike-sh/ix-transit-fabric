@@ -1,5 +1,38 @@
 # Changelog
 
+## 1.1.0
+
+正式版。
+
+### Added
+
+- NAT IX listener 推荐部署流程。
+- NAT IX 机器生成接入码，公网入口机导入接入码。
+- EasyTier 组网、nftables 转发、健康检查、延迟诊断和流量统计。
+- 中文化安装向导和正式主菜单。
+
+### Changed
+
+- 旧 NAT-IX 方向和 CNIX 面板模式不再出现在普通交互菜单。
+- EasyTier 安装日志收敛。
+- 环境预检输出中文化。
+- 普通安装摘要隐藏详细 nftables 调试信息。
+- 接入码安全提醒强化。
+
+### Safety
+
+- 不使用 flush ruleset。
+- 不全局 kill 业务进程。
+- 不安装代理服务。
+- 不自动切换线路。
+- 不接管全局 nftables。
+- 接入码包含组网密钥，泄露后应刷新或重建线路。
+
+### Compatibility
+
+- 历史配置尽量保持兼容。
+- 新部署只推荐 NAT IX listener 正式流程。
+
 ## 1.1.0-rc.3
 
 ### Changed

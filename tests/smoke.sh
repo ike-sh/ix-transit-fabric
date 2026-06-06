@@ -12,7 +12,7 @@ fi
 bash -n install.sh
 
 version_output="$(bash install.sh --version)"
-[[ "$version_output" == "ix-transit-fabric 1.1.0-rc.3" ]]
+[[ "$version_output" == "ix-transit-fabric 1.1.0" ]]
 
 bash install.sh --help >/dev/null
 
@@ -207,6 +207,7 @@ for token in \
     "是否删除当前安装脚本" \
     "已删除 easytier-core" \
     "已保留 easytier-core" \
+    "ix-transit-fabric 环境预检" \
     "预检类型：%s" \
     "公网入口线路" \
     "NAT IX 中转线路" \
@@ -220,10 +221,12 @@ for token in \
     "预检结果：通过" \
     "查看详细 nftables 校验" \
     "nftables 转发规则：正常" \
+    "NAT-IX 接入码（复制整段到公网入口机）" \
     "不会修改配置或 nftables" \
     "不要把接入码发到聊天记录、工单、截图或公开日志" \
     "建议复制后立即清屏：clear" \
-    "如果终端日志会被保存，请正式使用前刷新接入码。"; do
+    "如果终端日志会被保存，请正式使用前刷新接入码。" \
+    "已写入线路配置"; do
     grep -q -- "$token" install.sh
 done
 
@@ -263,7 +266,7 @@ for token in \
     "export-diagnostic" \
     "安全边界" \
     "raw.githubusercontent.com/ike-sh/ix-transit-fabric/main/install.sh" \
-    "1.1.0-rc.3" \
+    "1.1.0" \
     "NAT-IX 延迟诊断：线路ID" \
     "latency-report" \
     "traffic-report --sample" \
@@ -309,6 +312,7 @@ forbidden_killall_et="$(printf '\153\151\154\154\141\154\154\040\145\141\163\171
 forbidden_tg_token="$(printf '\061\062\063\064\065\066\072\101\102\103')"
 forbidden_tg_token_pattern="$(printf '\124\107\137\102\117\124\137\124\117\113\105\116\075\056\052\133\060\055\071\135\056\052\072')"
 forbidden_real_deploy_pattern="$(printf '\061\066\063[.]\062\062\063[.]|\061\060[.]\061\062\064[.]\063\070[.]|\062\066\066\070\064|\062\067\060\070\071|\065\060\063\062\071|\063\067\065\071\062')"
+forbidden_reported_ip_pattern="$(printf '\061\061\064[.]\061\061\061|\070\067[.]\067\066|\070[.]\061\066\063|\070\071[.]\062\061\063|\061\060[.]\071\064|\061\067\070[.]\070\063|\061\060[.]\066\070|\061\060[.]\061\061\060|\061\060[.]\071\065|\061\060[.]\066\065|\061\060[.]\067\066')"
 forbidden_old_051="$(printf '\060[.]\065[.]\061\055\141\154\160\150\141')"
 forbidden_old_056="$(printf '\060[.]\065[.]\066\055\141\154\160\150\141')"
 
@@ -322,6 +326,7 @@ forbidden_old_056="$(printf '\060[.]\065[.]\066\055\141\154\160\150\141')"
 ! grep -R -q "$forbidden_tg_token" README.md tests examples CHANGELOG.md
 ! grep -R -E -q "$forbidden_tg_token_pattern" README.md tests examples CHANGELOG.md
 ! grep -R -E -q "$forbidden_real_deploy_pattern" README.md install.sh examples CHANGELOG.md
+! grep -R -E -q "$forbidden_reported_ip_pattern" README.md install.sh examples CHANGELOG.md
 
 if grep -R -Eq '8[.]163[.]46[.]205|163[.]223[.]125[.]6|103[.]100[.]176[.]107' README.md examples tests; then
     echo "docs/examples/tests contain real deployment IPv4 literal" >&2
@@ -335,11 +340,12 @@ fi
 
 ! grep -R -E -q "${forbidden_old_051}|${forbidden_old_056}" README.md install.sh examples
 
-[[ "$(tr -d '\r\n' < VERSION)" == "1.1.0-rc.3" ]]
+[[ "$(tr -d '\r\n' < VERSION)" == "1.1.0" ]]
 
 ! grep -q 'mode: nat-ingress' install.sh
 ! grep -q 'mode: nat-transit' install.sh
 ! grep -q 'read-only: no Profile changes' install.sh
+! grep -q '已写入 Profile：' install.sh
 
 ! grep -R -E -q '（默认 [^）]+）（默认' install.sh README.md tests examples CHANGELOG.md
 ! grep -q '模式 B 接入码' install.sh
@@ -512,6 +518,7 @@ trap cleanup_unit_tmp EXIT
         esac
     }
     preflight_ingress_output="$(preflight_check nat-ingress 2>&1 || true)"
+    grep -q 'ix-transit-fabric 环境预检' <<<"$preflight_ingress_output"
     grep -q '预检类型：公网入口线路' <<<"$preflight_ingress_output"
     grep -q '说明：仅检查环境，不会修改配置或 nftables。' <<<"$preflight_ingress_output"
     grep -q '系统服务管理：正常' <<<"$preflight_ingress_output"
@@ -914,6 +921,10 @@ EOF_PROFILE
     grep -q 'NAT IX 中转线路' <<<"$nat_listener_map"
     grep -q '商家入口' <<<"$nat_listener_map"
     grep -q 'nat-ix.example:31000' <<<"$nat_listener_map"
+    nat_listener_code_output="$(show_code nat-listen 2>&1)"
+    grep -q 'NAT-IX 接入码（复制整段到公网入口机）' <<<"$nat_listener_code_output"
+    grep -q '建议复制后立即清屏：clear' <<<"$nat_listener_code_output"
+    grep -q '如果终端日志会被保存，请正式使用前刷新接入码。' <<<"$nat_listener_code_output"
     nat_listener_summary_output="$(print_nat_listener_created_summary nat-listen 2>&1)"
     grep -q 'nftables 转发规则：正常' <<<"$nat_listener_summary_output"
     grep -q '查看详细 nftables 校验' <<<"$nat_listener_summary_output"
@@ -1041,8 +1052,8 @@ EOF_PROFILE
     grep -q '当前没有已配置的线路组' <<<"$switch_no_group_output"
 
     rm -f "${PROFILES_DIR}"/*.env
-    make_ingress_profile hk-primary 26020 true 10.95.1.0/24 10.95.1.1/24 hk-group primary 10 true down
-    make_ingress_profile hk-backup 26021 true 10.95.2.0/24 10.95.2.1/24 hk-group backup 20 false healthy
+    make_ingress_profile hk-primary 26020 true 10.96.1.0/24 10.96.1.1/24 hk-group primary 10 true down
+    make_ingress_profile hk-backup 26021 true 10.96.2.0/24 10.96.2.1/24 hk-group backup 20 false healthy
 
     report_output="$(health_report --group hk-group)"
     grep -q 'hk-primary' <<<"$report_output"
