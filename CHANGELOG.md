@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.1.0-alpha.2
+
+### Fixed
+
+- NAT-IX EasyTier readiness after profile creation.
+- NAT-IX health semantics for pending peer.
+- nat-transit preflight mode label.
+- Duplicate NAT-IX access-code and security reminder output.
+- NAT-IX troubleshooting hints.
+
+### Compatibility
+
+- CNIX Panel Mode remains unchanged.
+- Existing 1.0.0 profiles remain compatible.
+
 ## 1.1.0-alpha.1
 
 ### Added

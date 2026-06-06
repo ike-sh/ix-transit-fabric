@@ -12,7 +12,7 @@ fi
 bash -n install.sh
 
 version_output="$(bash install.sh --version)"
-[[ "$version_output" == "ix-transit-fabric 1.1.0-alpha.1" ]]
+[[ "$version_output" == "ix-transit-fabric 1.1.0-alpha.2" ]]
 
 bash install.sh --help >/dev/null
 
@@ -140,7 +140,19 @@ for token in \
     HEALTH_STATUS \
     ROLLBACK \
     SWITCH \
-    OFF; do
+    OFF \
+    wait_for_easytier_ready \
+    wait_for_et_ip \
+    wait_for_peer_or_route \
+    pending_peer \
+    mode_nat_transit \
+    mode_nat_ingress \
+    render_explicit_only_arg \
+    refresh_nat_code \
+    show_easytier_command \
+    show-easytier-command \
+    EasyTier_peer_not_established \
+    show_code_skip_security; do
     grep -q -- "$token" install.sh
 done
 
@@ -166,7 +178,14 @@ for token in \
     "export-diagnostic" \
     "安全边界" \
     "Roadmap" \
-    "raw.githubusercontent.com/ike-sh/ix-transit-fabric/main/install.sh"; do
+    "raw.githubusercontent.com/ike-sh/ix-transit-fabric/main/install.sh" \
+    "1.1.0-alpha.2" \
+    "pending peer" \
+    "NAT IX 机器需要能访问入口机 EasyTier listener" \
+    "落地机需要允许 NAT IX 机器出口 IP 访问 LANDING_PORT" \
+    "refresh-nat-code" \
+    "NAT-IX Alpha 注意事项" \
+    "EasyTier peer 未建立"; do
     grep -q "$token" README.md
 done
 
@@ -250,7 +269,7 @@ fi
 
 ! grep -R -E -q "${forbidden_old_051}|${forbidden_old_056}" README.md install.sh examples
 
-[[ "$(tr -d '\r\n' < VERSION)" == "1.1.0-alpha.1" ]]
+[[ "$(tr -d '\r\n' < VERSION)" == "1.1.0-alpha.2" ]]
 
 grep -q 'ix-transit-easytier@%s.service' install.sh
 grep -q 'show_profile_summary "$PROFILE_ID"' install.sh

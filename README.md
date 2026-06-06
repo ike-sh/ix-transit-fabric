@@ -1,6 +1,6 @@
 # ix-transit-fabric
 
-当前版本：`1.1.0-alpha.1`
+当前版本：`1.1.0-alpha.2`
 
 `ix-transit-fabric` 是一个面向 CNIX / IX 转发面板场景的 EasyTier 隧道编排脚本。它用于将商家常见的 WireGuard 隧道接入方式替换为 EasyTier，并自动完成公网入口机上的 nftables 转发。
 
@@ -449,6 +449,20 @@ bash install.sh purge
 **access code 可以公开吗？**
 
 不可以。access code 包含组网密钥，公开后应刷新。
+
+## NAT-IX Alpha 注意事项
+
+1.1.0-alpha.2 是 NAT-IX 实测修复版。
+
+- NAT-IX 模式推荐先在入口机创建 nat-ingress，再在 NAT IX 机器导入。
+- nat-ingress 第一端创建后，NAT_ET_IP ping 失败属于正常 pending peer 状态，等 nat-transit 导入后再测试。
+- nat-transit 创建后，如果 NAT_ET_IP 不存在，优先看 EasyTier service 日志和 `bash install.sh show-easytier-command PROFILE_ID`。
+- 如果出现 `EasyTier peer 未建立`，请检查入口机 listener、安全组，以及 NAT IX 机器出口是否可访问入口机 EasyTier listener。
+- NAT IX 机器需要能访问入口机 EasyTier listener。
+- 落地机需要允许 NAT IX 机器出口 IP 访问 LANDING_PORT。
+- NAT IX 机器不需要安装代理服务，只做 nftables 中转。
+- NAT-IX 接入码包含 EasyTier `network_secret`；如果接入码发到聊天、工单或日志，请正式使用前运行 `bash install.sh refresh-nat-code PROFILE_ID` 刷新或重建 nat-ingress Profile。
+- `refresh-nat-code` 会轮换 `network_secret`，旧 nat-transit Profile 需要重新导入新的接入码。
 
 ## Roadmap
 

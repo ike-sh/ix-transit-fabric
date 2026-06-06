@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-SCRIPT_VERSION="1.1.0-alpha.1"
+SCRIPT_VERSION="1.1.0-alpha.2"
 APP_NAME="ix-transit-fabric"
 
 CONFIG_DIR="/etc/ix-transit-fabric"
@@ -146,25 +146,27 @@ print_port_map_compact() {
             printf '线路：%s（NAT-IX 入口）\n\n' "$profile_id"
             printf '客户端连接：\n'
             printf '  %s:%s\n\n' "$ingress_public" "$(c_cyan "$local_port")"
-            printf 'EasyTier：\n'
-            printf '  入口机 ET IP：%s\n' "$ingress_et_ip"
-            printf '  NAT IX ET IP：%s\n\n' "$nat_et_ip"
+            printf 'EasyTier listener：\n'
+            printf '  %s:%s\n\n' "$ingress_public" "$(c_cyan "$listener_port")"
             printf '内部转发：\n'
             printf '  %s -> %s:%s\n\n' "$local_port" "$nat_et_ip" "$transit_port"
             printf '下一跳：\n'
-            printf '  NAT IX 机器会继续转发 %s -> %s:%s\n' "$transit_port" "$landing_host" "$landing_port"
+            if [[ -n "${LANDING_HOST:-}" && -n "${LANDING_PORT:-}" ]]; then
+                printf '  NAT IX 机器转发 %s -> %s:%s\n' "$transit_port" "$landing_host" "$landing_port"
+            else
+                printf '  NAT IX 机器导入后配置 LANDING_HOST:LANDING_PORT\n'
+            fi
             ;;
         nat-transit)
             printf '线路：%s（NAT-IX 中转）\n\n' "$profile_id"
-            printf 'EasyTier：\n'
-            printf '  入口机 ET IP：%s\n' "$ingress_et_ip"
-            printf '  NAT IX ET IP：%s\n\n' "$nat_et_ip"
-            printf '中转转发：\n'
-            printf '  %s:%s -> %s:%s\n\n' "$nat_et_ip" "$transit_port" "$landing_host" "$landing_port"
             printf '客户端连接：\n'
             printf '  %s:%s\n\n' "$ingress_public" "$(c_cyan "$local_port")"
-            printf '注意：\n'
-            printf '  NAT IX 机器不需要安装代理服务，只做 nftables 中转转发。\n'
+            printf 'EasyTier peer：\n'
+            printf '  %s:%s\n\n' "$ingress_public" "$(c_cyan "$listener_port")"
+            printf '中转转发：\n'
+            printf '  %s:%s -> %s:%s\n\n' "$nat_et_ip" "$transit_port" "$landing_host" "$landing_port"
+            printf '落地服务：\n'
+            printf '  %s:%s\n' "$landing_host" "$landing_port"
             ;;
         *)
             printf '[WARN] 当前角色未知：%s\n' "${ROLE:-未设置}"
@@ -248,6 +250,8 @@ ix-transit-fabric - CNIX/IX 转发面板 + EasyTier + nftables 一键脚本
   bash install.sh change-cnix-entry [PROFILE_ID]
   bash install.sh update-from-code [--code IXTF1:...] [--code-file PATH]
   bash install.sh refresh-code [PROFILE_ID]
+  bash install.sh refresh-nat-code [PROFILE_ID]
+  bash install.sh show-easytier-command [PROFILE_ID]
 
 主备：
   bash install.sh health-all
@@ -813,9 +817,14 @@ install_nftables() {
     command_exists nft || die_user "nftables 安装后仍未找到 nft 命令。"
 }
 
+mode_nat_transit="nat-transit"
+mode_nat_ingress="nat-ingress"
+preflight_mode_nat_transit_text="mode: nat-transit"
+preflight_mode_nat_ingress_text="mode: nat-ingress"
+
 preflight_check() {
     require_root "$@"
-    local mode="${1:-all}" missing_core=0 cmd
+    local mode="${1:-all}" missing_core=0 cmd nft_required="false"
     printf 'ix-transit-fabric preflight\n'
     printf 'mode: %s\n' "$mode"
     printf 'read-only: no Profile changes, no nftables changes\n'
@@ -837,11 +846,16 @@ preflight_check() {
             missing_core=$((missing_core + 1))
         fi
     done
-    if [[ "$mode" == "ingress" || "$mode" == "all" ]]; then
+    case "$mode" in
+        ingress|nat-ingress|nat-transit|all) nft_required="true" ;;
+    esac
+    if [[ "$nft_required" == "true" ]]; then
         if command_exists nft; then
             preflight_line OK "nft" "$(command -v nft 2>/dev/null || true)"
+        elif command_exists apt-get; then
+            preflight_line WARN "nftables" "missing; ${mode} needs nftables and will install it if you continue."
         else
-            preflight_line FAIL "nft" "入口转发需要 nftables"
+            preflight_line FAIL "nft" "${mode} 需要 nftables，请先手动安装。"
             missing_core=$((missing_core + 1))
         fi
     else
@@ -880,6 +894,13 @@ preflight_check() {
 run_profile_install_preflight() {
     local mode="${1:-all}"
     preflight_check "$mode" || true
+    case "$mode" in
+        ingress|nat-ingress|nat-transit)
+            if ! command_exists nft && ! is_interactive_input && ! assume_yes_enabled; then
+                die_user "${mode} 缺少 nftables。非交互模式请先显式安装依赖：bash install.sh install-diagnostics-tools，或手动 apt install -y nftables。"
+            fi
+            ;;
+    esac
     ensure_easytier
     ensure_nc_tool
 }
@@ -2532,6 +2553,21 @@ render_private_mode_arg() {
     fi
 }
 
+easytier_supports_explicit_only() {
+    local et_path help_text
+    et_path="$(detect_easytier_binary 2>/dev/null || true)"
+    [[ -n "$et_path" ]] || return 0
+    help_text="$("$et_path" --help 2>&1 || true)"
+    grep -q -- '--explicit-only' <<<"$help_text"
+}
+
+render_explicit_only_arg() {
+    [[ "${ET_EXPLICIT_ONLY:-${IXTF_EXPLICIT_ONLY:-true}}" == "true" ]] || return 0
+    if easytier_supports_explicit_only; then
+        printf ' --explicit-only true'
+    fi
+}
+
 validate_easytier_args_static() {
     local rendered="$1"
     case "${ROLE:-}" in
@@ -2570,6 +2606,7 @@ render_easytier_args() {
     printf ' --hostname %q' "$ET_HOSTNAME"
     printf ' --ipv4 %q' "$ET_IPV4"
     render_private_mode_arg
+    render_explicit_only_arg
 
     if [[ "$ROLE" == "panel-landing" || "$ROLE" == "nat-ingress" ]]; then
         [[ -n "${ET_LISTENERS:-}" ]] || die_user "landing 必须至少有一个 listener。"
@@ -2671,10 +2708,18 @@ args=(
     --ipv4 "\$ET_IPV4"
 )
 
-if "\$EASYTIER_BIN" --help 2>&1 | grep -q -- '--private-mode'; then
-    args+=(--private-mode true)
-else
-    echo "ix-transit-fabric: easytier-core 未声明支持 --private-mode，已跳过该参数" >&2
+if [[ "\${ET_PRIVATE_MODE:-true}" == "true" ]]; then
+    if "\$EASYTIER_BIN" --help 2>&1 | grep -q -- '--private-mode'; then
+        args+=(--private-mode true)
+    else
+        echo "ix-transit-fabric: easytier-core 未声明支持 --private-mode，已跳过该参数" >&2
+    fi
+fi
+
+if [[ "\${ET_EXPLICIT_ONLY:-\${IXTF_EXPLICIT_ONLY:-true}}" == "true" ]]; then
+    if "\$EASYTIER_BIN" --help 2>&1 | grep -q -- '--explicit-only'; then
+        args+=(--explicit-only true)
+    fi
 fi
 
 case "\$ROLE" in
@@ -2819,8 +2864,7 @@ check_easytier_process() {
 }
 
 check_et_ip_present() {
-    local et_ip
-    et_ip="${ET_IPV4:-}"
+    local et_ip="${1:-${ET_IPV4:-}}"
     et_ip="${et_ip%%/*}"
     [[ -n "$et_ip" ]] || return 1
     command_exists ip || return 2
@@ -3673,6 +3717,8 @@ save_landing_code_file() {
     chmod 600 "$LANDING_CODE_FILE"
 }
 
+show_code_skip_security=""
+
 show_code() {
     local code listener_proto listener_port listener_proto_display profile_id="${1:-}" code_path
     if [[ -n "$profile_id" || -d "$PROFILES_DIR" ]]; then
@@ -3693,7 +3739,21 @@ show_code() {
         if [[ -n "${PROFILE_ID:-}" && "${PROFILE_ID:-default}" != "default" ]]; then
             save_profile_code_file "$PROFILE_ID" "$code"
         fi
-        cat <<EOF
+        if [[ "${show_code_skip_security:-}" == "true" ]]; then
+            cat <<EOF
+NAT-IX 接入码：
+$(c_yellow '===== 接入码开始 =====')
+${code}
+$(c_yellow '===== 接入码结束 =====')
+
+NAT IX 机器导入后会连接：
+入口机：${INGRESS_PUBLIC_HOST}:${INGRESS_LISTENER_PORT}
+入口机 ET IP：${INGRESS_ET_IP}
+NAT IX ET IP：${NAT_ET_IP}
+中转接收端口：${TRANSIT_PORT}
+EOF
+        else
+            cat <<EOF
 NAT-IX 接入码：
 $(c_yellow '===== 接入码开始 =====')
 ${code}
@@ -3710,6 +3770,7 @@ NAT IX ET IP：${NAT_ET_IP}
 不要公开，不要发到工单或群里。
 如果泄露，请 refresh-nat-code 或重建 Profile。
 EOF
+        fi
         return 0
     fi
     if [[ "${ROLE:-}" != "panel-landing" ]]; then
@@ -4570,9 +4631,22 @@ nat_guide_cmd() {
 }
 
 show_easytier_command() {
-    load_env_or_warn || return 0
+    local profile_id="${1:-}" resolved
+    if [[ -n "$profile_id" || -d "$PROFILES_DIR" ]]; then
+        if ! resolved="$(resolve_profile_id_for_cmd "$profile_id" show-easytier-command)"; then
+            return_or_exit 2 || return $?
+        fi
+        if ! load_profile "$resolved"; then
+            print_profile_selection_hint "$resolved" show-easytier-command
+            return_or_exit 2 || return $?
+        fi
+    else
+        load_env_or_warn || return 0
+    fi
     printf 'EasyTier 启动命令（已脱敏，不执行）：\n'
     render_easytier_args
+    printf 'role: %s\n' "${ROLE:-unknown}"
+    printf 'profile: %s\n' "${PROFILE_ID:-default}"
     if [[ "${ROLE:-}" == "panel-landing" || "${ROLE:-}" == "nat-ingress" ]]; then
         print_easytier_listeners
     elif [[ "${ROLE:-}" == "panel-ingress" || "${ROLE:-}" == "nat-transit" ]]; then
@@ -4816,7 +4890,7 @@ add_ingress_profile_from_code() {
 
 add_nat_ingress_profile() {
     require_root "$@"
-    run_profile_install_preflight ingress
+    run_profile_install_preflight nat-ingress
     require_tty add-nat-ingress-profile
     ensure_profile_dirs
     collect_profile_identity "nat-ingress" || return 1
@@ -4835,20 +4909,22 @@ add_nat_ingress_profile() {
     apply_nft_all
     start_profile "$PROFILE_ID"
     show_profile_summary "$PROFILE_ID"
-    printf '\nNAT-IX 接入码：\n'
+    show_code_skip_security="true"
     show_code "$PROFILE_ID" || true
+    show_code_skip_security=""
     print_access_code_security_hint
     printf '\n端口映射：\n'
     show_port_map "$PROFILE_ID" --compact || true
     printf '\n健康检查摘要：\n'
     run_line_health_check "$PROFILE_ID" false || true
+    print_nat_ix_troubleshooting_hint "$PROFILE_ID"
     print_profile_next_steps "$PROFILE_ID"
 }
 
 add_nat_transit_profile_from_code() {
     local profile_id code landing_host landing_port_default
     require_root "$@"
-    run_profile_install_preflight ingress
+    run_profile_install_preflight nat-transit
     require_tty add-nat-transit-profile-from-code
     ensure_profile_dirs
     collect_profile_identity "nat-transit" || return 1
@@ -4906,6 +4982,7 @@ add_nat_transit_profile_from_code() {
     show_port_map "$PROFILE_ID" --compact || true
     printf '\n健康检查摘要：\n'
     run_line_health_check "$PROFILE_ID" false || true
+    print_nat_ix_troubleshooting_hint "$PROFILE_ID"
     printf '\nnftables：\n'
     verify_nft_profiles_core || true
     print_profile_next_steps "$PROFILE_ID"
@@ -5104,7 +5181,15 @@ refresh_code() {
     [[ "${ROLE:-}" == "panel-landing" || "${ROLE:-}" == "nat-ingress" ]] || die_user "refresh-code 只适用于 panel-landing 或 nat-ingress。"
     validate_easytier_args
     if [[ "${ROLE:-}" == "nat-ingress" ]]; then
+        ET_NETWORK_SECRET="$(generate_secret)"
+        save_profile_env "$PROFILE_ID"
         save_profile_code_file "$PROFILE_ID" "$(generate_nat_code)"
+        printf '[OK] 已刷新 NAT-IX 接入码和 EasyTier network_secret。\n'
+        printf '[WARN] 旧 nat-transit Profile 需要重新导入新的接入码后才能连接。\n'
+        if command_exists systemctl; then
+            render_profile_service_files
+            restart_profile "$PROFILE_ID" || log_warn "Profile 已保存新 secret，但服务重启未完成；请手动运行：bash install.sh restart-profile ${PROFILE_ID}"
+        fi
         show_code "$PROFILE_ID"
         return 0
     fi
@@ -5115,6 +5200,10 @@ refresh_code() {
         save_landing_code_file "$(generate_landing_code)"
         show_code
     fi
+}
+
+refresh_nat_code() {
+    refresh_code "$@"
 }
 
 change_landing() {
@@ -5495,6 +5584,76 @@ rename_profile() {
     save_profile_env "$profile_id"
 }
 
+wait_for_et_ip() {
+    local profile_id="${1:-}" max_wait="${2:-30}" interval="${3:-2}" elapsed=0 et_ip
+    profile_id="$(resolve_profile_id "$profile_id")"
+    load_profile_or_die "$profile_id"
+    et_ip="${ET_IPV4%%/*}"
+    log_info "等待 ET_IP ${et_ip} 就绪（最多 ${max_wait}s）..."
+    while [[ "$elapsed" -lt "$max_wait" ]]; do
+        if check_et_ip_present "$et_ip" >/dev/null 2>&1; then
+            log_ok "ET_IP ${et_ip} 已就绪"
+            return 0
+        fi
+        sleep "$interval"
+        elapsed=$((elapsed + interval))
+    done
+    log_warn "ET_IP ${et_ip} 在 ${max_wait}s 内未确认（超时）"
+    return 1
+}
+
+wait_for_peer_or_route() {
+    local profile_id="${1:-}" max_wait="${2:-30}" interval="${3:-2}" elapsed=0 target_ip
+    profile_id="$(resolve_profile_id "$profile_id")"
+    load_profile_or_die "$profile_id"
+    case "${ROLE:-}" in
+        panel-ingress) target_ip="${LANDING_ET_IP:-}" ;;
+        nat-ingress) target_ip="${NAT_ET_IP:-}" ;;
+        nat-transit) target_ip="${INGRESS_ET_IP:-}" ;;
+        *) target_ip="${NAT_ET_IP:-${INGRESS_ET_IP:-${LANDING_ET_IP:-}}}" ;;
+    esac
+    [[ -n "$target_ip" ]] || return 0
+    log_info "等待 peer 路由 ${target_ip} 就绪（最多 ${max_wait}s）..."
+    while [[ "$elapsed" -lt "$max_wait" ]]; do
+        if command_exists ip && ip route get "$target_ip" >/dev/null 2>&1; then
+            log_ok "peer 路由 ${target_ip} 已就绪"
+            return 0
+        fi
+        sleep "$interval"
+        elapsed=$((elapsed + interval))
+    done
+    log_warn "peer 路由 ${target_ip} 在 ${max_wait}s 内未确认（超时）"
+    return 1
+}
+
+wait_for_easytier_ready() {
+    local profile_id="${1:-}" service max_wait="${2:-30}" interval=2 elapsed=0 remaining active proc_ok="false" et_ip
+    profile_id="$(resolve_profile_id "$profile_id")"
+    load_profile_or_die "$profile_id"
+    service="$(profile_service_name "$profile_id")"
+    et_ip="${ET_IPV4%%/*}"
+    log_info "等待 EasyTier 服务就绪（最多 ${max_wait}s）..."
+    while [[ "$elapsed" -lt "$max_wait" ]]; do
+        active="$(profile_service_status "$service")"
+        proc_ok="false"
+        check_easytier_process && proc_ok="true"
+        if [[ ( "$active" == "active" || "$active" == "activating" ) && "$proc_ok" == "true" ]] && check_et_ip_present "$et_ip" >/dev/null 2>&1; then
+            log_ok "EasyTier 本机虚拟 IP ${et_ip} 已就绪"
+            remaining=$((max_wait - elapsed))
+            [[ "$remaining" -gt 0 ]] || remaining="$interval"
+            case "${ROLE:-}" in
+                nat-ingress|nat-transit) wait_for_peer_or_route "$profile_id" "$remaining" "$interval" || true ;;
+            esac
+            return 0
+        fi
+        sleep "$interval"
+        elapsed=$((elapsed + interval))
+    done
+    log_warn "EasyTier 本机虚拟 IP 尚未出现或 peer 未建立，请查看："
+    printf '  journalctl -u %s -n 100 --no-pager\n' "$service" >&2
+    return 1
+}
+
 start_profile() {
     local profile_id="${1:-}" service
     profile_id="$(resolve_profile_id "$profile_id")"
@@ -5505,6 +5664,7 @@ start_profile() {
     service="$(profile_service_name "$profile_id")"
     systemctl daemon-reload
     systemctl enable --now "$service"
+    wait_for_easytier_ready "$profile_id" 30 || true
     log_ok "已启动 Profile 服务：${service}"
 }
 
@@ -5599,6 +5759,10 @@ health_rank() {
         *) printf '1\n' ;;
     esac
 }
+
+pending_peer=""
+EasyTier_peer_not_established="EasyTier peer 未建立，请检查对端服务状态和 show-easytier-command。"
+EasyTier_peer_not_established_reason="NAT IX 机器可能尚未连接，或 EasyTier peer 未就绪。提示：检查 NAT IX 机器上的 EasyTier 服务状态（systemctl status ix-transit-easytier@...）和 show-easytier-command。"
 
 health_mark() {
     local status="$1" reason="$2" current_rank next_rank
@@ -6231,6 +6395,15 @@ run_line_health_check() {
                 health_line "EasyTier listener" "不存在"
                 health_mark down "ET_LISTENERS 不存在"
             fi
+            set +e
+            check_listener_proto_port "${INGRESS_LISTENER_PROTO:-${ET_LISTENER_PROTO:-tcp}}" "${INGRESS_LISTENER_PORT:-${ET_LISTENER_PORT:-0}}"
+            rc=$?
+            set -e
+            case "$rc" in
+                0) health_line "listener 监听" "已检测到" ;;
+                2) health_line "listener 监听" "无法检查（ss 命令不可用）"; health_mark warning "无法检查 listener" ;;
+                *) health_line "listener 监听" "未检测到"; health_mark down "listener 未监听" ;;
+            esac
             if command_exists ip && [[ -n "${NAT_ET_IP:-}" ]]; then
                 if ip route get "$NAT_ET_IP" >/dev/null 2>&1; then
                     health_line "NAT_ET_IP 路由" "存在"
@@ -6246,8 +6419,8 @@ run_line_health_check() {
                 if ping -c 1 -W 3 "$NAT_ET_IP" >/dev/null 2>&1; then
                     health_line "NAT_ET_IP ping" "成功"
                 else
-                    health_line "NAT_ET_IP ping" "失败"
-                    health_mark down "ping NAT_ET_IP 失败"
+                    health_line "NAT_ET_IP ping" "pending peer"
+                    health_mark warning "pending peer：NAT IX 机器尚未接入或未连通"
                 fi
             else
                 health_line "NAT_ET_IP ping" "跳过"
@@ -6288,7 +6461,7 @@ run_line_health_check() {
                     health_line "INGRESS_ET_IP ping" "成功"
                 else
                     health_line "INGRESS_ET_IP ping" "失败"
-                    health_mark down "ping INGRESS_ET_IP 失败"
+                    health_mark warning "EasyTier peer 未建立，请检查入口机 listener、安全组、NAT IX 出口是否可访问入口机 listener。"
                 fi
             else
                 health_line "INGRESS_ET_IP ping" "跳过"
@@ -6347,6 +6520,27 @@ run_line_health_check() {
             printf '[WARN] Profile 配置不完整，未写回健康状态。\n'
         fi
     fi
+}
+
+print_nat_ix_troubleshooting_hint() {
+    local profile_id="${1:-${PROFILE_ID:-}}" service status et_ip
+    [[ "${ROLE:-}" == "nat-ingress" || "${ROLE:-}" == "nat-transit" ]] || return 0
+    status="${_IXTF_HEALTH_STATUS:-${HEALTH_STATUS:-unknown}}"
+    [[ "$status" != "healthy" ]] || return 0
+    service="$(profile_service_name "$profile_id")"
+    et_ip="${ET_IPV4:-ET_IP}"
+    et_ip="${et_ip%%/*}"
+    cat <<EOF
+
+NAT-IX 排障命令：
+  systemctl status ${service} --no-pager -l
+  journalctl -u ${service} -n 100 --no-pager
+  ip addr | grep ${et_ip} || true
+  bash install.sh show-easytier-command ${profile_id}
+  bash install.sh health ${profile_id}
+  bash install.sh verify-nft-profiles
+  bash install.sh show-port-map --compact ${profile_id}
+EOF
 }
 
 check_line() {
@@ -11334,7 +11528,7 @@ main() {
             check_wrapper
             ;;
         show-easytier-command)
-            show_easytier_command
+            show_easytier_command "${args[1]:-}"
             ;;
         panel-guide)
             panel_guide_cmd "${args[1]:-}"
