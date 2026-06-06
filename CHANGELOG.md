@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.1.0-rc.2
+
+### Changed
+
+- Polished ordinary install and health output before 1.1.0 final.
+- Hid long nftables verification details from normal create/import summaries; detailed checks remain in `verify-nft-profiles`, `doctor-all`, and `export-diagnostic`.
+- Reworded preflight output in Chinese for NAT IX 中转线路 and 公网入口线路.
+- Reduced env-style technical fields in normal health/install summaries.
+- Strengthened access-code security reminder.
+
 ## 1.1.0-rc.1
 
 ### Changed

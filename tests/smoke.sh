@@ -12,7 +12,7 @@ fi
 bash -n install.sh
 
 version_output="$(bash install.sh --version)"
-[[ "$version_output" == "ix-transit-fabric 1.1.0-rc.1" ]]
+[[ "$version_output" == "ix-transit-fabric 1.1.0-rc.2" ]]
 
 bash install.sh --help >/dev/null
 
@@ -127,6 +127,7 @@ for token in \
     print_profile_selection_hint \
     nft_profile_rule_status \
     nft_forwarding_verify_status \
+    print_normal_nft_forwarding_summary \
     print_no_group_message \
     profile_group_count \
     group_issue_lines \
@@ -201,7 +202,14 @@ for token in \
     "商家分配入口端口" \
     "是否删除当前安装脚本" \
     "已删除 easytier-core" \
-    "已保留 easytier-core"; do
+    "已保留 easytier-core" \
+    "预检类型：%s" \
+    "公网入口线路" \
+    "NAT IX 中转线路" \
+    "查看详细 nftables 校验" \
+    "nftables 转发规则：正常" \
+    "不会修改配置或 nftables" \
+    "不要把接入码发到聊天记录、工单、截图或公开日志"; do
     grep -q -- "$token" install.sh
 done
 
@@ -233,11 +241,12 @@ for token in \
     "TRANSIT_PORT" \
     "LANDING_HOST" \
     "LANDING_PORT" \
-    "NAT IX 接入码包含 EasyTier 组网密钥" \
+    "接入码包含 EasyTier 组网密钥" \
+    "不要把接入码发到聊天记录、工单、截图或公开日志" \
     "export-diagnostic" \
     "安全边界" \
     "raw.githubusercontent.com/ike-sh/ix-transit-fabric/main/install.sh" \
-    "1.1.0-rc.1" \
+    "1.1.0-rc.2" \
     "NAT-IX 延迟诊断：线路ID" \
     "latency-report" \
     "traffic-report --sample" \
@@ -310,7 +319,11 @@ fi
 
 ! grep -R -E -q "${forbidden_old_051}|${forbidden_old_056}" README.md install.sh examples
 
-[[ "$(tr -d '\r\n' < VERSION)" == "1.1.0-rc.1" ]]
+[[ "$(tr -d '\r\n' < VERSION)" == "1.1.0-rc.2" ]]
+
+! grep -q 'mode: nat-ingress' install.sh
+! grep -q 'mode: nat-transit' install.sh
+! grep -q 'read-only: no Profile changes' install.sh
 
 ! grep -R -E -q '（默认 [^）]+）（默认' install.sh README.md tests examples CHANGELOG.md
 ! grep -q '模式 B 接入码' install.sh
@@ -368,7 +381,8 @@ grep -q 'EasyTier listener' README.md
 grep -q '落地业务端口' README.md
 grep -q 'IXTF_EASYTIER_DOWNLOAD_URL' README.md
 grep -q 'IXTF_EASYTIER_VERSION' README.md
-grep -q 'NAT IX 接入码包含 EasyTier 组网密钥' README.md
+grep -q '接入码包含 EasyTier 组网密钥。' README.md
+grep -q '不要把接入码发到聊天记录、工单、截图或公开日志。' README.md
 grep -q 'list-profiles' README.md
 grep -q 'show-port-map --compact' README.md
 grep -q '创建 NAT IX 中转线路' README.md
@@ -443,6 +457,17 @@ trap cleanup_unit_tmp EXIT
     }
 
     ensure_profile_dirs
+
+    preflight_ingress_output="$(preflight_check nat-ingress 2>&1 || true)"
+    grep -q '预检类型：公网入口线路' <<<"$preflight_ingress_output"
+    grep -q '说明：仅检查环境，不会修改配置或 nftables。' <<<"$preflight_ingress_output"
+    ! grep -q 'mode: nat-ingress' <<<"$preflight_ingress_output"
+    ! grep -q 'read-only: no Profile changes' <<<"$preflight_ingress_output"
+
+    preflight_transit_output="$(preflight_check nat-transit 2>&1 || true)"
+    grep -q '预检类型：NAT IX 中转线路' <<<"$preflight_transit_output"
+    grep -q '不会修改配置或 nftables' <<<"$preflight_transit_output"
+    ! grep -q 'mode: nat-transit' <<<"$preflight_transit_output"
 
     ROLE=panel-ingress
     ET_NETWORK_NAME=ix-old
@@ -786,6 +811,26 @@ EOF_PROFILE
     grep -q 'NAT IX 中转线路' <<<"$nat_listener_map"
     grep -q '商家入口' <<<"$nat_listener_map"
     grep -q 'nat-ix.example:31000' <<<"$nat_listener_map"
+    nat_listener_summary_output="$(print_nat_listener_created_summary nat-listen 2>&1)"
+    grep -q 'nftables 转发规则：正常' <<<"$nat_listener_summary_output"
+    grep -q '查看详细 nftables 校验' <<<"$nat_listener_summary_output"
+    grep -q 'bash install.sh verify-nft-profiles' <<<"$nat_listener_summary_output"
+    grep -q '接入码包含 EasyTier 组网密钥。' <<<"$nat_listener_summary_output"
+    grep -q '不要把接入码发到聊天记录、工单、截图或公开日志。' <<<"$nat_listener_summary_output"
+    grep -q '如果已经发出，请正式使用前重新生成接入码或重建线路。' <<<"$nat_listener_summary_output"
+    [[ "$(grep -c '接入码包含 EasyTier 组网密钥。' <<<"$nat_listener_summary_output")" == "1" ]]
+    for forbidden in \
+        'nftables profile verification' \
+        'Expected rules:' \
+        'Actual rules:' \
+        'Missing rules:' \
+        'Extra rules:' \
+        'FORWARD_ENABLED' \
+        'Unknown LOCAL_PORT'; do
+        ! grep -q "$forbidden" <<<"$nat_listener_summary_output"
+    done
+    refresh_nat_output="$(refresh_nat_code nat-listen 2>&1)"
+    grep -q '旧接入码会失效，公网入口机需要重新导入新接入码。' <<<"$refresh_nat_output"
     latency_nat_listener_output="$(latency_report nat-listen --sample 0)"
     grep -q 'NAT-IX 延迟诊断：nat-listen' <<<"$latency_nat_listener_output"
     grep -q '分段 1：公网入口机 -> NAT IX 虚拟 IP' <<<"$latency_nat_listener_output"
@@ -813,6 +858,24 @@ EOF_PROFILE
     [[ "$(nft_profile_rule_status nat-in-b)" == "present" ]]
     verify_nat_listener_ingress_output="$(verify_nft_profiles_core)"
     grep -q '\[OK\] nftables rules match' <<<"$verify_nat_listener_ingress_output"
+    normal_nft_summary_output="$(print_normal_nft_forwarding_summary)"
+    grep -q 'nftables 转发规则：正常' <<<"$normal_nft_summary_output"
+    grep -q '查看详细 nftables 校验' <<<"$normal_nft_summary_output"
+    ! grep -q 'nftables profile verification' <<<"$normal_nft_summary_output"
+    ! grep -q 'Expected rules:' <<<"$normal_nft_summary_output"
+    nat_ingress_summary_output="$(print_nat_ingress_created_summary nat-in-b)"
+    grep -q 'nftables 转发规则：正常' <<<"$nat_ingress_summary_output"
+    grep -q '查看详细 nftables 校验' <<<"$nat_ingress_summary_output"
+    for forbidden in \
+        'nftables profile verification' \
+        'Expected rules:' \
+        'Actual rules:' \
+        'Missing rules:' \
+        'Extra rules:' \
+        'FORWARD_ENABLED' \
+        'Unknown LOCAL_PORT'; do
+        ! grep -q "$forbidden" <<<"$nat_ingress_summary_output"
+    done
 
     rm -f "${PROFILES_DIR}"/*.env
     make_ingress_profile keep-line 26010 true 10.90.1.0/24 10.90.1.1/24
@@ -877,14 +940,16 @@ EOF_PROFILE
 
     report_output="$(health_report --group hk-group)"
     grep -q 'hk-primary' <<<"$report_output"
-    grep -q 'PROFILE' <<<"$report_output"
-    grep -q 'FWD' <<<"$report_output"
-    grep -q 'profiles total:' <<<"$report_output"
-    grep -q 'forwarding lines:' <<<"$report_output"
-    grep -q 'groups ready / warning / not-ready:' <<<"$report_output"
+    grep -q '线路ID' <<<"$report_output"
+    grep -q '业务转发' <<<"$report_output"
+    ! grep -q 'PROFILE' <<<"$report_output"
+    ! grep -q 'FWD' <<<"$report_output"
+    grep -q '线路总数：' <<<"$report_output"
+    grep -q '当前转发线路：' <<<"$report_output"
+    grep -q '线路组就绪 / 警告 / 未就绪：' <<<"$report_output"
     grep -q 'monitor timer：' <<<"$report_output"
     grep -q 'notify：' <<<"$report_output"
-    grep -q 'traffic counter exists:' <<<"$report_output"
+    grep -q '流量计数器：' <<<"$report_output"
     grep -q 'switch-dry-run hk-group hk-backup' <<<"$report_output"
     grep -q 'switch-line hk-group hk-backup' <<<"$report_output"
 

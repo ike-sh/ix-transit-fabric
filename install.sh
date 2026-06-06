@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-SCRIPT_VERSION="1.1.0-rc.1"
+SCRIPT_VERSION="1.1.0-rc.2"
 APP_NAME="ix-transit-fabric"
 
 CONFIG_DIR="/etc/ix-transit-fabric"
@@ -104,22 +104,22 @@ print_next_steps() {
 
 print_port_map_compact() {
     local profile_id="${PROFILE_ID:-default}"
-    local listener_port="${LISTENER_PORT:-${ET_LISTENER_PORT:-${CODE_LISTENER_PORT:-LISTENER_PORT}}}"
+    local listener_port="${LISTENER_PORT:-${ET_LISTENER_PORT:-${CODE_LISTENER_PORT:-EasyTier listener 端口}}}"
     local ingress_listener_port="${INGRESS_LISTENER_PORT:-${ET_LISTENER_PORT:-}}"
-    local remote_port="${REMOTE_PORT:-${SERVICE_PORT:-REMOTE_PORT}}"
-    local local_port="${LOCAL_PORT:-LOCAL_PORT}"
-    local cnix_port="${CNIX_ENTRY_PORT:-CNIX_ENTRY_PORT}"
-    local cnix_host="${CNIX_ENTRY_HOST:-CNIX_ENTRY_HOST}"
-    local landing_ip="${LANDING_ET_IP:-LANDING_ET_IP}"
+    local remote_port="${REMOTE_PORT:-${SERVICE_PORT:-落地业务端口}}"
+    local local_port="${LOCAL_PORT:-客户端入口端口}"
+    local cnix_port="${CNIX_ENTRY_PORT:-商家入口端口}"
+    local cnix_host="${CNIX_ENTRY_HOST:-商家入口地址}"
+    local landing_ip="${LANDING_ET_IP:-落地机虚拟 IP}"
     local landing_public="${LANDING_PUBLIC_HOST:-${CODE_LANDING_PUBLIC_HINT:-落地 VPS 公网 IP}}"
-    local ingress_et_ip="${INGRESS_ET_IP:-INGRESS_ET_IP}"
-    local nat_et_ip="${NAT_ET_IP:-NAT_ET_IP}"
-    local transit_port="${TRANSIT_PORT:-TRANSIT_PORT}"
+    local ingress_et_ip="${INGRESS_ET_IP:-公网入口机虚拟 IP}"
+    local nat_et_ip="${NAT_ET_IP:-NAT IX 虚拟 IP}"
+    local transit_port="${TRANSIT_PORT:-虚拟网中转端口}"
     local ingress_public="${INGRESS_PUBLIC_HOST:-公网入口 VPS}"
-    local landing_host="${LANDING_HOST:-LANDING_HOST}"
-    local landing_port="${LANDING_PORT:-LANDING_PORT}"
+    local landing_host="${LANDING_HOST:-落地机地址}"
+    local landing_port="${LANDING_PORT:-落地业务端口}"
     local nat_direction="${NAT_DIRECTION:-ingress-listener}"
-    local nat_public="${NAT_PUBLIC_HOST:-NAT_PUBLIC_HOST}"
+    local nat_public="${NAT_PUBLIC_HOST:-商家 NAT/IX 入口地址}"
     local nat_listener_port="${NAT_LISTENER_PORT:-${ET_LISTENER_PORT:-}}"
 
     case "${ROLE:-}" in
@@ -128,8 +128,8 @@ print_port_map_compact() {
             printf 'CNIX 面板：\n'
             printf '  出口：%s:%s\n\n' "$landing_public" "$(c_cyan "$listener_port")"
             printf '端口含义：\n'
-            printf '  %s = LISTENER_PORT，填到 CNIX 面板出口\n' "$listener_port"
-            printf '  %s = REMOTE_PORT，落地业务端口\n' "$remote_port"
+            printf '  %s = EasyTier listener，填到 CNIX 面板出口\n' "$listener_port"
+            printf '  %s = 落地业务端口\n' "$remote_port"
             ;;
         panel-ingress)
             printf '线路：%s\n\n' "$profile_id"
@@ -141,10 +141,10 @@ print_port_map_compact() {
             printf '内部转发：\n'
             printf '  %s -> %s:%s\n\n' "$local_port" "$landing_ip" "$remote_port"
             printf '端口含义：\n'
-            printf '  %s = LOCAL_PORT，客户端连接入口机\n' "$local_port"
-            printf '  %s = CNIX_ENTRY_PORT，商家入口端口\n' "$cnix_port"
-            printf '  %s = LISTENER_PORT，填到 CNIX 面板出口\n' "$listener_port"
-            printf '  %s = REMOTE_PORT，落地业务端口\n' "$remote_port"
+            printf '  %s = 客户端连接入口机的端口\n' "$local_port"
+            printf '  %s = 商家入口端口\n' "$cnix_port"
+            printf '  %s = EasyTier listener，填到 CNIX 面板出口\n' "$listener_port"
+            printf '  %s = 落地业务端口\n' "$remote_port"
             ;;
         nat-ingress)
             if [[ "$nat_direction" == "nat-listener" ]]; then
@@ -873,15 +873,23 @@ install_nftables() {
 
 mode_nat_transit="nat-transit"
 mode_nat_ingress="nat-ingress"
-preflight_mode_nat_transit_text="mode: nat-transit"
-preflight_mode_nat_ingress_text="mode: nat-ingress"
+
+preflight_mode_label() {
+    case "${1:-all}" in
+        nat-ingress|ingress) printf '公网入口线路\n' ;;
+        nat-transit) printf 'NAT IX 中转线路\n' ;;
+        landing|panel-landing) printf '落地线路\n' ;;
+        all) printf '完整环境\n' ;;
+        *) printf '%s\n' "${1:-完整环境}" ;;
+    esac
+}
 
 preflight_check() {
     require_root "$@"
     local mode="${1:-all}" missing_core=0 cmd nft_required="false"
     printf 'ix-transit-fabric preflight\n'
-    printf 'mode: %s\n' "$mode"
-    printf 'read-only: no Profile changes, no nftables changes\n'
+    printf '预检类型：%s\n' "$(preflight_mode_label "$mode")"
+    printf '说明：仅检查环境，不会修改配置或 nftables。\n'
 
     preflight_line() {
         local status="$1" item="$2" detail="${3:-}"
@@ -907,7 +915,7 @@ preflight_check() {
         if command_exists nft; then
             preflight_line OK "nft" "$(command -v nft 2>/dev/null || true)"
         elif command_exists apt-get; then
-            preflight_line WARN "nftables" "missing; ${mode} needs nftables and will install it if you continue."
+            preflight_line WARN "nftables" "未安装；继续安装线路时会按需安装。"
         else
             preflight_line FAIL "nft" "${mode} 需要 nftables，请先手动安装。"
             missing_core=$((missing_core + 1))
@@ -4170,8 +4178,9 @@ NAT IX 虚拟 IP：${NAT_ET_IP}
 落地目标：${LANDING_HOST}:${LANDING_PORT}
 
 安全提醒：
-接入码包含 EasyTier 组网密钥，请不要公开。
-如果接入码出现在聊天、日志或工单，请正式使用前刷新接入码或重建线路。
+接入码包含 EasyTier 组网密钥。
+不要把接入码发到聊天记录、工单、截图或公开日志。
+如果已经发出，请正式使用前重新生成接入码或重建线路。
 EOF
             return 0
         fi
@@ -4202,8 +4211,9 @@ NAT IX 虚拟 IP：${NAT_ET_IP}
 虚拟网中转端口：${TRANSIT_PORT}
 
 安全提醒：
-接入码包含 EasyTier 组网密钥，请不要公开。
-如果接入码出现在聊天、日志或工单，请正式使用前刷新接入码或重建线路。
+接入码包含 EasyTier 组网密钥。
+不要把接入码发到聊天记录、工单、截图或公开日志。
+如果已经发出，请正式使用前重新生成接入码或重建线路。
 EOF
         fi
         return 0
@@ -4788,7 +4798,7 @@ show_profile_summary() {
         panel-landing)
             printf '\n%s\n' "$(c_green "落地线路已完成：${profile_id}")"
             if [[ -z "$listener_port" ]]; then
-                printf '[WARN] Profile 缺少 LISTENER_PORT，请检查配置文件：%s\n' "$(profile_env_path "$profile_id")"
+                printf '[WARN] 线路配置缺少 listener 端口，请检查配置文件：%s\n' "$(profile_env_path "$profile_id")"
             fi
             print_box "【CNIX 面板出口填写】" \
                 "出口 IP：${landing_public}" \
@@ -4796,7 +4806,7 @@ show_profile_summary() {
                 "出口协议：$(proto_display "$listener_proto")"
             printf '\n%s\n' "$(c_bold "LISTENER_PORT 是 EasyTier listener / WG ListenPort 等价端口。")"
             printf '%s\n' "$(c_yellow "REMOTE_PORT 是落地业务服务端口，不要填到 CNIX 面板出口。")"
-            printf '\nProfile：\n'
+            printf '\n线路信息：\n'
             printf '  ID：%s\n' "$profile_id"
             printf '  名称：%s\n' "${PROFILE_NAME:-$profile_id}"
             printf '  角色：%s\n' "${ROLE:-}"
@@ -4825,14 +4835,14 @@ show_profile_summary() {
             print_box "【客户端连接】" "${INGRESS_PUBLIC_HOST:-公网入口 VPS}:$(c_cyan "${LOCAL_PORT:-LOCAL_PORT}")"
             if [[ "${NAT_DIRECTION:-ingress-listener}" == "nat-listener" ]]; then
                 print_box "【连接 NAT IX】" \
-                    "商家 NAT/IX 入口：${NAT_PUBLIC_HOST:-NAT_PUBLIC_HOST}:${NAT_LISTENER_PORT:-NAT_LISTENER_PORT}" \
+                    "商家 NAT/IX 入口：${NAT_PUBLIC_HOST:-商家 NAT/IX 入口地址}:${NAT_LISTENER_PORT:-商家分配入口端口}" \
                     "协议：$(proto_display "${NAT_LISTENER_PROTO:-both}")"
             else
                 print_box "【兼容旧模式监听】" \
-                    "公网入口机：${INGRESS_PUBLIC_HOST:-INGRESS_PUBLIC_HOST}:${INGRESS_LISTENER_PORT:-INGRESS_LISTENER_PORT}" \
+                    "公网入口机：${INGRESS_PUBLIC_HOST:-公网入口机公网 IP}:${INGRESS_LISTENER_PORT:-入口机监听端口}" \
                     "协议：$(proto_display "${INGRESS_LISTENER_PROTO:-both}")"
             fi
-            print_box "【虚拟网转发】" "客户端入口端口 ${LOCAL_PORT:-LOCAL_PORT} -> ${NAT_ET_IP:-NAT_ET_IP}:${TRANSIT_PORT:-TRANSIT_PORT}"
+            print_box "【虚拟网转发】" "客户端入口端口 ${LOCAL_PORT:-客户端入口端口} -> ${NAT_ET_IP:-NAT IX 虚拟 IP}:${TRANSIT_PORT:-虚拟网中转端口}"
             if [[ "${NAT_DIRECTION:-ingress-listener}" == "nat-listener" ]]; then
                 printf '\n当前连接方向：NAT IX 机器监听，公网入口机连接 NAT IX。\n'
             else
@@ -4845,13 +4855,13 @@ show_profile_summary() {
             printf '\n%s\n' "$(c_green "NAT IX 中转线路已完成：${profile_id}")"
             if [[ "${NAT_DIRECTION:-ingress-listener}" == "nat-listener" ]]; then
                 print_box "【商家入口】" \
-                    "商家 NAT/IX 入口：${NAT_PUBLIC_HOST:-NAT_PUBLIC_HOST}:${NAT_LISTENER_PORT:-NAT_LISTENER_PORT}" \
+                    "商家 NAT/IX 入口：${NAT_PUBLIC_HOST:-商家 NAT/IX 入口地址}:${NAT_LISTENER_PORT:-商家分配入口端口}" \
                     "协议：$(proto_display "${NAT_LISTENER_PROTO:-both}")"
                 print_box "【公网入口机下一步】" "选择“公网入口机导入 NAT IX 接入码”"
             else
-                print_box "【兼容旧模式】" "连接公网入口机：${INGRESS_PUBLIC_HOST:-INGRESS_PUBLIC_HOST}:${INGRESS_LISTENER_PORT:-INGRESS_LISTENER_PORT}"
+                print_box "【兼容旧模式】" "连接公网入口机：${INGRESS_PUBLIC_HOST:-公网入口机公网 IP}:${INGRESS_LISTENER_PORT:-入口机监听端口}"
             fi
-            print_box "【虚拟网中转】" "${NAT_ET_IP:-NAT_ET_IP}:${TRANSIT_PORT:-TRANSIT_PORT} -> ${LANDING_HOST:-LANDING_HOST}:${LANDING_PORT:-LANDING_PORT}"
+            print_box "【虚拟网中转】" "${NAT_ET_IP:-NAT IX 虚拟 IP}:${TRANSIT_PORT:-虚拟网中转端口} -> ${LANDING_HOST:-落地机地址}:${LANDING_PORT:-落地业务端口}"
             printf '说明：虚拟网中转端口只在 EasyTier 虚拟网内部使用，不需要公网放行。\n'
             if [[ "${NAT_DIRECTION:-ingress-listener}" == "nat-listener" ]]; then
                 print_box "【客户端连接】" "公网入口机导入后，客户端连接公网入口机公网 IP:客户端入口端口"
@@ -4863,7 +4873,7 @@ show_profile_summary() {
             printf 'systemd 状态：%s（开机自启：%s）\n' "${active:-unknown}" "${enabled_status:-unknown}"
             ;;
         *)
-            printf '[WARN] Profile 角色未知：%s\n' "${ROLE:-未设置}"
+            printf '[WARN] 线路角色未知：%s\n' "${ROLE:-未设置}"
             ;;
     esac
 }
@@ -4891,15 +4901,15 @@ print_profile_next_steps() {
         nat-ingress)
             if [[ "${NAT_DIRECTION:-ingress-listener}" == "nat-listener" ]]; then
                 print_next_steps "下一步：" \
-                    "确认公网入口机已连接商家 NAT/IX 入口：${NAT_PUBLIC_HOST:-NAT_PUBLIC_HOST}:${NAT_LISTENER_PORT:-NAT_LISTENER_PORT}" \
+                    "确认公网入口机已连接商家 NAT/IX 入口：${NAT_PUBLIC_HOST:-商家 NAT/IX 入口地址}:${NAT_LISTENER_PORT:-商家分配入口端口}" \
                     "运行 bash install.sh health ${profile_id}" \
-                    "客户端连接 ${INGRESS_PUBLIC_HOST:-公网入口 VPS}:${LOCAL_PORT:-LOCAL_PORT}"
+                    "客户端连接 ${INGRESS_PUBLIC_HOST:-公网入口 VPS}:${LOCAL_PORT:-客户端入口端口}"
             else
                 print_next_steps "下一步：" \
                     "把 NAT-IX 接入码复制到 NAT IX 机器" \
                     "在 NAT IX 机器运行 bash install.sh add-nat-transit-profile-from-code" \
-                    "如果接入码出现在聊天、日志或工单，请正式使用前运行：bash install.sh refresh-nat-code ${profile_id}" \
-                    "客户端未来连接 ${INGRESS_PUBLIC_HOST:-公网入口 VPS}:${LOCAL_PORT:-LOCAL_PORT}"
+                    "不要把接入码发到聊天记录、工单、截图或公开日志；如果已经发出，请正式使用前运行：bash install.sh refresh-nat-code ${profile_id}，或重建线路" \
+                    "客户端未来连接 ${INGRESS_PUBLIC_HOST:-公网入口 VPS}:${LOCAL_PORT:-客户端入口端口}"
             fi
             ;;
         nat-transit)
@@ -4907,14 +4917,14 @@ print_profile_next_steps() {
                 print_next_steps "下一步：" \
                     "把 NAT-IX 接入码复制到公网入口机" \
                     "在公网入口机选择“公网入口机导入 NAT IX 接入码”" \
-                    "确认落地机允许 NAT IX 机器出口 IP 访问 ${LANDING_HOST:-LANDING_HOST}:${LANDING_PORT:-LANDING_PORT}" \
+                    "确认落地机允许 NAT IX 机器出口 IP 访问 ${LANDING_HOST:-落地机地址}:${LANDING_PORT:-落地业务端口}" \
                     "运行 bash install.sh health ${profile_id}"
             else
                 print_next_steps "下一步：" \
-                    "确认落地机允许 NAT IX 机器出口 IP 访问 ${LANDING_HOST:-LANDING_HOST}:${LANDING_PORT:-LANDING_PORT}" \
+                    "确认落地机允许 NAT IX 机器出口 IP 访问 ${LANDING_HOST:-落地机地址}:${LANDING_PORT:-落地业务端口}" \
                     "运行 bash install.sh health ${profile_id}" \
-                    "回入口机运行 bash install.sh health NAT_INGRESS_PROFILE，并可执行 nc -vz -w 3 ${NAT_ET_IP:-NAT_ET_IP} ${TRANSIT_PORT:-TRANSIT_PORT}" \
-                    "客户端连接 ${INGRESS_PUBLIC_HOST:-公网入口 VPS}:${LOCAL_PORT:-LOCAL_PORT}"
+                    "回入口机运行 bash install.sh health 公网入口线路ID，并可检查虚拟网中转 TCP" \
+                    "客户端连接 ${INGRESS_PUBLIC_HOST:-公网入口 VPS}:${LOCAL_PORT:-客户端入口端口}"
             fi
             ;;
     esac
@@ -4923,8 +4933,9 @@ print_profile_next_steps() {
 print_access_code_security_hint() {
     cat <<'EOF'
 安全提醒：
-  接入码包含 EasyTier 组网密钥，请不要公开。
-  如果接入码出现在聊天、日志或工单，请正式使用前刷新接入码或重建线路。
+  接入码包含 EasyTier 组网密钥。
+  不要把接入码发到聊天记录、工单、截图或公开日志。
+  如果已经发出，请正式使用前重新生成接入码或重建线路。
 EOF
 }
 
@@ -4942,6 +4953,10 @@ print_nat_listener_created_summary() {
 * 落地目标：${LANDING_HOST:-落地机地址}:${LANDING_PORT:-落地业务端口}
 * NAT IX 虚拟 IP：${NAT_ET_IP:-未配置}
 * 虚拟网中转：${NAT_ET_IP:-NAT IX 虚拟 IP}:${TRANSIT_PORT:-虚拟网中转端口} -> ${LANDING_HOST:-落地机地址}:${LANDING_PORT:-落地业务端口}
+
+nftables 转发规则：正常
+查看详细 nftables 校验：
+bash install.sh verify-nft-profiles
 
 下一步：
 在公网入口机运行：
@@ -4965,6 +4980,10 @@ ${ingress_host}:${LOCAL_PORT:-客户端入口端口}
 * 连接 NAT IX：${NAT_PUBLIC_HOST:-商家 NAT/IX 入口地址}:${NAT_LISTENER_PORT:-商家分配入口端口}
 * 虚拟网转发：客户端入口端口 ${LOCAL_PORT:-客户端入口端口} -> ${NAT_ET_IP:-NAT IX 虚拟 IP}:${TRANSIT_PORT:-虚拟网中转端口}
 * 最终落地：${LANDING_HOST:-落地机地址}:${LANDING_PORT:-落地业务端口}
+
+nftables 转发规则：正常
+查看详细 nftables 校验：
+bash install.sh verify-nft-profiles
 EOF
 }
 
@@ -5558,7 +5577,7 @@ add_ingress_profile_from_code() {
     printf '\n健康检查摘要：\n'
     run_line_health_check "$PROFILE_ID" false || true
     printf '\nnftables：\n'
-    verify_nft_profiles_core || true
+    print_normal_nft_forwarding_summary || true
     print_profile_next_steps "$PROFILE_ID"
 }
 
@@ -5591,6 +5610,8 @@ add_nat_ingress_profile() {
     show_port_map "$PROFILE_ID" --compact || true
     printf '\n健康检查摘要：\n'
     run_line_health_check "$PROFILE_ID" false || true
+    printf '\nnftables：\n'
+    print_normal_nft_forwarding_summary || true
     print_nat_ix_troubleshooting_hint "$PROFILE_ID"
     print_profile_next_steps "$PROFILE_ID"
 }
@@ -5756,7 +5777,7 @@ add_nat_ingress_from_listener_code() {
     run_line_health_check "$PROFILE_ID" false || true
     print_nat_ix_troubleshooting_hint "$PROFILE_ID"
     printf '\nnftables：\n'
-    verify_nft_profiles_core || true
+    print_normal_nft_forwarding_summary || true
     print_profile_next_steps "$PROFILE_ID"
 }
 
@@ -5957,11 +5978,10 @@ refresh_code() {
         save_profile_env "$PROFILE_ID"
         save_profile_code_file "$PROFILE_ID" "$(generate_nat_code)"
         printf '[OK] 已生成新 network_secret，并刷新 NAT-IX 接入码。\n'
-        printf '[WARN] 旧接入码失效。\n'
         if [[ "${NAT_DIRECTION:-ingress-listener}" == "nat-listener" ]]; then
-            printf '[WARN] 公网入口机需要重新导入新接入码。\n'
+            printf '[WARN] 旧接入码会失效，公网入口机需要重新导入新接入码。\n'
         else
-            printf '[WARN] NAT IX 机器需要重新导入新接入码。\n'
+            printf '[WARN] 旧接入码会失效，NAT IX 机器需要重新导入新接入码。\n'
         fi
         if command_exists systemctl; then
             render_profile_service_files
@@ -6145,7 +6165,7 @@ update_from_code() {
         printf '\n状态：\n'
         status_profile "$profile_id" || true
         printf '\nnftables：\n'
-        verify_nft_profiles_core || true
+        print_normal_nft_forwarding_summary || true
     else
         post_install_summary "panel-ingress"
     fi
@@ -6214,7 +6234,7 @@ change_ingress() {
         printf '\n状态：\n'
         status_profile "$profile_id" || true
         printf '\nnftables：\n'
-        verify_nft_profiles_core || true
+        print_normal_nft_forwarding_summary || true
     else
         post_install_summary "panel-ingress"
     fi
@@ -6650,6 +6670,18 @@ nft_forwarding_verify_status() {
     missing_rules="$(comm -23 <(printf '%s\n' "$expected_rules" | awk 'NF' | sort -u) <(printf '%s\n' "$actual_rules" | awk 'NF' | sort -u) || true)"
     extra_rules="$(comm -13 <(printf '%s\n' "$expected_rules" | awk 'NF' | sort -u) <(printf '%s\n' "$actual_rules" | awk 'NF' | sort -u) || true)"
     [[ -z "$missing_rules" && -z "$extra_rules" ]] && printf 'ok\n' || printf 'mismatch\n'
+}
+
+print_normal_nft_forwarding_summary() {
+    local status
+    status="$(nft_forwarding_verify_status 2>/dev/null || printf 'unavailable')"
+    case "$status" in
+        ok|skipped) printf 'nftables 转发规则：正常\n' ;;
+        mismatch) printf 'nftables 转发规则：需要查看\n' ;;
+        *) printf 'nftables 转发规则：未确认\n' ;;
+    esac
+    printf '查看详细 nftables 校验：\n'
+    printf 'bash install.sh verify-nft-profiles\n'
 }
 
 nft_table_text() {
@@ -7690,7 +7722,7 @@ run_formal_nat_health_check() {
 
 run_line_health_check() {
     local profile_id="$1" write_back="${2:-false}" service active rc nft_label tcp_needed="false" nc_cmd business_port
-    local saved_status saved_reason now
+    local saved_status saved_reason now role_text line_role_text
     require_root "$@"
     if ! profile_id="$(resolve_profile_id_for_cmd "$profile_id" health)"; then
         return_or_exit 2 || return $?
@@ -7700,6 +7732,18 @@ run_line_health_check() {
         return_or_exit 2 || return $?
     fi
     normalize_profile_compat_vars
+    case "${ROLE:-}" in
+        panel-landing) role_text="落地线路" ;;
+        panel-ingress|nat-ingress) role_text="公网入口线路" ;;
+        nat-transit) role_text="NAT IX 中转线路" ;;
+        *) role_text="${ROLE:-未知}" ;;
+    esac
+    case "${LINE_ROLE:-standalone}" in
+        primary) line_role_text="主线路" ;;
+        backup) line_role_text="备用线路" ;;
+        standalone) line_role_text="独立线路" ;;
+        *) line_role_text="${LINE_ROLE:-独立线路}" ;;
+    esac
     if [[ ( "${ROLE:-}" == "nat-ingress" || "${ROLE:-}" == "nat-transit" ) && "${NAT_DIRECTION:-ingress-listener}" == "nat-listener" ]]; then
         run_formal_nat_health_check "$profile_id" "$write_back"
         return 0
@@ -7709,23 +7753,24 @@ run_line_health_check() {
     _IXTF_HEALTH_REASON=""
 
     printf '线路健康检查：%s\n' "$profile_id"
-    health_line "Profile" "存在"
-    health_line "LINE_GROUP" "${LINE_GROUP:-未分组}"
-    health_line "LINE_ROLE" "${LINE_ROLE:-standalone}"
-    health_line "LINE_PRIORITY" "${LINE_PRIORITY:-100}"
-    health_line "ENABLED" "${ENABLED:-true}"
-    health_line "FORWARD_ENABLED" "${FORWARD_ENABLED:-true}"
+    health_line "线路配置" "存在"
+    health_line "线路类型" "$role_text"
+    health_line "线路分组" "${LINE_GROUP:-未分组}"
+    health_line "主备角色" "$line_role_text"
+    health_line "优先级" "${LINE_PRIORITY:-100}"
+    health_line "启用状态" "$([[ "${ENABLED:-true}" == "true" ]] && printf 已启用 || printf 已停用)"
+    health_line "业务转发" "$([[ "${FORWARD_ENABLED:-true}" == "true" ]] && printf 已启用 || printf 未启用)"
 
     if ! ( validate_profile_config "$profile_id" ) >/dev/null 2>&1; then
         health_line "配置校验" "失败"
-        health_mark down "Profile 配置不完整"
+        health_mark down "线路配置不完整"
     else
         health_line "配置校验" "通过"
     fi
 
     if [[ "${ENABLED:-true}" != "true" ]]; then
-        health_line "启用状态" "disabled"
-        health_mark warning "Profile 已禁用"
+        health_line "启用状态" "已停用"
+        health_mark warning "线路已停用"
     fi
 
     active="$(profile_service_status "$service")"
@@ -7735,7 +7780,7 @@ run_line_health_check() {
     elif [[ "$active" == "unknown" ]]; then
         health_mark warning "无法检查 systemd"
     else
-        health_mark down "Profile 服务不是 active：${active}"
+        health_mark down "线路服务未运行：${active}"
     fi
 
     if check_easytier_process; then
@@ -7750,9 +7795,9 @@ run_line_health_check() {
     rc=$?
     set -e
     case "$rc" in
-        0) health_line "本机 ET_IPV4" "存在（${ET_IPV4:-}）" ;;
-        2) health_line "本机 ET_IPV4" "无法检查（ip 命令不可用）"; health_mark warning "无法检查 ET_IPV4" ;;
-        *) health_line "本机 ET_IPV4" "不存在（${ET_IPV4:-}）"; health_mark down "ET_IPV4 不存在" ;;
+        0) health_line "本机虚拟 IP" "存在" ;;
+        2) health_line "本机虚拟 IP" "无法检查（ip 命令不可用）"; health_mark warning "无法检查本机虚拟 IP" ;;
+        *) health_line "本机虚拟 IP" "不存在"; health_mark down "本机虚拟 IP 不存在" ;;
     esac
 
     if profile_port_map_complete; then
@@ -7790,8 +7835,8 @@ run_line_health_check() {
             rc=$?
             set -e
             case "$rc" in
-                0) health_line "listener 归属" "本项目 Profile service" ;;
-                1) health_line "listener 归属" "不是本项目 Profile service"; health_mark warning "listener 端口可能被其他进程占用" ;;
+                0) health_line "listener 归属" "本项目线路服务" ;;
+                1) health_line "listener 归属" "不是本项目线路服务"; health_mark warning "listener 端口可能被其他进程占用" ;;
                 *)
                     set +e
                     port_owner_has_easytier "${ET_LISTENER_PROTO:-tcp}" "${ET_LISTENER_PORT:-${LISTENER_PORT:-0}}"
@@ -7807,13 +7852,13 @@ run_line_health_check() {
             if [[ -n "${SERVICE_PORT:-}" ]]; then
                 if command_exists ss; then
                     if ss -lntup 2>/dev/null | grep -Eq "[:.]${SERVICE_PORT}[[:space:]]"; then
-                        health_line "REMOTE_PORT 业务监听" "已检测到（${SERVICE_PORT}）"
+                        health_line "业务端口监听" "已检测到（${SERVICE_PORT}）"
                     else
-                        health_line "REMOTE_PORT 业务监听" "未检测到（${SERVICE_PORT}）"
+                        health_line "业务端口监听" "未检测到（${SERVICE_PORT}）"
                         health_mark warning "业务端口未监听"
                     fi
                 else
-                    health_line "REMOTE_PORT 业务监听" "无法检查"
+                    health_line "业务端口监听" "无法检查"
                     health_mark warning "无法检查业务端口"
                 fi
             fi
@@ -7823,40 +7868,40 @@ run_line_health_check() {
                 health_line "EasyTier peers" "存在"
             else
                 health_line "EasyTier peers" "不存在"
-                health_mark down "ET_PEERS 不存在"
+                health_mark down "EasyTier peer 不存在"
             fi
             if command_exists ip && [[ -n "${LANDING_ET_IP:-}" ]]; then
                 if ip route get "$LANDING_ET_IP" >/dev/null 2>&1; then
-                    health_line "LANDING_ET_IP 路由" "存在"
+                    health_line "落地机虚拟 IP 路由" "存在"
                 else
-                    health_line "LANDING_ET_IP 路由" "未找到"
-                    health_mark warning "到 LANDING_ET_IP 的路由未确认"
+                    health_line "落地机虚拟 IP 路由" "未找到"
+                    health_mark warning "到落地机虚拟 IP 的路由未确认"
                 fi
             else
-                health_line "LANDING_ET_IP 路由" "无法检查"
-                health_mark warning "无法检查 LANDING_ET_IP 路由"
+                health_line "落地机虚拟 IP 路由" "无法检查"
+                health_mark warning "无法检查落地机虚拟 IP 路由"
             fi
             if command_exists ping && [[ -n "${LANDING_ET_IP:-}" ]]; then
                 if ping -c 1 -W 3 "$LANDING_ET_IP" >/dev/null 2>&1; then
-                    health_line "LANDING_ET_IP ping" "成功"
+                    health_line "落地机虚拟 IP ping" "成功"
                 else
-                    health_line "LANDING_ET_IP ping" "失败"
-                    health_mark down "ping LANDING_ET_IP 失败"
+                    health_line "落地机虚拟 IP ping" "失败"
+                    health_mark down "ping 落地机虚拟 IP 失败"
                 fi
             else
-                health_line "LANDING_ET_IP ping" "跳过"
+                health_line "落地机虚拟 IP ping" "跳过"
             fi
             [[ "${FORWARD_PROTO:-both}" == "tcp" || "${FORWARD_PROTO:-both}" == "both" ]] && tcp_needed="true"
             if [[ "$tcp_needed" == "true" && -n "${LANDING_ET_IP:-}" && -n "${REMOTE_PORT:-}" ]]; then
                 if nc_cmd="$(detect_nc_cmd 2>/dev/null)"; then
                     if "$nc_cmd" -vz -w 3 "$LANDING_ET_IP" "$REMOTE_PORT" >/dev/null 2>&1; then
-                        health_line "LANDING_ET_IP:REMOTE_PORT TCP" "可达"
+                        health_line "落地机业务 TCP" "可达"
                     else
-                        health_line "LANDING_ET_IP:REMOTE_PORT TCP" "不可达"
+                        health_line "落地机业务 TCP" "不可达"
                         health_mark warning "TCP 业务探测失败"
                     fi
                 else
-                    health_line "LANDING_ET_IP:REMOTE_PORT TCP" "nc 不可用"
+                    health_line "落地机业务 TCP" "nc 不可用"
                     suggest_install_nc | sed 's/^/  /'
                     health_mark warning "nc 不可用，跳过 TCP 业务端口探测"
                 fi
@@ -7866,10 +7911,10 @@ run_line_health_check() {
             fi
             if [[ "${FORWARD_ENABLED:-true}" == "true" && -n "${LOCAL_PORT:-}" ]] && command_exists ss; then
                 if ss -lntup 2>/dev/null | grep -Eq "[:.]${LOCAL_PORT}[[:space:]]"; then
-                    health_line "LOCAL_PORT 本机监听冲突" "检测到"
-                    health_mark warning "LOCAL_PORT 被本机进程监听"
+                    health_line "入口端口本机监听冲突" "检测到"
+                    health_mark warning "入口端口被本机进程监听"
                 else
-                    health_line "LOCAL_PORT 本机监听冲突" "未检测到"
+                    health_line "入口端口本机监听冲突" "未检测到"
                 fi
             fi
             if [[ -n "${CNIX_ENTRY_HOST:-}" && -n "${CNIX_ENTRY_PORT:-}" ]]; then
@@ -7898,19 +7943,19 @@ run_line_health_check() {
                     health_line "连接 NAT IX" "存在（${NAT_PUBLIC_HOST:-}:${NAT_LISTENER_PORT:-}）"
                 else
                     health_line "连接 NAT IX" "不存在"
-                    health_mark down "ET_PEERS 不存在"
+                    health_mark down "EasyTier peer 不存在"
                 fi
                 if [[ -n "${NAT_PUBLIC_HOST:-}" && -n "${NAT_LISTENER_PORT:-}" ]]; then
                     if [[ "${NAT_LISTENER_PROTO:-both}" == "tcp" || "${NAT_LISTENER_PROTO:-both}" == "both" ]]; then
                         if nc_cmd="$(detect_nc_cmd 2>/dev/null)"; then
                             if "$nc_cmd" -vz -w 3 "$NAT_PUBLIC_HOST" "$NAT_LISTENER_PORT" >/dev/null 2>&1; then
-                                health_line "NAT_PUBLIC_HOST:NAT_LISTENER_PORT TCP" "可达"
+                                health_line "商家入口 TCP" "可达"
                             else
-                                health_line "NAT_PUBLIC_HOST:NAT_LISTENER_PORT TCP" "不可达"
+                                health_line "商家入口 TCP" "不可达"
                                 health_mark warning "NAT IX 监听 TCP 探测失败；请检查商家入口端口和 NAT IX 机器监听。"
                             fi
                         else
-                            health_line "NAT_PUBLIC_HOST:NAT_LISTENER_PORT TCP" "nc 不可用"
+                            health_line "商家入口 TCP" "nc 不可用"
                             health_mark warning "nc 不可用，跳过 NAT IX 监听 TCP 探测"
                         fi
                     fi
@@ -7920,39 +7965,39 @@ run_line_health_check() {
                 fi
                 if command_exists ip && [[ -n "${NAT_ET_IP:-}" ]]; then
                     if ip route get "$NAT_ET_IP" >/dev/null 2>&1; then
-                        health_line "NAT_ET_IP 路由" "存在"
+                        health_line "NAT IX 虚拟 IP 路由" "存在"
                         nat_route_ok="true"
                     else
-                        health_line "NAT_ET_IP 路由" "未找到"
-                        health_mark warning "到 NAT_ET_IP 的 route/peer 未确认"
+                        health_line "NAT IX 虚拟 IP 路由" "未找到"
+                        health_mark warning "到 NAT IX 虚拟 IP 的 route/peer 未确认"
                     fi
                 else
-                    health_line "NAT_ET_IP 路由" "无法检查"
-                    health_mark warning "无法检查 NAT_ET_IP 路由"
+                    health_line "NAT IX 虚拟 IP 路由" "无法检查"
+                    health_mark warning "无法检查 NAT IX 虚拟 IP 路由"
                 fi
                 if command_exists ping && [[ -n "${NAT_ET_IP:-}" ]]; then
                     if ping -c 1 -W 3 "$NAT_ET_IP" >/dev/null 2>&1; then
-                        health_line "NAT_ET_IP ping" "成功"
+                        health_line "NAT IX 虚拟 IP ping" "成功"
                     else
-                        health_line "NAT_ET_IP ping" "ICMP ping 不通不单独判失败"
+                        health_line "NAT IX 虚拟 IP ping" "ICMP ping 不通不单独判失败"
                     fi
                 else
-                    health_line "NAT_ET_IP ping" "跳过"
+                    health_line "NAT IX 虚拟 IP ping" "跳过"
                 fi
                 [[ "${FORWARD_PROTO:-both}" == "tcp" || "${FORWARD_PROTO:-both}" == "both" ]] && tcp_needed="true"
                 if [[ "$tcp_needed" == "true" && -n "${NAT_ET_IP:-}" && -n "${TRANSIT_PORT:-}" ]]; then
                     if nc_cmd="$(detect_nc_cmd 2>/dev/null)"; then
                         if "$nc_cmd" -vz -w 3 "$NAT_ET_IP" "$TRANSIT_PORT" >/dev/null 2>&1; then
-                            health_line "NAT_ET_IP:TRANSIT_PORT TCP" "可达"
+                            health_line "虚拟网中转 TCP" "可达"
                             nat_tcp_ok="true"
                         else
-                            health_line "NAT_ET_IP:TRANSIT_PORT TCP" "不可达"
-                            health_mark warning "NAT_ET_IP:TRANSIT_PORT 不可达；请检查 EasyTier route、NAT IX nftables 或落地服务。"
+                            health_line "虚拟网中转 TCP" "不可达"
+                            health_mark warning "虚拟网中转 TCP 不可达；请检查 EasyTier route、NAT IX nftables 或落地服务。"
                         fi
                     else
-                        health_line "NAT_ET_IP:TRANSIT_PORT TCP" "nc 不可用"
+                        health_line "虚拟网中转 TCP" "nc 不可用"
                         suggest_install_nc | sed 's/^/  /'
-                        health_mark warning "nc 不可用，跳过 NAT_ET_IP:TRANSIT_PORT 探测"
+                        health_mark warning "nc 不可用，跳过虚拟网中转 TCP 探测"
                     fi
                 fi
                 IFS=$'\t' read -r nat_counter_state nat_counter_packets nat_counter_bytes <<<"$(profile_counter_health_status)"
@@ -7967,10 +8012,10 @@ run_line_health_check() {
                 fi
                 if [[ "${FORWARD_ENABLED:-true}" == "true" && -n "${LOCAL_PORT:-}" ]] && command_exists ss; then
                     if ss -lntup 2>/dev/null | grep -Eq "[:.]${LOCAL_PORT}[[:space:]]"; then
-                        health_line "LOCAL_PORT 本机监听冲突" "检测到"
-                        health_mark warning "LOCAL_PORT 被本机进程监听"
+                        health_line "入口端口本机监听冲突" "检测到"
+                        health_mark warning "入口端口被本机进程监听"
                     else
-                        health_line "LOCAL_PORT 本机监听冲突" "未检测到"
+                        health_line "入口端口本机监听冲突" "未检测到"
                     fi
                 fi
             else
@@ -7978,7 +8023,7 @@ run_line_health_check() {
                 health_line "EasyTier listener" "存在（${INGRESS_PUBLIC_HOST:-}:${INGRESS_LISTENER_PORT:-}）"
             else
                 health_line "EasyTier listener" "不存在"
-                health_mark down "ET_LISTENERS 不存在"
+                health_mark down "EasyTier listener 不存在"
             fi
             set +e
             check_listener_proto_port "${INGRESS_LISTENER_PROTO:-${ET_LISTENER_PROTO:-tcp}}" "${INGRESS_LISTENER_PORT:-${ET_LISTENER_PORT:-0}}"
@@ -7991,43 +8036,43 @@ run_line_health_check() {
             esac
             if command_exists ip && [[ -n "${NAT_ET_IP:-}" ]]; then
                 if ip route get "$NAT_ET_IP" >/dev/null 2>&1; then
-                    health_line "NAT_ET_IP 路由" "存在"
+                    health_line "NAT IX 虚拟 IP 路由" "存在"
                     nat_route_ok="true"
                 else
-                    health_line "NAT_ET_IP 路由" "未找到"
-                    health_mark warning "到 NAT_ET_IP 的路由未确认"
+                    health_line "NAT IX 虚拟 IP 路由" "未找到"
+                    health_mark warning "到 NAT IX 虚拟 IP 的路由未确认"
                 fi
             else
-                health_line "NAT_ET_IP 路由" "无法检查"
-                health_mark warning "无法检查 NAT_ET_IP 路由"
+                health_line "NAT IX 虚拟 IP 路由" "无法检查"
+                health_mark warning "无法检查 NAT IX 虚拟 IP 路由"
             fi
             if command_exists ping && [[ -n "${NAT_ET_IP:-}" ]]; then
                 if ping -c 1 -W 3 "$NAT_ET_IP" >/dev/null 2>&1; then
-                    health_line "NAT_ET_IP ping" "成功"
+                    health_line "NAT IX 虚拟 IP ping" "成功"
                 else
-                    health_line "NAT_ET_IP ping" "pending peer（ICMP ping 不通不单独判失败）"
+                    health_line "NAT IX 虚拟 IP ping" "pending peer（ICMP ping 不通不单独判失败）"
                 fi
             else
-                health_line "NAT_ET_IP ping" "跳过"
+                health_line "NAT IX 虚拟 IP ping" "跳过"
             fi
             [[ "${FORWARD_PROTO:-both}" == "tcp" || "${FORWARD_PROTO:-both}" == "both" ]] && tcp_needed="true"
             if [[ "$tcp_needed" == "true" && -n "${NAT_ET_IP:-}" && -n "${TRANSIT_PORT:-}" ]]; then
                 if nc_cmd="$(detect_nc_cmd 2>/dev/null)"; then
                     if "$nc_cmd" -vz -w 3 "$NAT_ET_IP" "$TRANSIT_PORT" >/dev/null 2>&1; then
-                        health_line "NAT_ET_IP:TRANSIT_PORT TCP" "可达（入口机到 NAT IX 中转链路可用）"
+                        health_line "虚拟网中转 TCP" "可达（入口机到 NAT IX 中转链路可用）"
                         nat_tcp_ok="true"
                     else
-                        health_line "NAT_ET_IP:TRANSIT_PORT TCP" "不可达"
+                        health_line "虚拟网中转 TCP" "不可达"
                         if [[ "$nat_route_ok" == "true" ]]; then
-                            health_mark warning "NAT_ET_IP:TRANSIT_PORT 不可达；如 NAT IX 已导入，请检查 NAT IX nftables 或落地服务。"
+                            health_mark warning "虚拟网中转 TCP 不可达；如 NAT IX 已导入，请检查 NAT IX nftables 或落地服务。"
                         else
                             health_mark warning "pending peer：NAT IX 机器可能尚未导入。"
                         fi
                     fi
                 else
-                    health_line "NAT_ET_IP:TRANSIT_PORT TCP" "nc 不可用"
+                    health_line "虚拟网中转 TCP" "nc 不可用"
                     suggest_install_nc | sed 's/^/  /'
-                    health_mark warning "nc 不可用，跳过 NAT_ET_IP:TRANSIT_PORT 探测"
+                    health_mark warning "nc 不可用，跳过虚拟网中转 TCP 探测"
                 fi
             fi
             IFS=$'\t' read -r nat_counter_state nat_counter_packets nat_counter_bytes <<<"$(profile_counter_health_status)"
@@ -8042,10 +8087,10 @@ run_line_health_check() {
             fi
             if [[ "${FORWARD_ENABLED:-true}" == "true" && -n "${LOCAL_PORT:-}" ]] && command_exists ss; then
                 if ss -lntup 2>/dev/null | grep -Eq "[:.]${LOCAL_PORT}[[:space:]]"; then
-                    health_line "LOCAL_PORT 本机监听冲突" "检测到"
-                    health_mark warning "LOCAL_PORT 被本机进程监听"
+                    health_line "入口端口本机监听冲突" "检测到"
+                    health_mark warning "入口端口被本机进程监听"
                 else
-                    health_line "LOCAL_PORT 本机监听冲突" "未检测到"
+                    health_line "入口端口本机监听冲突" "未检测到"
                 fi
             fi
             fi
@@ -8057,57 +8102,57 @@ run_line_health_check() {
                     health_line "EasyTier listener" "存在（${NAT_PUBLIC_HOST:-}:${NAT_LISTENER_PORT:-}）"
                 else
                     health_line "EasyTier listener" "不存在"
-                    health_mark down "ET_LISTENERS 不存在"
+                    health_mark down "EasyTier listener 不存在"
                 fi
                 set +e
                 check_listener_proto_port "${NAT_LISTENER_PROTO:-${ET_LISTENER_PROTO:-tcp}}" "${NAT_LISTENER_PORT:-${ET_LISTENER_PORT:-0}}"
                 rc=$?
                 set -e
                 case "$rc" in
-                    0) health_line "NAT_LISTENER_PORT 监听" "已检测到" ;;
-                    2) health_line "NAT_LISTENER_PORT 监听" "无法检查（ss 命令不可用）"; health_mark warning "无法检查 listener" ;;
-                    *) health_line "NAT_LISTENER_PORT 监听" "未检测到"; health_mark down "NAT IX 监听未检测到" ;;
+                    0) health_line "商家入口监听" "已检测到" ;;
+                    2) health_line "商家入口监听" "无法检查（ss 命令不可用）"; health_mark warning "无法检查 listener" ;;
+                    *) health_line "商家入口监听" "未检测到"; health_mark down "NAT IX 监听未检测到" ;;
                 esac
                 if command_exists ip && [[ -n "${INGRESS_ET_IP:-}" ]]; then
                     if ip route get "$INGRESS_ET_IP" >/dev/null 2>&1; then
-                        health_line "INGRESS_ET_IP route/peer" "存在"
+                        health_line "公网入口机虚拟 IP route/peer" "存在"
                         transit_route_ok="true"
                     else
-                        health_line "INGRESS_ET_IP route/peer" "pending peer（公网入口机可能尚未导入接入码）"
+                        health_line "公网入口机虚拟 IP route/peer" "pending peer（公网入口机可能尚未导入接入码）"
                     fi
                 else
-                    health_line "INGRESS_ET_IP route/peer" "无法检查"
+                    health_line "公网入口机虚拟 IP route/peer" "无法检查"
                 fi
                 if command_exists ping && [[ -n "${INGRESS_ET_IP:-}" ]]; then
                     if ping -c 1 -W 3 "$INGRESS_ET_IP" >/dev/null 2>&1; then
-                        health_line "INGRESS_ET_IP ping" "成功"
+                        health_line "公网入口机虚拟 IP ping" "成功"
                     else
-                        health_line "INGRESS_ET_IP ping" "pending peer 或 ICMP 不响应，不单独判失败"
+                        health_line "公网入口机虚拟 IP ping" "pending peer 或 ICMP 不响应，不单独判失败"
                     fi
                 else
-                    health_line "INGRESS_ET_IP ping" "跳过"
+                    health_line "公网入口机虚拟 IP ping" "跳过"
                 fi
                 if [[ -n "${LANDING_HOST:-}" ]]; then
                     if validate_ipv4 "$LANDING_HOST"; then
-                        health_line "LANDING_IP" "$LANDING_HOST"
+                        health_line "落地地址" "$LANDING_HOST"
                     elif landing_ip="$(landing_ip_for_nft "$LANDING_HOST" 2>/dev/null)"; then
-                        health_line "LANDING_HOST 解析" "${LANDING_HOST} -> ${landing_ip}"
+                        health_line "落地地址解析" "${LANDING_HOST} -> ${landing_ip}"
                     else
-                        health_line "LANDING_HOST 解析" "失败"
-                        health_mark down "LANDING_HOST 域名解析失败"
+                        health_line "落地地址解析" "失败"
+                        health_mark down "落地地址域名解析失败"
                     fi
                 fi
                 [[ "${FORWARD_PROTO:-both}" == "tcp" || "${FORWARD_PROTO:-both}" == "both" ]] && tcp_needed="true"
                 if [[ "$tcp_needed" == "true" && -n "${LANDING_HOST:-}" && -n "${LANDING_PORT:-}" ]]; then
                     if nc_cmd="$(detect_nc_cmd 2>/dev/null)"; then
                         if "$nc_cmd" -vz -w 3 "$LANDING_HOST" "$LANDING_PORT" >/dev/null 2>&1; then
-                            health_line "LANDING_HOST:LANDING_PORT TCP" "可达"
+                            health_line "落地服务 TCP" "可达"
                         else
-                            health_line "LANDING_HOST:LANDING_PORT TCP" "不可达"
+                            health_line "落地服务 TCP" "不可达"
                             health_mark warning "落地服务 TCP 探测失败"
                         fi
                     else
-                        health_line "LANDING_HOST:LANDING_PORT TCP" "nc 不可用"
+                        health_line "落地服务 TCP" "nc 不可用"
                         suggest_install_nc | sed 's/^/  /'
                         health_mark warning "nc 不可用，跳过落地端口探测"
                     fi
@@ -8115,7 +8160,7 @@ run_line_health_check() {
                 if [[ "${FORWARD_PROTO:-both}" == "udp" || "${FORWARD_PROTO:-both}" == "both" ]]; then
                     health_line "UDP 探测" "跳过（UDP 不可靠）"
                 fi
-                health_line "TRANSIT_PORT userspace 监听" "不要求（nftables DNAT 接收端口）"
+                health_line "虚拟网中转端口监听" "不要求（nftables DNAT 接收端口）"
                 IFS=$'\t' read -r transit_counter_state transit_counter_packets transit_counter_bytes <<<"$(profile_counter_health_status)"
                 case "$transit_counter_state" in
                     hit) health_line "nftables counter" "有命中（packets=${transit_counter_packets} bytes=${transit_counter_bytes}），说明转发规则正在接收流量" ;;
@@ -8130,30 +8175,30 @@ run_line_health_check() {
                 transit_peers_ok="true"
             else
                 health_line "EasyTier peers" "不存在"
-                health_mark warning "ET_PEERS 不存在"
+                health_mark warning "EasyTier peer 不存在"
             fi
             if command_exists ip && [[ -n "${INGRESS_ET_IP:-}" ]]; then
                 if ip route get "$INGRESS_ET_IP" >/dev/null 2>&1; then
-                    health_line "INGRESS_ET_IP 路由" "存在"
+                    health_line "公网入口机虚拟 IP 路由" "存在"
                     transit_route_ok="true"
                 else
-                    health_line "INGRESS_ET_IP 路由" "未找到"
+                    health_line "公网入口机虚拟 IP 路由" "未找到"
                 fi
             else
-                health_line "INGRESS_ET_IP 路由" "无法检查"
+                health_line "公网入口机虚拟 IP 路由" "无法检查"
             fi
             if command_exists ping && [[ -n "${INGRESS_ET_IP:-}" ]]; then
                 if ping -c 1 -W 3 "$INGRESS_ET_IP" >/dev/null 2>&1; then
-                    health_line "INGRESS_ET_IP ping" "成功"
+                    health_line "公网入口机虚拟 IP ping" "成功"
                 else
                     if [[ "$transit_peers_ok" == "true" && "$transit_route_ok" == "true" ]]; then
-                        health_line "INGRESS_ET_IP ping" "ICMP ping 不通，但 EasyTier route/peer 存在；可能是 ICMP 不响应。请以业务 TCP、traffic counter 或 EasyTier peer 状态为准。"
+                        health_line "公网入口机虚拟 IP ping" "ICMP ping 不通，但 EasyTier route/peer 存在；可能是 ICMP 不响应。请以业务 TCP、traffic counter 或 EasyTier peer 状态为准。"
                     else
-                        health_line "INGRESS_ET_IP ping" "失败"
+                        health_line "公网入口机虚拟 IP ping" "失败"
                     fi
                 fi
             else
-                health_line "INGRESS_ET_IP ping" "跳过"
+                health_line "公网入口机虚拟 IP ping" "跳过"
             fi
             if [[ "$transit_peers_ok" != "true" && "$transit_route_ok" != "true" ]]; then
                 health_mark warning "EasyTier peer 未建立，请检查入口机 listener、安全组、NAT IX 出口是否可访问入口机 listener。"
@@ -8162,25 +8207,25 @@ run_line_health_check() {
             fi
             if [[ -n "${LANDING_HOST:-}" ]]; then
                 if validate_ipv4 "$LANDING_HOST"; then
-                    health_line "LANDING_IP" "$LANDING_HOST"
+                    health_line "落地地址" "$LANDING_HOST"
                 elif landing_ip="$(landing_ip_for_nft "$LANDING_HOST" 2>/dev/null)"; then
-                    health_line "LANDING_HOST 解析" "${LANDING_HOST} -> ${landing_ip}"
+                    health_line "落地地址解析" "${LANDING_HOST} -> ${landing_ip}"
                 else
-                    health_line "LANDING_HOST 解析" "失败"
-                    health_mark down "LANDING_HOST 域名解析失败"
+                    health_line "落地地址解析" "失败"
+                    health_mark down "落地地址域名解析失败"
                 fi
             fi
             [[ "${FORWARD_PROTO:-both}" == "tcp" || "${FORWARD_PROTO:-both}" == "both" ]] && tcp_needed="true"
             if [[ "$tcp_needed" == "true" && -n "${LANDING_HOST:-}" && -n "${LANDING_PORT:-}" ]]; then
                 if nc_cmd="$(detect_nc_cmd 2>/dev/null)"; then
                     if "$nc_cmd" -vz -w 3 "$LANDING_HOST" "$LANDING_PORT" >/dev/null 2>&1; then
-                        health_line "LANDING_HOST:LANDING_PORT TCP" "可达"
+                        health_line "落地服务 TCP" "可达"
                     else
-                        health_line "LANDING_HOST:LANDING_PORT TCP" "不可达"
+                        health_line "落地服务 TCP" "不可达"
                         health_mark warning "落地服务 TCP 探测失败"
                     fi
                 else
-                    health_line "LANDING_HOST:LANDING_PORT TCP" "nc 不可用"
+                    health_line "落地服务 TCP" "nc 不可用"
                     suggest_install_nc | sed 's/^/  /'
                     health_mark warning "nc 不可用，跳过落地端口探测"
                 fi
@@ -8188,8 +8233,8 @@ run_line_health_check() {
             if [[ "${FORWARD_PROTO:-both}" == "udp" || "${FORWARD_PROTO:-both}" == "both" ]]; then
                 health_line "UDP 探测" "跳过（UDP 不可靠）"
             fi
-            health_line "TRANSIT_PORT userspace 监听" "不要求（nftables DNAT 接收端口）"
-            health_line "NAT_ET_IP:TRANSIT_PORT 本机直连" "仅供参考：本机直连 NAT_ET_IP:TRANSIT_PORT 可能不命中 PREROUTING DNAT"
+            health_line "虚拟网中转端口监听" "不要求（nftables DNAT 接收端口）"
+            health_line "虚拟网中转本机直连" "仅供参考：本机直连虚拟网中转端口可能不命中 PREROUTING DNAT"
             IFS=$'\t' read -r transit_counter_state transit_counter_packets transit_counter_bytes <<<"$(profile_counter_health_status)"
             case "$transit_counter_state" in
                 hit) health_line "nftables counter" "有命中（packets=${transit_counter_packets} bytes=${transit_counter_bytes}），说明转发规则正在接收流量" ;;
@@ -8223,7 +8268,7 @@ run_line_health_check() {
             fi
             printf '已写回健康状态：%s / %s\n' "$HEALTH_STATUS" "$LAST_HEALTH_CHECK_AT"
         else
-            printf '[WARN] Profile 配置不完整，未写回健康状态。\n'
+            printf '[WARN] 线路配置不完整，未写回健康状态。\n'
         fi
     fi
 }
@@ -9658,7 +9703,7 @@ switch_to() {
 
 health_report() {
     require_root "$@"
-    local group_filter="" id service active et_ip nft_label enabled_label forward_label group_display health role_label
+    local group_filter="" id service active nft_label enabled_label forward_label group_display health role_label line_label
     local total=0 forwarding_lines=0 healthy=0 warning=0 down=0 unknown=0 groups_total=0 groups_ready=0 groups_warning=0 groups_not_ready=0
     local group issue backup_id groups_with_issues=0 ready_state
     if [[ "${1:-}" == "--group" ]]; then
@@ -10951,33 +10996,43 @@ health_report() {
         group_filter="$1"
     fi
 
-    printf '%-18s %-14s %-8s %-10s %-5s %-3s %-7s %-8s %-15s %-8s %-8s %s\n' \
-        "PROFILE" "GROUP" "ROLE" "LINE" "PRI" "EN" "FWD" "SVC" "IP" "NFT" "HEALTH" "REASON"
-    printf '%-18s %-14s %-8s %-10s %-5s %-3s %-7s %-8s %-15s %-8s %-8s %s\n' \
-        "------------------" "--------------" "--------" "----------" "-----" "---" "-------" "--------" "---------------" "--------" "--------" "------"
+    printf '%-18s %-14s %-12s %-8s %-5s %-6s %-8s %-8s %-8s %-8s %s\n' \
+        "线路ID" "分组" "类型" "主备" "优先" "启用" "业务转发" "服务" "转发规则" "健康" "说明"
+    printf '%-18s %-14s %-12s %-8s %-5s %-6s %-8s %-8s %-8s %-8s %s\n' \
+        "------------------" "--------------" "------------" "--------" "-----" "------" "--------" "--------" "--------" "--------" "------"
     for id in $(sorted_profile_ids); do
         if ! load_profile "$id"; then
             [[ -z "$group_filter" ]] || continue
-            printf '%-18s %-14s %-8s %-10s %-5s %-3s %-7s %-8s %-15s %-8s %-8s %s\n' \
-                "$id" "-" "-" "-" "-" "off" "off" "unknown" "-" "unknown" "down" "cannot read Profile"
+            printf '%-18s %-14s %-12s %-8s %-5s %-6s %-8s %-8s %-8s %-8s %s\n' \
+                "$id" "-" "-" "-" "-" "off" "off" "unknown" "unknown" "down" "无法读取线路配置"
             total=$((total + 1)); down=$((down + 1)); continue
         fi
         [[ -z "$group_filter" || "${LINE_GROUP:-}" == "$group_filter" ]] || continue
         service="$(profile_service_name "$id")"
         active="$(profile_service_status "$service")"
-        et_ip="${ET_IPV4:-}"; et_ip="${et_ip%%/*}"
         nft_label="$(nft_profile_rule_label "$id")"
         enabled_label="$(enabled_display "${ENABLED:-true}")"
         forward_label="$(forward_display "${ROLE:-}" "${ENABLED:-true}" "${FORWARD_ENABLED:-true}")"
         group_display="${LINE_GROUP:-standalone}"
         health="${HEALTH_STATUS:-unknown}"
-        case "${ROLE:-}" in panel-ingress) role_label="ingress" ;; panel-landing) role_label="landing" ;; nat-ingress|nat-transit) role_label="${ROLE}" ;; *) role_label="${ROLE:-unknown}" ;; esac
+        case "${ROLE:-}" in
+            panel-landing) role_label="落地" ;;
+            panel-ingress|nat-ingress) role_label="公网入口" ;;
+            nat-transit) role_label="NAT IX 中转" ;;
+            *) role_label="${ROLE:-unknown}" ;;
+        esac
+        case "${LINE_ROLE:-standalone}" in
+            primary) line_label="主线" ;;
+            backup) line_label="备用" ;;
+            standalone) line_label="独立" ;;
+            *) line_label="${LINE_ROLE:-standalone}" ;;
+        esac
         [[ "$forward_label" == "active" ]] && forwarding_lines=$((forwarding_lines + 1))
         case "$health" in healthy) healthy=$((healthy + 1)) ;; warning) warning=$((warning + 1)) ;; down) down=$((down + 1)) ;; *) unknown=$((unknown + 1)) ;; esac
         total=$((total + 1))
-        printf '%-18s %-14s %-8s %-10s %-5s %-3s %-7s %-8s %-15s %-8s %-8s %s\n' \
-            "$id" "$group_display" "$role_label" "${LINE_ROLE:-standalone}" "${LINE_PRIORITY:-100}" \
-            "$enabled_label" "$forward_label" "${active:-unknown}" "${et_ip:-}" "$nft_label" "$health" "${LAST_HEALTH_REASON:-未检查}"
+        printf '%-18s %-14s %-12s %-8s %-5s %-6s %-8s %-8s %-8s %-8s %s\n' \
+            "$id" "$group_display" "$role_label" "$line_label" "${LINE_PRIORITY:-100}" \
+            "$enabled_label" "$forward_label" "${active:-unknown}" "$nft_label" "$health" "${LAST_HEALTH_REASON:-未检查}"
     done
     group_count="$(profile_group_count)"
     while IFS= read -r group; do
@@ -10988,18 +11043,18 @@ health_report() {
         case "$ready_state" in ready) groups_ready=$((groups_ready + 1)) ;; warning) groups_warning=$((groups_warning + 1)) ;; *) groups_not_ready=$((groups_not_ready + 1)) ;; esac
     done < <(profile_groups || true)
     [[ -r "$MONITOR_LAST_RUN_FILE" ]] && last_monitor="$(awk -F '\t' 'NR==1{print $1}' "$MONITOR_LAST_RUN_FILE")"
-    printf '\nSummary:\n'
-    printf 'profiles total: %s\n' "$total"
-    printf 'groups total: %s\n' "$groups_total"
-    printf 'forwarding lines: %s\n' "$forwarding_lines"
-    printf 'healthy / warning / down / unknown: %s / %s / %s / %s\n' "$healthy" "$warning" "$down" "$unknown"
-    printf 'groups ready / warning / not-ready: %s / %s / %s\n' "$groups_ready" "$groups_warning" "$groups_not_ready"
-    printf 'last monitor time: %s\n' "$last_monitor"
+    printf '\n汇总：\n'
+    printf '线路总数：%s\n' "$total"
+    printf '线路组总数：%s\n' "$groups_total"
+    printf '当前转发线路：%s\n' "$forwarding_lines"
+    printf '健康 / 警告 / 故障 / 未知：%s / %s / %s / %s\n' "$healthy" "$warning" "$down" "$unknown"
+    printf '线路组就绪 / 警告 / 未就绪：%s / %s / %s\n' "$groups_ready" "$groups_warning" "$groups_not_ready"
+    printf '最近监控时间：%s\n' "$last_monitor"
     printf 'monitor timer：%s\n' "$(monitor_timer_enabled_status)"
     printf 'notify：%s\n' "$([[ "$(notify_enabled_status)" == "true" ]] && printf enabled || printf disabled)"
-    printf 'nft mismatch: %s\n' "$(nft_mismatch_status)"
-    printf 'traffic counter exists: %s\n' "$(traffic_counter_status)"
-    printf '\nGroup issues:\n'
+    printf 'nftables 差异：%s\n' "$(nft_mismatch_status)"
+    printf '流量计数器：%s\n' "$(traffic_counter_status)"
+    printf '\n线路组问题：\n'
     if [[ "$group_count" -eq 0 ]]; then
         print_no_group_message
     else
