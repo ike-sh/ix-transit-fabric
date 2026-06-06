@@ -1,5 +1,23 @@
 # Changelog
 
+## 1.1.0-alpha.4
+
+### Added
+
+- NAT-IX nat-listener direction.
+- NAT IX listener workflow.
+- Public ingress peer-to-NAT workflow.
+- Direction-aware port-map, health, and latency diagnostics.
+
+### Fixed
+
+- Duplicate default text in INGRESS_PUBLIC_HOST prompt.
+
+### Notes
+
+- Existing NAT-IX ingress-listener direction remains compatible.
+- CNIX Panel Mode remains unchanged.
+
 ## 1.1.0-alpha.3
 
 ### Fixed

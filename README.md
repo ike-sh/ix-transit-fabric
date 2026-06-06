@@ -1,6 +1,6 @@
 # ix-transit-fabric
 
-当前版本：`1.1.0-alpha.3`
+当前版本：`1.1.0-alpha.4`
 
 `ix-transit-fabric` 是一个面向 CNIX / IX 转发面板场景的 EasyTier 隧道编排脚本。它用于将商家常见的 WireGuard 隧道接入方式替换为 EasyTier，并自动完成公网入口机上的 nftables 转发。
 
@@ -396,9 +396,11 @@ bash install.sh notify-test
 ```bash
 bash install.sh traffic-report
 bash install.sh traffic-report --group GROUP
+bash install.sh traffic-report --sample 10
 ```
 
 流量统计来自本项目 nftables counter，只表示项目转发规则命中情况，不等同于云厂商账单。
+`traffic-report --sample N` 会先读取当前 counter，等待 N 秒后再读取一次，并输出 packets / bytes delta；如果没有增量，请确认客户端正在连接正确的 `LOCAL_PORT`。
 
 ## 安全边界
 
@@ -452,10 +454,16 @@ bash install.sh purge
 
 ## NAT-IX Alpha 注意事项
 
-1.1.0-alpha.3 是 NAT-IX 实机语义修复版。
+1.1.0-alpha.4 是 NAT-IX 连接方向增强版，新增 `NAT_DIRECTION=nat-listener`，并保留旧的 `ingress-listener` 方向。
 
-- NAT-IX 模式推荐先在入口机创建 nat-ingress，再在 NAT IX 机器导入。
-- `add-nat-ingress-profile` 会自动检测 `INGRESS_PUBLIC_HOST`，检测到公网 IPv4 后可直接回车使用；也可以设置 `IXTF_PUBLIC_IP=203.0.113.10` 或 `IXTF_INGRESS_PUBLIC_HOST=ingress.example` 覆盖自动检测。
+- 模式 A：公网入口机监听，NAT IX 机器连接入口机。适合 NAT IX 机器可以稳定访问公网入口机，且路径质量好。
+- 模式 B：NAT IX 机器监听，公网入口机连接 NAT IX 商家入口。适合商家给 NAT IX 机器分配了入站 IP/端口，且该方向延迟更低。
+- 如果 Realm-xwPF 使用服务端模式延迟明显更低，推荐测试模式 B。
+- `NAT_PUBLIC_HOST` 不一定等于 NAT IX 机器 `curl` 出口 IP；它应填写商家分配给你入站访问的 NAT/IX IP 或域名。
+- `NAT_LISTENER_PORT` 应填写商家分配的入站端口。
+- 模式 A 推荐先在入口机创建 nat-ingress，再在 NAT IX 机器导入。
+- 模式 B 推荐先在 NAT IX 机器运行 `bash install.sh add-nat-listener-profile`，再在公网入口机运行 `bash install.sh add-nat-ingress-from-listener-code`。
+- `add-nat-ingress-profile` 会自动检测 `INGRESS_PUBLIC_HOST`，检测到公网 IPv4 后可直接回车使用；也可以设置 `IXTF_PUBLIC_IP=203.0.113.10` 或 `IXTF_INGRESS_PUBLIC_HOST=ingress.example` 覆盖自动检测。1.1.0-alpha.4 修复了 `INGRESS_PUBLIC_HOST` prompt 默认值重复显示。
 - nat-ingress 第一端创建后，NAT_ET_IP ping 失败属于正常 pending peer 状态，等 nat-transit 导入后再测试。
 - nat-transit 创建后，如果 NAT_ET_IP 不存在，优先看 EasyTier service 日志和 `bash install.sh show-easytier-command PROFILE_ID`。
 - ICMP ping 不是 NAT-IX 成功的唯一标准；如果 EasyTier route/peer、nftables 规则、`LANDING_HOST:LANDING_PORT` TCP 和 traffic counter 正常，应以这些业务信号为准。
@@ -468,6 +476,44 @@ bash install.sh purge
 - NAT IX 机器不需要安装代理服务，只做 nftables 中转。
 - NAT-IX 接入码包含 EasyTier `network_secret`；如果接入码发到聊天、工单或日志，请正式使用前运行 `bash install.sh refresh-nat-code PROFILE_ID` 刷新或重建 nat-ingress Profile。
 - `refresh-nat-code` 会生成新 `network_secret`，旧接入码失效，旧 nat-transit Profile 需要重新导入新的接入码。
+
+模式 B 对比：
+
+```text
+Realm-xwPF 服务端模式：
+公网入口机 -> NAT IX 商家入口 IP:端口 -> NAT IX 机器 -> 落地
+
+ix-transit-fabric 模式 B：
+公网入口机 -> NAT IX 商家入口 IP:端口 -> EasyTier listener -> nftables -> 落地
+```
+
+## NAT-IX 延迟诊断
+
+常用命令：
+
+```bash
+bash install.sh latency-report PROFILE_ID
+bash install.sh nat-latency PROFILE_ID
+bash install.sh latency-all
+bash install.sh latency-report PROFILE_ID --sample 10
+bash install.sh traffic-report --sample 10
+```
+
+`latency-report` 会按 Profile 角色输出 NAT-IX 分段报告：Profile 基本信息、EasyTier systemd / peer / tunnel hint、组网 ping 摘要、TCP connect time、listener / LOCAL_PORT 检查、nftables rule 状态和 counter delta。`nat-latency` 是同义命令，`latency-all` 会遍历本机 NAT-IX Profile。
+
+ICMP ping 不是业务延迟。ICMP ping 是基础 RTT，不包含 TCP 握手、TLS/REALITY/代理协议握手、应用处理、重传、队列、NAT/隧道开销；客户端显示的延迟通常是完整应用链路耗时。
+
+如果 EasyTier 使用 TCP 承载 TCP 业务，可能出现 TCP-over-TCP 队头阻塞。若环境允许，可以新建测试 Profile 对比 EasyTier listener proto：`tcp`、`udp`、`tcp+udp`。不建议直接覆盖生产 Profile，先用新端口做协议 A/B 测试。
+
+建议按顺序测试：
+
+1. 公网入口机 -> NAT IX 公网 ping
+2. NAT IX -> 落地机公网 ping
+3. 公网入口机 -> `NAT_ET_IP` ping
+4. 公网入口机 -> `NAT_ET_IP:TRANSIT_PORT` TCP connect
+5. NAT IX -> `LANDING_HOST:LANDING_PORT` TCP connect
+6. `traffic-report --sample 10`
+7. 客户端业务延迟
 
 ## Roadmap
 

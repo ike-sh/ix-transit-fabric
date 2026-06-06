@@ -12,7 +12,7 @@ fi
 bash -n install.sh
 
 version_output="$(bash install.sh --version)"
-[[ "$version_output" == "ix-transit-fabric 1.1.0-alpha.3" ]]
+[[ "$version_output" == "ix-transit-fabric 1.1.0-alpha.4" ]]
 
 bash install.sh --help >/dev/null
 
@@ -22,6 +22,8 @@ for token in \
     add-ingress-profile-from-code \
     add-nat-ingress-profile \
     add-nat-transit-profile-from-code \
+    add-nat-listener-profile \
+    add-nat-ingress-from-listener-code \
     show-nat-code \
     refresh-nat-code \
     nat-guide \
@@ -36,9 +38,31 @@ for token in \
     LANDING_PORT \
     NAT_ET_IP \
     INGRESS_ET_IP \
+    NAT_DIRECTION \
+    ingress-listener \
+    nat-listener \
+    NAT_PUBLIC_HOST \
+    NAT_LISTENER_PORT \
+    "NAT IX listener" \
+    "peer to NAT IX" \
     "show-port-map 支持 nat" \
     "verify-nft-profiles 支持 nat" \
     "traffic-report 支持 nat" \
+    "traffic-report 支持 nat-ingress / nat-transit，可用 --sample N" \
+    latency-report \
+    nat-latency \
+    latency-all \
+    show-easytier-status \
+    ping_summary \
+    parse_ping_summary \
+    print_latency_metric \
+    tcp_connect_time \
+    nc_connect_time \
+    bash_tcp_connect_time \
+    show_easytier_status \
+    show-easytier-status \
+    tunnel_type \
+    TCP-over-TCP \
     status-all \
     doctor-all \
     start-profile \
@@ -148,8 +172,11 @@ for token in \
     detect_public_host \
     suggest_ingress_public_host \
     IXTF_PUBLIC_IP \
+    IXTF_INGRESS_PUBLIC_HOST \
+    "使用环境变量指定的公网入口地址" \
+    "未自动检测到公网 IPv4" \
     "检测到当前公网 IPv4" \
-    "INGRESS_PUBLIC_HOST（默认" \
+    "请输入公网入口机公网 IP 或域名 INGRESS_PUBLIC_HOST" \
     "ICMP ping 不通" \
     "NAT_ET_IP:TRANSIT_PORT" \
     "可能不命中 PREROUTING" \
@@ -178,6 +205,13 @@ for token in \
     "不全局 kill" \
     "NAT-IX Transit Mode" \
     "NAT-IX 中转模式" \
+    "模式 A" \
+    "模式 B" \
+    "NAT IX 机器监听" \
+    "NAT_PUBLIC_HOST" \
+    "NAT_LISTENER_PORT" \
+    "Realm-xwPF" \
+    "商家分配的入站端口" \
     "公网入口机" \
     "NAT IX 机器" \
     "TRANSIT_PORT" \
@@ -190,9 +224,15 @@ for token in \
     "安全边界" \
     "Roadmap" \
     "raw.githubusercontent.com/ike-sh/ix-transit-fabric/main/install.sh" \
-    "1.1.0-alpha.3" \
+    "1.1.0-alpha.4" \
     "IXTF_PUBLIC_IP" \
-    "ICMP ping 不是" \
+    "IXTF_INGRESS_PUBLIC_HOST" \
+    "NAT-IX 延迟诊断" \
+    "latency-report" \
+    "traffic-report --sample" \
+    "TCP-over-TCP" \
+    "ICMP ping 不是业务延迟" \
+    "协议 A/B 测试" \
     "PREROUTING" \
     "pending peer" \
     "NAT IX 机器需要能访问入口机 EasyTier listener" \
@@ -284,7 +324,9 @@ fi
 
 ! grep -R -E -q "${forbidden_old_051}|${forbidden_old_056}" README.md install.sh examples
 
-[[ "$(tr -d '\r\n' < VERSION)" == "1.1.0-alpha.3" ]]
+[[ "$(tr -d '\r\n' < VERSION)" == "1.1.0-alpha.4" ]]
+
+! grep -R -E -q '（默认 [^）]+）（默认' install.sh README.md tests examples CHANGELOG.md
 
 grep -q 'ix-transit-easytier@%s.service' install.sh
 grep -q 'show_profile_summary "$PROFILE_ID"' install.sh
@@ -336,6 +378,20 @@ grep -q '主备组检查已跳过' README.md
 grep -q 'LINE_GROUP' README.md
 grep -q '1.0.0' README.md
 grep -q '1.1.0-alpha.1' README.md
+grep -q '1.1.0-alpha.4' README.md
+grep -q '模式 A' README.md
+grep -q '模式 B' README.md
+grep -q 'NAT IX 机器监听' README.md
+grep -q 'NAT_PUBLIC_HOST' README.md
+grep -q 'NAT_LISTENER_PORT' README.md
+grep -q 'Realm-xwPF' README.md
+grep -q '商家分配的入站端口' README.md
+grep -q 'NAT-IX 延迟诊断' README.md
+grep -q 'latency-report' README.md
+grep -q 'traffic-report --sample' README.md
+grep -q 'TCP-over-TCP' README.md
+grep -q 'ICMP ping 不是业务延迟' README.md
+grep -q '协议 A/B 测试' README.md
 grep -q 'install-netcat' README.md
 grep -q 'preflight' README.md
 
@@ -488,6 +544,7 @@ EOF_PROFILE
 PROFILE_ID=${id}
 PROFILE_NAME=${id}
 ROLE=nat-ingress
+NAT_DIRECTION=ingress-listener
 ENABLED=${enabled}
 LINE_ROLE=standalone
 LINE_PRIORITY=100
@@ -524,6 +581,7 @@ EOF_PROFILE
 PROFILE_ID=${id}
 PROFILE_NAME=${id}
 ROLE=nat-transit
+NAT_DIRECTION=ingress-listener
 ENABLED=${enabled}
 LINE_ROLE=standalone
 LINE_PRIORITY=100
@@ -555,6 +613,83 @@ EOF_PROFILE
         chmod 600 "${PROFILES_DIR}/${id}.env"
     }
 
+    make_nat_listener_profile() {
+        local id="$1" enabled="$2" subnet="$3" nat_cidr="$4" ingress_ip="$5" transit_port="$6" landing_host="$7" landing_port="$8"
+        cat >"${PROFILES_DIR}/${id}.env" <<EOF_PROFILE
+PROFILE_ID=${id}
+PROFILE_NAME=${id}
+ROLE=nat-transit
+NAT_DIRECTION=nat-listener
+ENABLED=${enabled}
+LINE_ROLE=standalone
+LINE_PRIORITY=100
+HEALTH_CHECK_ENABLED=true
+HEALTH_STATUS=unknown
+ET_NETWORK_NAME=ix-${id}
+ET_NETWORK_SECRET=change-me-${id}-secret
+ET_SUBNET=${subnet}
+ET_HOSTNAME=ix-${id}
+ET_IPV4=${nat_cidr}
+INGRESS_ET_IP=${ingress_ip}
+INGRESS_ET_CIDR=${ingress_ip}/24
+NAT_ET_IP=${nat_cidr%/*}
+NAT_ET_CIDR=${nat_cidr}
+NAT_PUBLIC_HOST=nat-ix.example
+NAT_LISTENER_PROTO=both
+NAT_LISTENER_PROTOS="tcp udp"
+NAT_LISTENER_PORT=31000
+ET_LISTENER_PROTO=both
+ET_LISTENER_PORT=31000
+ET_LISTENERS="tcp://0.0.0.0:31000 udp://0.0.0.0:31000"
+ET_NO_LISTENER=false
+FORWARD_ENABLED=true
+TRANSIT_PORT=${transit_port}
+LANDING_HOST=${landing_host}
+LANDING_PORT=${landing_port}
+FORWARD_PROTO=both
+EOF_PROFILE
+        chmod 600 "${PROFILES_DIR}/${id}.env"
+    }
+
+    make_nat_ingress_listener_profile() {
+        local id="$1" local_port="$2" enabled="$3" subnet="$4" ingress_cidr="$5" nat_ip="$6" transit_port="$7"
+        cat >"${PROFILES_DIR}/${id}.env" <<EOF_PROFILE
+PROFILE_ID=${id}
+PROFILE_NAME=${id}
+ROLE=nat-ingress
+NAT_DIRECTION=nat-listener
+ENABLED=${enabled}
+LINE_ROLE=standalone
+LINE_PRIORITY=100
+HEALTH_CHECK_ENABLED=true
+HEALTH_STATUS=unknown
+ET_NETWORK_NAME=ix-${id}
+ET_NETWORK_SECRET=change-me-${id}-secret
+ET_SUBNET=${subnet}
+ET_HOSTNAME=ix-${id}
+ET_IPV4=${ingress_cidr}
+INGRESS_PUBLIC_HOST=ingress.example
+INGRESS_HOSTNAME=ingress.example
+INGRESS_ET_IP=${ingress_cidr%/*}
+INGRESS_ET_CIDR=${ingress_cidr}
+NAT_ET_IP=${nat_ip}
+NAT_ET_CIDR=${nat_ip}/24
+NAT_PUBLIC_HOST=nat-ix.example
+NAT_LISTENER_PROTO=both
+NAT_LISTENER_PROTOS="tcp udp"
+NAT_LISTENER_PORT=31000
+ET_PEERS="tcp://nat-ix.example:31000 udp://nat-ix.example:31000"
+ET_NO_LISTENER=true
+FORWARD_ENABLED=true
+LOCAL_PORT=${local_port}
+TRANSIT_PORT=${transit_port}
+LANDING_HOST=10.89.0.3
+LANDING_PORT=50000
+FORWARD_PROTO=both
+EOF_PROFILE
+        chmod 600 "${PROFILES_DIR}/${id}.env"
+    }
+
     rm -f "${PROFILES_DIR}"/*.env
     make_ingress_profile line-a 26000 true 10.92.1.0/24 10.92.1.1/24
     make_ingress_profile line-b 26000 true 10.92.2.0/24 10.92.2.1/24
@@ -574,8 +709,8 @@ EOF_PROFILE
     ! ( check_all_profiles_conflicts >/dev/null 2>&1 )
 
     rm -f "${PROFILES_DIR}"/*.env
-    make_ingress_profile keep-line 26010 true 10.94.1.0/24 10.94.1.1/24
-    make_ingress_profile off-line 26011 false 10.94.2.0/24 10.94.2.1/24
+    make_ingress_profile keep-line 26010 true 10.90.1.0/24 10.90.1.1/24
+    make_ingress_profile off-line 26011 false 10.90.2.0/24 10.90.2.1/24
     nft_render="${unit_tmp}/rendered.nft"
     render_nft_all_file "$nft_render" ix_test
     grep -q 'profile: keep-line' "$nft_render"
@@ -589,8 +724,8 @@ EOF_PROFILE
     grep -q 'LISTENER_PORT=24000' <<<"$map_output"
     compact_output_a="$(show_port_map --compact keep-line)"
     compact_output_b="$(show_port_map keep-line --compact)"
-    grep -q '26010 -> 10.94.1.2:443' <<<"$compact_output_a"
-    grep -q '26010 -> 10.94.1.2:443' <<<"$compact_output_b"
+    grep -q '26010 -> 10.90.1.2:443' <<<"$compact_output_a"
+    grep -q '26010 -> 10.90.1.2:443' <<<"$compact_output_b"
     all_compact_output_a="$(show_port_map --all --compact)"
     all_compact_output_b="$(show_port_map --compact --all)"
     grep -q '===== Profile keep-line =====' <<<"$all_compact_output_a"
@@ -612,6 +747,13 @@ EOF_PROFILE
     grep -q '\[OK\] nftables rules match' <<<"$verify_nat_ingress_output"
     traffic_nat_ingress_output="$(traffic_report)"
     grep -q $'nat-in\t\tnat-ingress\t30000\t10.88.0.2:20000' <<<"$traffic_nat_ingress_output"
+    traffic_nat_ingress_sample_output="$(traffic_report --sample 0)"
+    grep -q 'PROFILE_ID' <<<"$traffic_nat_ingress_sample_output"
+    latency_nat_ingress_output="$(latency_report nat-in --sample 0)"
+    grep -q 'NAT-IX latency-report: nat-in' <<<"$latency_nat_ingress_output"
+    grep -q 'ROLE=nat-ingress' <<<"$latency_nat_ingress_output"
+    grep -q 'EasyTier peer hints' <<<"$latency_nat_ingress_output"
+    grep -q 'counter current:' <<<"$latency_nat_ingress_output"
 
     rm -f "${PROFILES_DIR}"/*.env
     make_nat_transit_profile nat-mid true 10.88.0.0/24 10.88.0.2/24 10.88.0.1 20000 10.88.0.1 50000
@@ -632,11 +774,61 @@ EOF_PROFILE
     grep -q '\[OK\] nftables rules match' <<<"$verify_nat_transit_output"
     traffic_nat_transit_output="$(traffic_report)"
     grep -q $'nat-mid\t\tnat-transit\t20000\t10.88.0.1:50000' <<<"$traffic_nat_transit_output"
+    latency_nat_transit_output="$(latency_report nat-mid --sample 0)"
+    grep -q 'NAT-IX latency-report: nat-mid' <<<"$latency_nat_transit_output"
+    grep -q 'ROLE=nat-transit' <<<"$latency_nat_transit_output"
+    grep -q 'NAT IX 本机直连 NAT_ET_IP:TRANSIT_PORT 可能不命中 PREROUTING DNAT' <<<"$latency_nat_transit_output"
 
     rm -f "${PROFILES_DIR}"/*.env
-    make_ingress_profile keep-line 26010 true 10.94.1.0/24 10.94.1.1/24
-    make_ingress_profile off-line 26011 false 10.94.2.0/24 10.94.2.1/24
-    make_ingress_profile broken-line 26012 true 10.94.3.0/24 10.94.3.1/24
+    make_nat_listener_profile nat-listen true 10.89.0.0/24 10.89.0.2/24 10.89.0.1 21000 10.89.0.3 50000
+    load_profile nat-listen
+    validate_profile_config nat-listen
+    nat_listener_cmd="$(render_easytier_args)"
+    grep -q -- '--listeners tcp://0.0.0.0:31000' <<<"$nat_listener_cmd"
+    grep -q -- '--listeners udp://0.0.0.0:31000' <<<"$nat_listener_cmd"
+    ! grep -q -- '--no-listener' <<<"$nat_listener_cmd"
+    nat_listener_code="$(generate_nat_code)"
+    parse_nat_code "$nat_listener_code"
+    [[ "$CODE_NAT_DIRECTION" == "nat-listener" ]]
+    [[ "$CODE_NAT_PUBLIC_HOST" == "nat-ix.example" ]]
+    [[ "$CODE_NAT_LISTENER_PORT" == "31000" ]]
+    render_nft_all_file "$nft_render" ix_test
+    grep -q 'profile: nat-listen' "$nft_render"
+    grep -q 'ip daddr 10.89.0.2 tcp dport 21000 counter dnat to 10.89.0.3:50000' "$nft_render"
+    nat_listener_map="$(show_port_map --compact nat-listen)"
+    grep -q 'NAT-IX 监听中转' <<<"$nat_listener_map"
+    grep -q 'NAT IX listener' <<<"$nat_listener_map"
+    grep -q 'nat-ix.example:31000' <<<"$nat_listener_map"
+    latency_nat_listener_output="$(latency_report nat-listen --sample 0)"
+    grep -q 'NAT_DIRECTION=nat-listener' <<<"$latency_nat_listener_output"
+    grep -q 'NAT_PUBLIC_HOST=nat-ix.example' <<<"$latency_nat_listener_output"
+    grep -q '当前连接方向：NAT IX listener，公网入口机 peer to NAT IX。' <<<"$latency_nat_listener_output"
+
+    rm -f "${PROFILES_DIR}"/*.env
+    make_nat_ingress_listener_profile nat-in-b 32000 true 10.89.0.0/24 10.89.0.1/24 10.89.0.2 21000
+    load_profile nat-in-b
+    validate_profile_config nat-in-b
+    nat_ingress_listener_cmd="$(render_easytier_args)"
+    grep -q -- '--peers tcp://nat-ix.example:31000' <<<"$nat_ingress_listener_cmd"
+    grep -q -- '--peers udp://nat-ix.example:31000' <<<"$nat_ingress_listener_cmd"
+    grep -q -- '--no-listener' <<<"$nat_ingress_listener_cmd"
+    render_nft_all_file "$nft_render" ix_test
+    grep -q 'profile: nat-in-b' "$nft_render"
+    grep -q 'tcp dport 32000 counter dnat to 10.89.0.2:21000' "$nft_render"
+    nat_ingress_listener_map="$(show_port_map --compact nat-in-b)"
+    grep -q 'NAT-IX 入口，连接 NAT IX listener' <<<"$nat_ingress_listener_map"
+    grep -q 'EasyTier peer' <<<"$nat_ingress_listener_map"
+    grep -q 'nat-ix.example:31000' <<<"$nat_ingress_listener_map"
+    mkdir -p "$NFT_DIR"
+    render_nft_all_file "$NFT_FILE" "$NFT_TABLE"
+    [[ "$(nft_profile_rule_status nat-in-b)" == "present" ]]
+    verify_nat_listener_ingress_output="$(verify_nft_profiles_core)"
+    grep -q '\[OK\] nftables rules match' <<<"$verify_nat_listener_ingress_output"
+
+    rm -f "${PROFILES_DIR}"/*.env
+    make_ingress_profile keep-line 26010 true 10.90.1.0/24 10.90.1.1/24
+    make_ingress_profile off-line 26011 false 10.90.2.0/24 10.90.2.1/24
+    make_ingress_profile broken-line 26012 true 10.90.3.0/24 10.90.3.1/24
     rm -f "${PROFILES_DIR}/broken-line.env"
     printf 'PROFILE_ID=broken-line\nROLE=panel-ingress\nENABLED=true\n' >"${PROFILES_DIR}/broken-line.env"
     chmod 600 "${PROFILES_DIR}/broken-line.env"
@@ -657,7 +849,7 @@ EOF_PROFILE
     ! grep -q '脚本在第' <<<"$missing_profile_output"
 
     rm -f "${PROFILES_DIR}"/*.env
-    make_landing_profile land-only 24002 true 10.94.4.0/24 10.94.4.2/24
+    make_landing_profile land-only 24002 true 10.90.4.0/24 10.90.4.2/24
     landing_verify_output="$(verify_nft_profiles_core 2>&1)"
     grep -q '当前机器没有启用中的入口转发 Profile，nftables 转发校验已跳过。' <<<"$landing_verify_output"
     ! grep -q 'verify-nft-profiles skipped' <<<"$landing_verify_output"
@@ -665,7 +857,7 @@ EOF_PROFILE
     [[ "$(nft_forwarding_verify_status)" == "skipped" ]]
 
     rm -f "${PROFILES_DIR}"/*.env
-    make_ingress_profile verify-line 26013 true 10.94.5.0/24 10.94.5.1/24
+    make_ingress_profile verify-line 26013 true 10.90.5.0/24 10.90.5.1/24
     mkdir -p "$NFT_DIR"
     render_nft_all_file "$NFT_FILE" "$NFT_TABLE"
     [[ "$(nft_profile_rule_status verify-line)" == "present" ]]
@@ -674,7 +866,7 @@ EOF_PROFILE
     grep -q '\[OK\] nftables rules match' <<<"$verify_match_output"
 
     rm -f "${PROFILES_DIR}"/*.env
-    make_ingress_profile standalone-line 26014 true 10.94.6.0/24 10.94.6.1/24 "" standalone 100 true healthy
+    make_ingress_profile standalone-line 26014 true 10.90.6.0/24 10.90.6.1/24 "" standalone 100 true healthy
     standalone_doctor_output="$(doctor_all 2>&1)"
     grep -q '当前没有已配置的线路组' <<<"$standalone_doctor_output"
     grep -q 'standalone 模式下主备组检查已跳过' <<<"$standalone_doctor_output"
