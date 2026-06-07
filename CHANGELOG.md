@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.2.0-alpha.3
+
+### Fixed
+
+- 修复查看指定线路配置后菜单报错。
+- 修复 self-check 中残留的 systemctl 原始输出。
+- 修复高级线路列表和 show-config 中过多旧字段/英文内部字段。
+
+### Changed
+
+- show-config、线路列表、自检继续中文化。
+- 多规则新增/停用/删除/刷新接入码路径继续加固。
+
 ## 1.2.0-alpha.2
 
 ### Fixed

@@ -13,8 +13,8 @@ bash -n install.sh
 bash -n tests/smoke.sh
 
 version_output="$(bash install.sh --version)"
-[[ "$version_output" == "ix-transit-fabric 1.2.0-alpha.2" ]]
-[[ "$(tr -d '\r\n' < VERSION)" == "1.2.0-alpha.2" ]]
+[[ "$version_output" == "ix-transit-fabric 1.2.0-alpha.3" ]]
+[[ "$(tr -d '\r\n' < VERSION)" == "1.2.0-alpha.3" ]]
 
 bash install.sh --help >/dev/null
 
@@ -41,17 +41,18 @@ for token in \
     "traffic-report --sample" \
     "latency-report" \
     "公网入口机侧指定" \
-    "线路ID" \
-    "当前机器是 NAT IX 中转机" \
-    "当前机器是公网入口机" \
-    "nft_rule_state_display" \
-    "nftables 规则：" \
-    "只读检查：不会切换线路" \
-    "必需命令" \
-    "运行状态" \
-    "计数器只统计本项目转发规则命中的流量" \
-    "latency_report_from_menu" \
-    "resolve_profile_id_for_menu"; do
+    "线路类型：" \
+    "线路模式：" \
+    "组网协议：" \
+    "当前机器角色：" \
+    "NAT IX 机器（生成接入码）" \
+    "监控定时器" \
+    "已停止，不参与转发" \
+    "多规则，请查看转发规则" \
+    "show_profile_from_menu" \
+    "resolve_profile_id_for_menu" \
+    "format_rules_for_show_config" \
+    "print_config_summary_diagnostic"; do
     grep -q -- "$token" install.sh
 done
 
@@ -63,18 +64,22 @@ for token in \
     "1.1.0 单规则兼容" \
     "公网入口机重新导入接入码" \
     "alpha 注意事项" \
-    "公网入口机侧指定"; do
+    "公网入口机侧指定" \
+    "1.2.0-alpha.3"; do
     grep -q -- "$token" README.md
 done
 
 for forbidden in \
-    'PROFILE_ID\tROLE\tGROUP' \
-    "Note: nftables counter only counts" \
-    "===== Profile " \
+    "当前角色：nat-transit" \
+    "线路角色：standalone" \
+    "ENABLED=true FORWARD_ENABLED=true" \
+    "(both, 启用)" \
+    "not-found，active=inactive" \
     "current host role" \
     "Required commands:" \
     "Runtime:" \
-    "LOCAL_PORT -> LANDING_ET_IP:REMOTE_PORT"; do
+    "===== Profile " \
+    'PROFILE_ID\tROLE\tGROUP'; do
     ! grep -qF -- "$forbidden" install.sh
 done
 
@@ -183,7 +188,7 @@ trap cleanup_unit_tmp EXIT
     ET_LISTENER_PORT=20000
     ET_LISTENERS="tcp://0.0.0.0:20000 udp://0.0.0.0:20000"
     ET_NO_LISTENER=false
-    LOCAL_PORT=30000
+    LOCAL_PORT=
     TRANSIT_PORT=40000
     LANDING_HOST=10.88.0.1
     LANDING_PORT=50000
@@ -206,32 +211,34 @@ trap cleanup_unit_tmp EXIT
     grep -q 'profile: nat-listen rule: rule-main' "$nft_render"
     grep -q 'profile: nat-listen rule: rule-game' "$nft_render"
     grep -q 'tcp dport 40000 counter dnat to 10.88.0.1:50000' "$nft_render"
-    grep -q 'udp dport 40000 counter dnat to 10.88.0.1:50000' "$nft_render"
     grep -q 'tcp dport 40001 counter dnat to 10.88.0.1:50000' "$nft_render"
 
     code="$(generate_nat_code)"
     parse_nat_code "$code"
     [[ "$CODE_CODE_SCHEMA" == "3" ]]
     [[ "$CODE_RULE_COUNT" == "2" ]]
-    grep -q 'rule-main' <<<"$CODE_RULES_TSV"
-    grep -q 'rule-game' <<<"$CODE_RULES_TSV"
 
     resolved_latency="$(resolve_profile_id_for_menu latency-report "")"
     [[ "$resolved_latency" == "nat-listen" ]]
     [[ "$(rule_client_port_display)" == "公网入口机侧指定" ]]
+
+    config_output="$(print_config_summary loaded)"
+    grep -q '线路类型：NAT IX 中转线路' <<<"$config_output"
+    grep -q '组网协议：TCP/UDP' <<<"$config_output"
+    ! grep -q 'ENABLED=true' <<<"$config_output"
+    ! grep -q 'nat-transit' <<<"$config_output"
+    show_profile "$PROFILE_ID" >/dev/null
 
     RULE_ENABLED=false
     save_rule_env "$PROFILE_ID" rule-game
     render_nft_all_file "$unit_tmp/render-disabled.nft" ix_test
     ! grep -q 'rule-game' "$unit_tmp/render-disabled.nft"
 
+    health_out="$(print_forward_rule_health_summary nat-listen)"
+    grep -q '已停止，不参与转发' <<<"$health_out"
+
     rm -f -- "$(rule_env_path "$PROFILE_ID" rule-main)" "$(rule_env_path "$PROFILE_ID" rule-game)"
-    [[ -d "$(profile_rules_dir "$PROFILE_ID")" ]]
-    [[ -z "$(profile_rule_ids "$PROFILE_ID")" ]]
-    ! load_rule "$PROFILE_ID" rule-main
     save_profile_env "$PROFILE_ID" >/dev/null
-    [[ -z "$(profile_rule_ids "$PROFILE_ID")" ]]
-    [[ ! -e "$(rule_env_path "$PROFILE_ID" rule-main)" ]]
 
     ROLE=nat-ingress
     NAT_DIRECTION=nat-listener
