@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.2.0-alpha.4
+
+### Fixed
+
+- 修复 `show-config PROFILE_ID` 直接命令仍读取旧单线路配置的问题。
+- 修复主菜单状态和高级状态仍显示旧主备字段的问题。
+
+### Changed
+
+- 状态列表统一为 NAT-IX 多规则主线视角。
+- 菜单路径和 CLI 直调用路径复用同一配置摘要输出。
+
 ## 1.2.0-alpha.3
 
 ### Fixed
@@ -65,7 +77,7 @@
 
 ### Safety
 
-- 不使用 flush ruleset。
+- 不清空全局 nftables 规则集。
 - 不全局 kill 业务进程。
 - 不安装代理服务。
 - 不自动切换线路。

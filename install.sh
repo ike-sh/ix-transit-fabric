@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-SCRIPT_VERSION="1.2.0-alpha.3"
+SCRIPT_VERSION="1.2.0-alpha.4"
 APP_NAME="ix-transit-fabric"
 
 CONFIG_DIR="/etc/ix-transit-fabric"
@@ -282,6 +282,7 @@ ix-transit-fabric - NAT-IX + EasyTier + nftables 中转线路管理脚本
 	  bash install.sh import-code [--code IXTF1:...] [--code-file PATH]
 	  bash install.sh show-code [线路ID]
 	  bash install.sh show-nat-code [线路ID]
+	  bash install.sh show-config [PROFILE_ID]
 	  bash install.sh show-port-map [线路ID] [--compact]
 	  bash install.sh show-port-map --all [--compact]
 	  bash install.sh show-port-map-compact [线路ID]
@@ -297,6 +298,8 @@ ix-transit-fabric - NAT-IX + EasyTier + nftables 中转线路管理脚本
 	  bash install.sh nat-guide [线路ID]
 	  bash install.sh check-port [--all|线路ID]
 	  bash install.sh check-business [--all|线路ID]
+
+	show-config PROFILE_ID 优先读取 profiles/PROFILE_ID.env；若只有一条线路，自动选择唯一线路。
 
 	旧版兼容命令（不推荐新用户使用）：
 	  bash install.sh add-landing-profile
@@ -5960,7 +5963,25 @@ show_profile_summary_legacy_tail() {
 
 show_config() {
     require_root "$@"
+    local profile_id="${1:-}" count
+    count="$(profile_count)"
+    if [[ -n "$profile_id" || "$count" != "0" ]]; then
+        if ! profile_id="$(resolve_profile_id_for_cmd "$profile_id" show-config)"; then
+            return_or_exit 2 || return $?
+        fi
+        if ! load_profile "$profile_id"; then
+            print_profile_selection_hint "$profile_id" show-config
+            return_or_exit 2 || return $?
+        fi
+        print_config_summary loaded || die_user "没有可显示的已保存配置。"
+        return 0
+    fi
+    if [[ ! -f "$ENV_FILE" ]]; then
+        printf '[ERROR] 当前没有线路，请先创建 NAT IX 中转线路或导入接入码。\n' >&2
+        return_or_exit 2 || return $?
+    fi
     print_config_summary || die_user "没有可显示的已保存配置。"
+    return 0
 }
 
 panel_guide() {
@@ -13042,22 +13063,23 @@ doctor_profile() {
 
 status_all() {
     require_root "$@"
-    local verbose="${1:-}" id service active enabled_label forward_label group_display health total=0 enabled_count=0 forwarding_count=0
-    local healthy=0 warning=0 down=0 unknown=0 groups_count abnormal_groups=0 group
+    local verbose="${1:-}" id service active enabled_label forward_label health rule_count total=0 enabled_count=0 forwarding_count=0
+    local healthy=0 warning=0 down=0 unknown=0
     [[ "$verbose" == "--verbose" || -z "$verbose" ]] || die_user "用法：status-all [--verbose]"
-    printf '线路ID\t角色\t线路组\t主备角色\t启用\t转发\t服务\t健康\t最近检查\n'
+    # 状态列表不显示主备角色；旧字段保留在诊断导出和主备维护命令中。
+    printf '线路ID\t角色\t启用\t转发\t服务\t健康\t规则数\t最近检查\n'
     for id in $(sorted_profile_ids); do
         total=$((total + 1))
         if ! load_profile "$id"; then
             unknown=$((unknown + 1))
-            printf '%s\t-\t-\t-\t停止\t停止\t未知\t未检查\t-\n' "$id"
+            printf '%s\t-\t停止\t停止\t未知\t未检查\t0\t-\n' "$id"
             continue
         fi
         service="$(profile_service_name "$id")"
         active="$(profile_service_status "$service")"
         enabled_label="$(enabled_label_zh "${ENABLED:-true}")"
         forward_label="$(forward_label_zh "${ROLE:-}" "${ENABLED:-true}" "${FORWARD_ENABLED:-true}")"
-        group_display="${LINE_GROUP:-standalone}"
+        rule_count="$(profile_rule_count "$id")"
         [[ "${ENABLED:-true}" == "true" ]] && enabled_count=$((enabled_count + 1))
         [[ "${FORWARD_ENABLED:-true}" == "true" && "${ENABLED:-true}" == "true" ]] && case "${ROLE:-}" in panel-ingress|nat-ingress|nat-transit) forwarding_count=$((forwarding_count + 1)) ;; esac
         health="${HEALTH_STATUS:-unknown}"
@@ -13067,20 +13089,12 @@ status_all() {
             down) down=$((down + 1)) ;;
             *) unknown=$((unknown + 1)) ;;
         esac
-        printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-            "$id" "$(profile_role_label_zh "${ROLE:-}")" "$group_display" "$(line_role_label_zh "${LINE_ROLE:-standalone}")" \
-            "$enabled_label" "$forward_label" "$(service_label_zh "${active:-unknown}")" "$(health_label_zh "$health")" \
-            "${LAST_HEALTH_CHECK_AT:--}"
+        printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+            "$id" "$(profile_role_label_zh "${ROLE:-}")" "$enabled_label" "$forward_label" \
+            "$(service_label_zh "${active:-unknown}")" "$(health_label_zh "$health")" "$rule_count" "${LAST_HEALTH_CHECK_AT:--}"
     done
-    groups_count="$(profile_groups | awk 'NF{c++} END{print c+0}')"
-    while IFS= read -r group; do
-        [[ -n "$group" ]] || continue
-        if group_abnormal "$group"; then
-            abnormal_groups=$((abnormal_groups + 1))
-        fi
-    done < <(profile_groups)
-    printf '\n汇总：线路总数=%s 启用=%s 转发中=%s 健康=%s 警告=%s 故障=%s 未检查=%s 线路组=%s 异常线路组=%s\n' \
-        "$total" "$enabled_count" "$forwarding_count" "$healthy" "$warning" "$down" "$unknown" "$groups_count" "$abnormal_groups"
+    printf '\n汇总：线路总数=%s 启用=%s 转发中=%s 健康=%s 警告=%s 故障=%s 未检查=%s\n' \
+        "$total" "$enabled_count" "$forwarding_count" "$healthy" "$warning" "$down" "$unknown"
     if [[ "$verbose" == "--verbose" ]]; then
         printf '\nGroup details:\n'
         doctor_group_warnings
@@ -15084,7 +15098,7 @@ main() {
             status
             ;;
         show-config)
-            show_config
+            show_config "${args[1]:-}"
             ;;
         doctor)
             doctor "${args[1]:-}"

@@ -13,8 +13,8 @@ bash -n install.sh
 bash -n tests/smoke.sh
 
 version_output="$(bash install.sh --version)"
-[[ "$version_output" == "ix-transit-fabric 1.2.0-alpha.3" ]]
-[[ "$(tr -d '\r\n' < VERSION)" == "1.2.0-alpha.3" ]]
+[[ "$version_output" == "ix-transit-fabric 1.2.0-alpha.4" ]]
+[[ "$(tr -d '\r\n' < VERSION)" == "1.2.0-alpha.4" ]]
 
 bash install.sh --help >/dev/null
 
@@ -49,6 +49,12 @@ for token in \
     "监控定时器" \
     "已停止，不参与转发" \
     "多规则，请查看转发规则" \
+    "show-config PROFILE_ID" \
+    "profiles/PROFILE_ID.env" \
+    "当前没有线路" \
+    "若只有一条线路，自动选择唯一线路" \
+    "规则数" \
+    "状态列表不显示主备角色" \
     "show_profile_from_menu" \
     "resolve_profile_id_for_menu" \
     "format_rules_for_show_config" \
@@ -65,7 +71,7 @@ for token in \
     "公网入口机重新导入接入码" \
     "alpha 注意事项" \
     "公网入口机侧指定" \
-    "1.2.0-alpha.3"; do
+    "1.2.0-alpha.4"; do
     grep -q -- "$token" README.md
 done
 
@@ -227,7 +233,20 @@ trap cleanup_unit_tmp EXIT
     grep -q '组网协议：TCP/UDP' <<<"$config_output"
     ! grep -q 'ENABLED=true' <<<"$config_output"
     ! grep -q 'nat-transit' <<<"$config_output"
-    show_profile "$PROFILE_ID" >/dev/null
+    cli_config_output="$(show_config "$PROFILE_ID")"
+    menu_config_output="$(show_profile "$PROFILE_ID")"
+    [[ "$cli_config_output" == "$menu_config_output" ]]
+    ! grep -q '配置文件：未找到' <<<"$cli_config_output"
+    ! grep -q '没有可显示的已保存配置' <<<"$cli_config_output"
+    ! grep -q '主备角色' <<<"$cli_config_output"
+    ! grep -q 'standalone' <<<"$cli_config_output"
+
+    status_output="$(status_all)"
+    grep -q $'线路ID\t角色\t启用\t转发\t服务\t健康\t规则数\t最近检查' <<<"$status_output"
+    grep -q $'nat-listen\tNAT IX 中转线路\t启用\t转发中\t未知\t未检查\t2\t-' <<<"$status_output"
+    grep -q '汇总：线路总数=1 启用=1 转发中=1 健康=0 警告=0 故障=0 未检查=1' <<<"$status_output"
+    ! grep -q '主备角色' <<<"$status_output"
+    ! grep -q 'standalone' <<<"$status_output"
 
     RULE_ENABLED=false
     save_rule_env "$PROFILE_ID" rule-game
