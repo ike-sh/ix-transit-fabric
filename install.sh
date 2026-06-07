@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-SCRIPT_VERSION="1.2.0-alpha.5"
+SCRIPT_VERSION="1.2.0-alpha.6"
 APP_NAME="ix-transit-fabric"
 
 CONFIG_DIR="/etc/ix-transit-fabric"
@@ -158,14 +158,8 @@ print_port_map_compact() {
                 else
                     printf '  商家 NAT/IX 入口地址:商家分配入口端口（未配置）\n\n'
                 fi
-                printf '虚拟网转发：\n'
-                printf '  客户端入口端口 %s -> %s:%s\n\n' "$local_port" "$nat_et_ip" "$transit_port"
-                printf '最终落地：\n'
-                if [[ -n "${LANDING_HOST:-}" && -n "${LANDING_PORT:-}" ]]; then
-                    printf '  %s:%s\n\n' "$landing_host" "$landing_port"
-                else
-                    printf '  落地机地址:落地业务端口（来自 NAT IX 接入码）\n\n'
-                fi
+                printf '转发规则：\n'
+                format_rules_for_port_map "$profile_id"
                 printf '说明：虚拟网中转端口只在 EasyTier 虚拟网内部使用，不是公网端口，不是商家入口端口。\n'
             else
                 printf '线路：%s（公网入口线路，兼容旧模式）\n\n' "$profile_id"
@@ -195,11 +189,11 @@ print_port_map_compact() {
                 printf '虚拟网：\n'
                 printf '  NAT IX 虚拟 IP：%s\n' "$nat_et_ip"
                 printf '  公网入口机虚拟 IP：%s\n\n' "$ingress_et_ip"
-                printf '虚拟网中转：\n'
-                printf '  %s:%s -> %s:%s\n' "$nat_et_ip" "$(c_cyan "$transit_port")" "$landing_host" "$landing_port"
-                printf '  说明：虚拟网中转端口只在 EasyTier 虚拟网内部使用，不是公网端口，不需要商家放行。\n\n'
+                printf '转发规则：\n'
+                format_rules_for_port_map "$profile_id"
+                printf '说明：虚拟网中转端口只在 EasyTier 虚拟网内部使用，不是公网端口，不需要商家放行。\n\n'
                 printf '客户端连接：\n'
-                printf '  公网入口机导入接入码后，客户端连接：公网入口机公网 IP:%s\n' "$local_port"
+                printf '  公网入口机导入接入码后，客户端连接各规则的公网入口端口。\n'
             else
                 printf '线路：%s（NAT IX 中转线路，兼容旧模式）\n\n' "$profile_id"
                 printf '连接公网入口机：\n'
@@ -1487,7 +1481,13 @@ load_rule() {
         return 1
     fi
     RULE_ID="${RULE_ID:-$rule_id}"
-    RULE_NOTE="${RULE_NOTE:-默认转发}"
+    if [[ -z "${RULE_NOTE+x}" ]]; then
+        if [[ "$rule_id" == "rule-main" ]]; then
+            RULE_NOTE="默认转发"
+        else
+            RULE_NOTE=""
+        fi
+    fi
     RULE_ENABLED="${RULE_ENABLED:-true}"
     FORWARD_PROTO="$(normalize_forward_proto "${FORWARD_PROTO:-both}" "both" 2>/dev/null || printf 'both\n')"
 }
@@ -1498,6 +1498,7 @@ save_rule_env() {
     validate_rule_id "$rule_id" || die_user "RULE_ID 格式不正确：${rule_id}"
     RULE_ID="$rule_id"
     validate_rule_config_current
+    check_rule_port_conflicts_for_save "$profile_id" "$rule_id"
     ensure_profile_dirs
     dir="$(profile_rules_dir "$profile_id")"
     install -d -m 700 "$dir"
@@ -1587,13 +1588,13 @@ check_profile_rule_conflicts() {
     for rule_id in $(profile_rule_ids "$profile_id"); do
         load_rule "$profile_id" "$rule_id" || continue
         validate_rule_config_current
-        if [[ -n "${CLIENT_PORT:-}" ]]; then
+        if [[ "${RULE_ENABLED:-true}" == "true" && -n "${CLIENT_PORT:-}" ]]; then
             if [[ "$seen_client" == *" ${CLIENT_PORT} "* ]]; then
                 die_user "同一线路下客户端入口端口冲突：${CLIENT_PORT}"
             fi
             seen_client="${seen_client}${CLIENT_PORT} "
         fi
-        if [[ -n "${TRANSIT_PORT:-}" ]]; then
+        if [[ "${RULE_ENABLED:-true}" == "true" && -n "${TRANSIT_PORT:-}" ]]; then
             if [[ "$seen_transit" == *" ${TRANSIT_PORT} "* ]]; then
                 die_user "同一线路下虚拟网中转端口冲突：${TRANSIT_PORT}"
             fi
@@ -1609,6 +1610,67 @@ check_profile_rule_conflicts() {
     LANDING_PORT="$saved_landing_port"
     FORWARD_PROTO="$saved_proto"
     LOCAL_PORT="$saved_local"
+}
+
+current_profile_forward_transit_ports() {
+    local profile_id="${1:-${PROFILE_ID:-}}" rule_id
+    local saved_rule_id="${RULE_ID:-}" saved_note="${RULE_NOTE:-}" saved_enabled="${RULE_ENABLED:-}" saved_client="${CLIENT_PORT:-}"
+    local saved_transit="${TRANSIT_PORT:-}" saved_landing_host="${LANDING_HOST:-}" saved_landing_port="${LANDING_PORT:-}" saved_proto="${FORWARD_PROTO:-both}" saved_created="${CREATED_AT:-}" saved_updated="${UPDATED_AT:-}"
+    [[ "${ENABLED:-true}" == "true" && "${FORWARD_ENABLED:-true}" == "true" ]] || return 0
+    case "${ROLE:-}" in
+        nat-transit)
+            for rule_id in $(profile_rule_ids "$profile_id"); do
+                load_rule "$profile_id" "$rule_id" || continue
+                [[ "${RULE_ENABLED:-true}" == "true" && -n "${TRANSIT_PORT:-}" ]] || continue
+                printf '%s\n' "$TRANSIT_PORT"
+            done
+            ;;
+    esac
+    RULE_ID="$saved_rule_id"; RULE_NOTE="$saved_note"; RULE_ENABLED="$saved_enabled"; CLIENT_PORT="$saved_client"; TRANSIT_PORT="$saved_transit"; LANDING_HOST="$saved_landing_host"; LANDING_PORT="$saved_landing_port"; FORWARD_PROTO="$saved_proto"; CREATED_AT="$saved_created"; UPDATED_AT="$saved_updated"
+}
+
+profile_forward_transit_ports_for_conflict() (
+    local profile_id="$1"
+    load_profile "$profile_id" >/dev/null 2>&1 || return 0
+    current_profile_forward_transit_ports "$profile_id"
+)
+
+profile_uses_rule_port_for_conflict() {
+    local profile_id="$1" field="$2" port="$3" except_rule="${4:-}" rule_id value
+    port_used_by_profile_rule "$profile_id" "$field" "$port" "$except_rule" && return 0
+    case "$field" in
+        client)
+            for other in $(profile_ids); do
+                [[ "$other" == "$profile_id" ]] && continue
+                while IFS= read -r value; do
+                    [[ -n "$value" ]] || continue
+                    [[ "$value" == "$port" ]] && return 0
+                done < <(profile_forward_client_ports_for_conflict "$other")
+            done
+            ;;
+        transit)
+            [[ "${ROLE:-}" == "nat-transit" ]] || return 1
+            for other in $(profile_ids); do
+                [[ "$other" == "$profile_id" ]] && continue
+                while IFS= read -r value; do
+                    [[ -n "$value" ]] || continue
+                    [[ "$value" == "$port" ]] && return 0
+                done < <(profile_forward_transit_ports_for_conflict "$other")
+            done
+            ;;
+    esac
+    return 1
+}
+
+check_rule_port_conflicts_for_save() {
+    local profile_id="$1" rule_id="$2"
+    [[ "${RULE_ENABLED:-true}" == "true" ]] || return 0
+    if [[ -n "${CLIENT_PORT:-}" ]] && profile_uses_rule_port_for_conflict "$profile_id" client "$CLIENT_PORT" "$rule_id"; then
+        die_user "不允许两条规则共用一个 CLIENT_PORT：${CLIENT_PORT}"
+    fi
+    if [[ -n "${TRANSIT_PORT:-}" ]] && profile_uses_rule_port_for_conflict "$profile_id" transit "$TRANSIT_PORT" "$rule_id"; then
+        die_user "不允许两条规则共用一个 TRANSIT_PORT：${TRANSIT_PORT}"
+    fi
 }
 
 profile_hint_line() {
@@ -4363,10 +4425,10 @@ format_rules_for_show_config() {
 profile_rule_path_display() {
     case "${ROLE:-}" in
         nat-ingress)
-            printf '%s -> %s:%s' "${CLIENT_PORT:-客户端入口端口}" "${NAT_ET_IP:-NAT IX 虚拟 IP}" "${TRANSIT_PORT:-虚拟网中转端口}"
+            printf '%s -> %s:%s -> %s:%s' "${CLIENT_PORT:-客户端入口端口}" "${NAT_ET_IP:-NAT IX 虚拟 IP}" "${TRANSIT_PORT:-虚拟网中转端口}" "${LANDING_HOST:-落地机地址}" "${LANDING_PORT:-落地业务端口}"
             ;;
         nat-transit)
-            printf '%s:%s -> %s:%s' "${NAT_ET_IP:-NAT IX 虚拟 IP}" "${TRANSIT_PORT:-虚拟网中转端口}" "${LANDING_HOST:-落地机地址}" "${LANDING_PORT:-落地业务端口}"
+            printf '公网入口机侧指定 -> %s:%s -> %s:%s' "${NAT_ET_IP:-NAT IX 虚拟 IP}" "${TRANSIT_PORT:-虚拟网中转端口}" "${LANDING_HOST:-落地机地址}" "${LANDING_PORT:-落地业务端口}"
             ;;
         *)
             printf '%s -> %s' "$(profile_nft_dport 2>/dev/null || printf '-')" "$(profile_nft_target 2>/dev/null || printf '-')"
@@ -4542,8 +4604,8 @@ check_profile_conflicts() {
 }
 
 check_all_profiles_conflicts() {
-    local id path role direction enabled forward_enabled local_port listener_port subnet et_ip
-    declare -A seen_local=() seen_listener=() seen_subnet=() seen_ip=()
+    local id path role direction enabled forward_enabled local_port transit_port listener_port subnet et_ip
+    declare -A seen_local=() seen_transit=() seen_listener=() seen_subnet=() seen_ip=()
     for id in $(profile_ids); do
         path="$(profile_env_path "$id")"
         profile_path_enabled "$path" || continue
@@ -4559,6 +4621,18 @@ check_all_profiles_conflicts() {
                     fi
                     seen_local[$local_port]="$id"
                 done < <(profile_forward_client_ports_for_conflict "$id")
+            fi
+        fi
+        if [[ "$role" == "nat-transit" ]]; then
+            forward_enabled="$(profile_env_value_from_path "$path" FORWARD_ENABLED 2>/dev/null || true)"
+            if [[ "${forward_enabled:-true}" == "true" ]]; then
+                while IFS= read -r transit_port; do
+                    [[ -n "$transit_port" ]] || continue
+                    if [[ -n "${seen_transit[$transit_port]:-}" ]]; then
+                        die_user "多个启用 Profile 使用相同 TRANSIT_PORT：${transit_port}（${seen_transit[$transit_port]} 与 ${id}）"
+                    fi
+                    seen_transit[$transit_port]="$id"
+                done < <(profile_forward_transit_ports_for_conflict "$id")
             fi
         fi
 
@@ -4911,7 +4985,7 @@ nat_code_rules_json() {
 }
 
 render_nat_code_json() {
-    local created_at ingress_listener_proto ingress_listener_protos nat_direction nat_listener_proto nat_listener_protos
+    local created_at ingress_listener_proto ingress_listener_protos nat_direction nat_listener_proto nat_listener_protos rules_json rules_b64
     validate_easytier_args
     [[ "$ROLE" == "nat-ingress" || "$ROLE" == "nat-transit" ]] || die_user "只有 NAT-IX Profile 可以生成 NAT-IX 接入码。"
     normalize_profile_compat_vars
@@ -4922,6 +4996,8 @@ render_nat_code_json() {
         [[ "$ROLE" == "nat-transit" ]] || die_user "只有 NAT IX 中转线路可以生成推荐模式接入码。"
         nat_listener_proto="$(normalize_listener_proto "${NAT_LISTENER_PROTO:-both}" "both")"
         nat_listener_protos="$(normalize_listener_protos "$nat_listener_proto" "both")"
+        rules_json="$(nat_code_rules_json)"
+        rules_b64="$(nat_code_rules_b64)"
 
         printf '{'
         printf '"version":3,'
@@ -4947,8 +5023,8 @@ render_nat_code_json() {
         printf '"landing_host":"%s",' "$(json_escape "$LANDING_HOST")"
         printf '"landing_port":%s,' "$LANDING_PORT"
         printf '"forward_proto":"%s",' "${FORWARD_PROTO:-both}"
-        printf '"rules":%s,' "$(nat_code_rules_json)"
-        printf '"rules_b64":"%s",' "$(nat_code_rules_b64)"
+        printf '"rules":%s,' "$rules_json"
+        printf '"rules_b64":"%s",' "$rules_b64"
         printf '"created_at":"%s"' "$created_at"
         printf '}'
         return 0
@@ -4996,13 +5072,16 @@ save_landing_code_file() {
 }
 
 format_rules_for_code_summary() {
-    local profile_id="$1" rule_id saved_local saved_transit saved_landing_host saved_landing_port saved_proto
+    local profile_id="$1" rule_id index=0 saved_local saved_transit saved_landing_host saved_landing_port saved_proto
     saved_local="${LOCAL_PORT:-}"; saved_transit="${TRANSIT_PORT:-}"; saved_landing_host="${LANDING_HOST:-}"; saved_landing_port="${LANDING_PORT:-}"; saved_proto="${FORWARD_PROTO:-both}"
     for rule_id in $(profile_rule_ids "$profile_id"); do
         load_rule "$profile_id" "$rule_id" || continue
-        printf '  - %s [%s] %s:%s -> %s:%s（%s）\n' \
-            "$rule_id" "$(rule_note_display)" "${NAT_ET_IP:-NAT IX 虚拟 IP}" "${TRANSIT_PORT:-}" "${LANDING_HOST:-}" "${LANDING_PORT:-}" "$(proto_display_user "${FORWARD_PROTO:-both}")"
+        index=$((index + 1))
+        printf '%s. %s  %s  [%s]  %s:%s -> %s:%s（%s）\n' \
+            "$index" "$rule_id" "$(profile_rule_status_display)" "$(rule_note_display)" \
+            "${NAT_ET_IP:-NAT IX 虚拟 IP}" "${TRANSIT_PORT:-}" "${LANDING_HOST:-}" "${LANDING_PORT:-}" "$(proto_display_user "${FORWARD_PROTO:-both}")"
     done
+    [[ "$index" -gt 0 ]] || printf '暂无转发规则。\n'
     LOCAL_PORT="$saved_local"; TRANSIT_PORT="$saved_transit"; LANDING_HOST="$saved_landing_host"; LANDING_PORT="$saved_landing_port"; FORWARD_PROTO="$saved_proto"
 }
 
@@ -5013,16 +5092,23 @@ format_rules_for_port_map() {
         load_rule "$profile_id" "$rule_id" || continue
         case "${ROLE:-}" in
             nat-ingress)
-                printf '[%s] %s -> %s:%s -> %s:%s（%s，%s）\n' \
-                    "$(rule_note_display)" "$(rule_client_port_display)" "${NAT_ET_IP:-NAT IX 虚拟 IP}" "${TRANSIT_PORT:-虚拟网中转端口}" \
-                    "${LANDING_HOST:-落地目标}" "${LANDING_PORT:-}" "$(proto_display_user "${FORWARD_PROTO:-both}")" "$(profile_rule_status_display)"
+                printf '%s  %s  [%s]\n' "$rule_id" "$(profile_rule_status_display)" "$(rule_note_display)"
+                printf '  公网入口端口：%s\n' "$(rule_client_port_display)"
+                printf '  虚拟网中转端口：%s\n' "${TRANSIT_PORT:-虚拟网中转端口}"
+                printf '  落地目标：%s:%s\n' "${LANDING_HOST:-落地目标}" "${LANDING_PORT:-}"
+                printf '  完整路径：%s\n' "$(profile_rule_path_display)"
+                printf '  协议：%s\n' "$(proto_display_user "${FORWARD_PROTO:-both}")"
                 ;;
             nat-transit)
-                printf '[%s] %s:%s -> %s:%s（%s，%s）\n' \
-                    "$(rule_note_display)" "${NAT_ET_IP:-NAT IX 虚拟 IP}" "${TRANSIT_PORT:-虚拟网中转端口}" \
-                    "${LANDING_HOST:-落地机地址}" "${LANDING_PORT:-落地业务端口}" "$(proto_display_user "${FORWARD_PROTO:-both}")" "$(profile_rule_status_display)"
+                printf '%s  %s  [%s]\n' "$rule_id" "$(profile_rule_status_display)" "$(rule_note_display)"
+                printf '  公网入口端口：%s\n' "$(rule_client_port_display)"
+                printf '  虚拟网中转端口：%s\n' "${TRANSIT_PORT:-虚拟网中转端口}"
+                printf '  落地目标：%s:%s\n' "${LANDING_HOST:-落地机地址}" "${LANDING_PORT:-落地业务端口}"
+                printf '  完整路径：%s\n' "$(profile_rule_path_display)"
+                printf '  协议：%s\n' "$(proto_display_user "${FORWARD_PROTO:-both}")"
                 ;;
         esac
+        printf '\n'
     done
     LOCAL_PORT="$saved_local"; TRANSIT_PORT="$saved_transit"; LANDING_HOST="$saved_landing_host"; LANDING_PORT="$saved_landing_port"; FORWARD_PROTO="$saved_proto"
 }
@@ -5052,6 +5138,10 @@ show_code() {
         if [[ "${ROLE:-}" == "nat-transit" && "${NAT_DIRECTION:-ingress-listener}" == "nat-listener" ]]; then
             cat <<EOF
 NAT-IX 接入码（复制整段到公网入口机）
+
+本次接入码包含以下规则：
+$(format_rules_for_code_summary "$PROFILE_ID")
+
 $(c_yellow '===== 接入码开始 =====')
 ${code}
 $(c_yellow '===== 接入码结束 =====')
@@ -5060,8 +5150,6 @@ $(c_yellow '===== 接入码结束 =====')
 商家 NAT/IX 入口：${NAT_PUBLIC_HOST}:${NAT_LISTENER_PORT}
 NAT IX 虚拟 IP：${NAT_ET_IP}
 公网入口机虚拟 IP：${INGRESS_ET_IP}
-转发规则：
-$(format_rules_for_code_summary "$PROFILE_ID")
 EOF
             print_access_code_security_hint
             return 0
@@ -6634,26 +6722,73 @@ add_nat_transit_profile_from_code() {
     print_nat_ingress_created_summary "$PROFILE_ID"
 }
 
+print_code_rules_import_summary() {
+    local line rule_id note enabled transit_port landing_host landing_port forward_proto index=0
+    printf '\n接入码包含 %s 条转发规则：\n\n' "${CODE_RULE_COUNT:-0}"
+    while IFS=$'\t' read -r -u 3 rule_id note enabled transit_port landing_host landing_port forward_proto || [[ -n "${rule_id:-}" ]]; do
+        [[ -n "${rule_id:-}" ]] || continue
+        index=$((index + 1))
+        printf '%s. %s  %s  [%s]\n' "$index" "$rule_id" "$(enabled_label_zh "${enabled:-true}")" "$(rule_note_display "$note")"
+        printf '   虚拟网中转端口：%s\n' "$transit_port"
+        printf '   落地目标：%s:%s\n\n' "$landing_host" "$landing_port"
+    done 3<<<"${CODE_RULES_TSV:-}"
+}
+
+prompt_rule_client_port_for_import() {
+    local profile_id="$1" rule_id="$2" note="$3" default_port="${4:-}" value
+    while true; do
+        if [[ -n "$default_port" ]]; then
+            printf '已存在本地客户端入口端口：%s，按回车保留，或输入新端口：' "$default_port" >&2
+        else
+            printf '请输入规则 %s [%s] 的客户端入口端口（回车随机）：' "$rule_id" "$(rule_note_display "$note")" >&2
+        fi
+        IFS= read -r value || return 1
+        value="$(trim_space "${value%$'\r'}")"
+        if [[ -z "$value" ]]; then
+            if [[ -n "$default_port" ]]; then
+                value="$default_port"
+            else
+                value="$(pick_random_rule_port "$profile_id" client "$rule_id" || true)"
+                [[ -n "$value" ]] || die_user "无法分配未占用的客户端入口端口。"
+                printf '已随机分配客户端入口端口：%s\n' "$value" >&2
+            fi
+        fi
+        if ! validate_port "$value"; then
+            log_warn "客户端入口端口必须是 1-65535。"
+            continue
+        fi
+        if profile_uses_rule_port_for_conflict "$profile_id" client "$value" "$rule_id"; then
+            log_warn "客户端入口端口已被其他规则使用：${value}"
+            continue
+        fi
+        printf '%s\n' "$value"
+        return 0
+    done
+}
+
 sync_nat_listener_code_rules_to_ingress_profile() {
     local profile_id="$1" line rule_id note enabled transit_port landing_host landing_port forward_proto
-    local default_client client_port first="true" remote_ids=" " existing answer
+    local default_client client_port first="true" remote_ids=" " existing answer local_exists="false"
     local first_client="" first_transit="" first_landing_host="" first_landing_port="" first_proto=""
+    local added=0 updated=0 disabled=0 kept=0
     validate_profile_id "$profile_id" || die_user "PROFILE_ID 格式不正确：${profile_id}"
-    while IFS=$'\t' read -r rule_id note enabled transit_port landing_host landing_port forward_proto || [[ -n "${rule_id:-}" ]]; do
+    print_code_rules_import_summary
+    while IFS=$'\t' read -r -u 3 rule_id note enabled transit_port landing_host landing_port forward_proto || [[ -n "${rule_id:-}" ]]; do
         [[ -n "${rule_id:-}" ]] || continue
         remote_ids="${remote_ids}${rule_id} "
         default_client=""
+        local_exists="false"
         if load_rule "$profile_id" "$rule_id" >/dev/null 2>&1 && [[ -n "${CLIENT_PORT:-}" ]]; then
             default_client="$CLIENT_PORT"
         fi
-        [[ -n "$default_client" ]] || default_client="$(pick_random_port || true)"
-        if [[ "${CODE_RULE_COUNT:-1}" -eq 1 && -n "${LOCAL_PORT:-}" && "$first" == "true" ]]; then
-            client_port="$LOCAL_PORT"
+        if [[ -f "$(rule_env_path "$profile_id" "$rule_id" 2>/dev/null || printf /nonexistent)" ]]; then
+            local_exists="true"
+        fi
+        if [[ "${enabled:-true}" == "true" ]]; then
+            client_port="$(prompt_rule_client_port_for_import "$profile_id" "$rule_id" "$note" "$default_client")" || return 1
         else
-            printf '\n规则：%s\n' "$rule_id" >&2
-            printf '备注：%s\n' "${note:-}" >&2
-            printf '落地目标：%s:%s\n' "$landing_host" "$landing_port" >&2
-            client_port="$(prompt_random_port "请输入该规则的客户端入口端口（回车随机）" "$default_client")" || return 1
+            client_port="$default_client"
+            printf '规则 %s [%s] 已在接入码中标记为停止，本地同步为停止。\n' "$rule_id" "$(rule_note_display "$note")" >&2
         fi
         RULE_ID="$rule_id"
         RULE_NOTE="${note:-}"
@@ -6664,6 +6799,15 @@ sync_nat_listener_code_rules_to_ingress_profile() {
         LANDING_PORT="$landing_port"
         FORWARD_PROTO="${forward_proto:-both}"
         save_rule_env "$profile_id" "$rule_id"
+        if [[ "${enabled:-true}" == "true" ]]; then
+            if [[ "$local_exists" == "true" ]]; then
+                updated=$((updated + 1))
+            else
+                added=$((added + 1))
+            fi
+        else
+            disabled=$((disabled + 1))
+        fi
         if [[ "$first" == "true" ]]; then
             first_client="$client_port"
             first_transit="$transit_port"
@@ -6672,16 +6816,20 @@ sync_nat_listener_code_rules_to_ingress_profile() {
             first_proto="${forward_proto:-both}"
             first="false"
         fi
-    done <<<"${CODE_RULES_TSV:-}"
+    done 3<<<"${CODE_RULES_TSV:-}"
 
     for existing in $(profile_rule_ids "$profile_id"); do
         [[ "$remote_ids" == *" ${existing} "* ]] && continue
         [[ -f "$(rule_env_path "$profile_id" "$existing" 2>/dev/null || printf /nonexistent)" ]] || continue
-        answer="$(prompt_yes_no "远端接入码中已没有规则 ${existing}，是否停用本地对应规则" "true")" || answer="true"
+        printf '本地规则 %s 已不在 NAT IX 接入码中。\n' "$existing" >&2
+        answer="$(prompt_yes_no "是否停用本地规则" "true")" || answer="true"
         if [[ "$answer" == "true" ]]; then
             load_rule "$profile_id" "$existing" || continue
             RULE_ENABLED="false"
             save_rule_env "$profile_id" "$existing"
+            disabled=$((disabled + 1))
+        else
+            kept=$((kept + 1))
         fi
     done
 
@@ -6691,10 +6839,15 @@ sync_nat_listener_code_rules_to_ingress_profile() {
     LANDING_PORT="$first_landing_port"
     FORWARD_PROTO="$first_proto"
     apply_nft_all || true
+    printf '\n同步结果：\n\n'
+    printf '* 新增规则：%s\n' "$added"
+    printf '* 更新规则：%s\n' "$updated"
+    printf '* 停用规则：%s\n' "$disabled"
+    printf '* 保留规则：%s\n' "$kept"
 }
 
 add_nat_ingress_from_listener_code() {
-    local profile_id code default_local_port detected_public env_public advanced first_rule_id first_note first_enabled first_transit first_landing_host first_landing_port first_proto
+    local profile_id code detected_public env_public advanced first_rule_id first_note first_enabled first_transit first_landing_host first_landing_port first_proto
     require_root "$@"
     run_profile_install_preflight nat-ingress
     require_tty add-nat-ingress-from-listener-code
@@ -6703,10 +6856,6 @@ add_nat_ingress_from_listener_code() {
     code="$(read_nat_code_from_args_or_prompt)" || die_user "未读取到 NAT-IX 推荐模式接入码。"
     parse_nat_code "$code"
     [[ "${CODE_NAT_DIRECTION:-}" == "nat-listener" ]] || die_user "这是旧模式接入码，请选择兼容旧模式导入，或重新在 NAT IX 机器生成推荐模式接入码。"
-    default_local_port="$(pick_random_port || true)"
-    if [[ "${CODE_RULE_COUNT:-1}" -eq 1 ]]; then
-        LOCAL_PORT="$(prompt_random_port "请输入客户端连接公网入口机的端口" "$default_local_port")" || return 1
-    fi
     advanced="$(prompt_yes_no "是否自定义高级参数" "false")" || return 1
     if [[ "$advanced" == "true" ]]; then
         collect_profile_identity "nat-ingress" || return 1
@@ -7346,6 +7495,7 @@ port_used_by_profile_rule() {
     for rule_id in $(profile_rule_ids "$profile_id"); do
         [[ "$rule_id" == "$except_rule" ]] && continue
         load_rule "$profile_id" "$rule_id" || continue
+        [[ "${RULE_ENABLED:-true}" == "true" ]] || continue
         case "$field" in
             client) value="${CLIENT_PORT:-}" ;;
             transit) value="${TRANSIT_PORT:-}" ;;
@@ -7361,10 +7511,10 @@ port_used_by_profile_rule() {
 }
 
 pick_random_rule_port() {
-    local profile_id="$1" field="$2" port tries=0
+    local profile_id="$1" field="$2" except_rule="${3:-}" port tries=0
     while (( tries < 60 )); do
         port="$(pick_random_port || true)"
-        if [[ -n "$port" ]] && ! port_used_by_profile_rule "$profile_id" "$field" "$port"; then
+        if [[ -n "$port" ]] && ! profile_uses_rule_port_for_conflict "$profile_id" "$field" "$port" "$except_rule"; then
             printf '%s\n' "$port"
             return 0
         fi
@@ -7442,9 +7592,10 @@ print_rule_menu_rules() {
             target="未配置"
         fi
         printf '%s. %s  %s  [%s]\n' "$index" "$rule_id" "$(profile_rule_status_display)" "$(rule_note_display)"
-        printf '   客户端入口端口：%s\n' "$(rule_client_port_display)"
+        printf '   公网入口端口：%s\n' "$(rule_client_port_display)"
         printf '   虚拟网中转端口：%s\n' "${TRANSIT_PORT:-未配置}"
         printf '   落地目标：%s\n' "$target"
+        printf '   完整路径：%s\n' "$(profile_rule_path_display)"
         printf '   协议：%s\n\n' "$(proto_display_user "${FORWARD_PROTO:-both}")"
     done
     if [[ "$index" -eq 0 ]]; then
@@ -7606,10 +7757,13 @@ EOF
     RULE_ENABLED="true"
     save_rule_env "$profile_id" "$rule_id"
     apply_nft_all
+    load_profile_or_die "$profile_id"
+    load_rule "$profile_id" "$rule_id" || die_user "新增规则已保存，但无法重新读取：${rule_id}"
     printf '\n转发规则已新增：\n\n'
     printf '* 规则：%s\n' "$rule_id"
     printf '* 备注：%s\n' "$(rule_note_display)"
     printf '* 虚拟网中转：%s:%s -> %s:%s\n' "${NAT_ET_IP:-NAT IX 虚拟 IP}" "$TRANSIT_PORT" "$LANDING_HOST" "$LANDING_PORT"
+    printf '* 协议：%s\n' "$(proto_display_user "${FORWARD_PROTO:-both}")"
     printf '* 状态：%s\n\n' "$(profile_rule_status_display)"
     printf '下一步：\n'
     printf '请刷新接入码，并在公网入口机重新导入。\n'
@@ -7852,9 +8006,14 @@ add_rule() {
     fi
     save_rule_env "$profile_id" "$rule_id"
     apply_nft_all || true
-    printf '转发规则已新增\n'
-    printf '备注：%s\n' "$RULE_NOTE"
+    load_profile_or_die "$profile_id"
+    load_rule "$profile_id" "$rule_id" || die_user "新增规则已保存，但无法重新读取：${rule_id}"
+    printf '转发规则已新增：\n'
+    printf '规则：%s\n' "$rule_id"
+    printf '备注：%s\n' "$(rule_note_display)"
     printf '虚拟网中转：%s:%s -> %s:%s\n' "${NAT_ET_IP:-NAT IX 虚拟 IP}" "$TRANSIT_PORT" "${LANDING_HOST:-NAT IX 接入码中的落地目标}" "${LANDING_PORT:-}"
+    printf '协议：%s\n' "$(proto_display_user "${FORWARD_PROTO:-both}")"
+    printf '状态：%s\n' "$(profile_rule_status_display)"
     printf '下一步：刷新接入码，并在公网入口机重新导入\n'
     return 0
 }
@@ -8556,6 +8715,7 @@ verify_nft_profiles_core() {
     local text source id issues=0 expected=0 expected_rules actual_rules missing_rules extra_rules
     local expected_ports actual_ports port unknown_count=0 disabled_residue=0 standby_residue=0 rule
     local forwarding_count landing_count ingress_count transit_count other_count
+    local rule_id saved_local saved_transit saved_landing_host saved_landing_port saved_proto
 
     read -r landing_count ingress_count transit_count other_count < <(profile_role_counts)
     forwarding_count="$(enabled_forwarding_ingress_count)"
@@ -8589,12 +8749,23 @@ verify_nft_profiles_core() {
     printf '\nActual rules:\n'
     print_rule_list "$actual_rules"
 
-    printf '\nExpected forwarding profiles:\n'
+    printf '\nExpected forwarding rules:\n'
     for id in $(profile_ids); do
         load_profile "$id" >/dev/null 2>&1 || continue
         profile_needs_nft_forward || continue
-        expected=$((expected + 1))
-        printf '  - %s ROLE=%s %s -> %s proto=%s\n' "$id" "${ROLE:-missing}" "$(profile_nft_dport 2>/dev/null || printf missing)" "$(profile_nft_target 2>/dev/null || printf missing)" "${FORWARD_PROTO:-both}"
+        if profile_supports_forward_rules; then
+            saved_local="${LOCAL_PORT:-}"; saved_transit="${TRANSIT_PORT:-}"; saved_landing_host="${LANDING_HOST:-}"; saved_landing_port="${LANDING_PORT:-}"; saved_proto="${FORWARD_PROTO:-both}"
+            for rule_id in $(profile_rule_ids "$id"); do
+                load_rule "$id" "$rule_id" || continue
+                [[ "${RULE_ENABLED:-true}" == "true" ]] || continue
+                expected=$((expected + 1))
+                printf '  - %s rule=%s ROLE=%s %s -> %s proto=%s\n' "$id" "$rule_id" "${ROLE:-missing}" "$(profile_rule_nft_dport 2>/dev/null || printf missing)" "$(profile_rule_nft_target 2>/dev/null || printf missing)" "${FORWARD_PROTO:-both}"
+            done
+            LOCAL_PORT="$saved_local"; TRANSIT_PORT="$saved_transit"; LANDING_HOST="$saved_landing_host"; LANDING_PORT="$saved_landing_port"; FORWARD_PROTO="$saved_proto"
+        else
+            expected=$((expected + 1))
+            printf '  - %s ROLE=%s %s -> %s proto=%s\n' "$id" "${ROLE:-missing}" "$(profile_nft_dport 2>/dev/null || printf missing)" "$(profile_nft_target 2>/dev/null || printf missing)" "${FORWARD_PROTO:-both}"
+        fi
     done
     if [[ "$expected" -eq 0 ]]; then
         printf '  - none\n'
@@ -9241,7 +9412,7 @@ print_forward_rule_health_summary() {
             esac
         fi
         printf '* %s [%s] %s\n' "$rule_id" "$(rule_note_display)" "$(profile_rule_status_display)"
-        printf '  转发路径：%s\n' "$target"
+        printf '  完整路径：%s\n' "$target"
         printf '  nftables 规则：%s\n' "$(nft_rule_state_display "$state")"
         printf '  落地 TCP 可达：%s\n' "$tcp_state"
         printf '  流量计数器：数据包=%s 字节=%s\n' "$packets" "$bytes"
@@ -12780,7 +12951,7 @@ traffic_report() {
         shift || true
     done
     text="$(nft_table_text 2>/dev/null || true)"
-    printf '线路ID\t规则ID\t备注\t状态\t客户端入口端口\t虚拟网中转端口\t落地目标\t数据包\t字节\t可读流量\n'
+    printf '线路ID\t规则ID\t备注\t状态\t公网入口端口\t虚拟网中转端口\t落地目标\t数据包\t字节\t可读流量\n'
     if [[ -z "$text" ]]; then
         printf '# 当前无法读取项目 nftables 表；请在应用转发规则后重试。\n'
     fi
@@ -12826,7 +12997,7 @@ traffic_report() {
         printf '\n流量计数器采样：等待 %s 秒...\n' "$sample"
         sleep "$sample"
         after_text="$(nft_table_text 2>/dev/null || true)"
-        printf '线路ID\t规则ID\t备注\t状态\t客户端入口端口\t虚拟网中转端口\t落地目标\t增量数据包\t增量字节\t说明\n'
+        printf '线路ID\t规则ID\t备注\t状态\t公网入口端口\t虚拟网中转端口\t落地目标\t增量数据包\t增量字节\t说明\n'
         for id in $(sorted_profile_ids); do
             load_profile "$id" >/dev/null 2>&1 || continue
             case "${ROLE:-}" in panel-ingress|nat-ingress|nat-transit) ;; *) continue ;; esac

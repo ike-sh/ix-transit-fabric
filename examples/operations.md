@@ -36,7 +36,7 @@ bash install.sh list-rules nat-ix-listener-example
 
 ```text
 商家入口 -> nat-ix.example:20000
-虚拟网中转 -> 10.88.0.2:40000 -> landing-a.example:50000
+公网入口机侧指定 -> 10.88.0.2:40000 -> landing-a.example:50000
 ```
 
 ## 公网入口机
@@ -60,7 +60,7 @@ ingress.example:30000
 预期占位链路：
 
 ```text
-客户端入口端口 -> 10.88.0.2:40000 -> landing-a.example:50000
+公网入口端口 -> 10.88.0.2:40000 -> landing-a.example:50000
 ```
 
 ## 多规则运维

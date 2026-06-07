@@ -13,8 +13,8 @@ bash -n install.sh
 bash -n tests/smoke.sh
 
 version_output="$(bash install.sh --version)"
-[[ "$version_output" == "ix-transit-fabric 1.2.0-alpha.5" ]]
-[[ "$(tr -d '\r\n' < VERSION)" == "1.2.0-alpha.5" ]]
+[[ "$version_output" == "ix-transit-fabric 1.2.0-alpha.6" ]]
+[[ "$(tr -d '\r\n' < VERSION)" == "1.2.0-alpha.6" ]]
 
 bash install.sh --help >/dev/null
 
@@ -41,6 +41,19 @@ for token in \
     "traffic-report --sample" \
     "latency-report" \
     "公网入口机侧指定" \
+    "公网入口端口" \
+    "完整路径" \
+    "接入码包含以下规则" \
+    "接入码包含 %s 条转发规则" \
+    "已存在本地客户端入口端口" \
+    "按回车保留" \
+    "同步结果" \
+    "新增规则" \
+    "更新规则" \
+    "停用规则" \
+    "不允许两条规则共用一个 CLIENT_PORT" \
+    "不允许两条规则共用一个 TRANSIT_PORT" \
+    "公网入口机侧指定 ->" \
     "当前线路：" \
     "当前转发规则：" \
     "请选择转发规则" \
@@ -82,7 +95,7 @@ for token in \
     "转发规则管理" \
     "alpha 注意事项" \
     "公网入口机侧指定" \
-    "1.2.0-alpha.5"; do
+    "1.2.0-alpha.6"; do
     grep -q -- "$token" README.md
 done
 
@@ -139,7 +152,7 @@ forbidden_killall_rw="$(printf '\153\151\154\154\141\154\154\040\162\167\055\143
 forbidden_killall_et="$(printf '\153\151\154\154\141\154\154\040\145\141\163\171\164\151\145\162\055\143\157\162\145')"
 forbidden_tg_token="$(printf '\061\062\063\064\065\066\072\101\102\103')"
 forbidden_tg_token_pattern="$(printf '\124\107\137\102\117\124\137\124\117\113\105\116\075\056\052\133\060\055\071\135\056\052\072')"
-forbidden_reported_ip_pattern="$(printf '\061\061\064[.]\061\061\061|\070\067[.]\067\066|\070[.]\061\066\063|\070\071[.]\062\061\063|\061\060[.]\071\064|\061\067\070[.]\070\063|\061\060[.]\066\070|\061\060[.]\061\061\060|\061\060[.]\071\065|\061\060[.]\066\065|\061\060[.]\067\066|\061\060[.]\061\060\067')"
+forbidden_reported_ip_pattern="$(printf '\061\061\064[.]\061\061\061|\070\067[.]\067\066|\070[.]\061\066\063|\070\071[.]\062\061\063|\061\060[.]\071\064|\061\067\070[.]\070\063|\061\060[.]\066\070|\061\060[.]\061\061\060|\061\060[.]\071\065|\061\060[.]\066\065|\061\060[.]\067\066|\061\060[.]\061\060\067|\061\060[.]\061\061\066')"
 
 ! grep -R -q "$forbidden_client_name" README.md install.sh tests examples CHANGELOG.md
 ! grep -R -q "$forbidden_real_code_prefix" README.md tests examples CHANGELOG.md
@@ -277,9 +290,10 @@ trap cleanup_unit_tmp EXIT
     grep -q '当前转发规则：' <<<"$rule_menu_output"
     grep -Eq '^[0-9]+[.] rule-main  启用  \[默认转发\]' <<<"$rule_menu_output"
     grep -Eq '^[0-9]+[.] rule-game  启用  \[game\]' <<<"$rule_menu_output"
-    grep -q '客户端入口端口：公网入口机侧指定' <<<"$rule_menu_output"
+    grep -q '公网入口端口：公网入口机侧指定' <<<"$rule_menu_output"
     grep -q '虚拟网中转端口：40001' <<<"$rule_menu_output"
     grep -q '落地目标：10.88.0.1:50000' <<<"$rule_menu_output"
+    grep -q '完整路径：公网入口机侧指定 -> 10.88.0.2:40001 -> 10.88.0.1:50000' <<<"$rule_menu_output"
     grep -q '协议：TCP' <<<"$rule_menu_output"
     ! grep -q "请输入线路 ""ID（留空时自动选择唯一线路）" <<<"$rule_menu_output"
     ! grep -q 'PROFILE_ID 格式不正确：2' <<<"$rule_menu_output"
@@ -293,15 +307,83 @@ trap cleanup_unit_tmp EXIT
     grep -q '（TCP/UDP）' <<<"$code_summary"
     ! grep -q "(""both"")" <<<"$code_summary"
 
+    apply_nft_all() { render_nft_all_file "$NFT_FILE" ix_test >/dev/null; }
+    add_output="$(printf 'test\nrule-dda8\n\n\nlanding-new.example\n52000\n' | IXTF_ALLOW_INTERACTIVE=1 add_rule "$PROFILE_ID" 2>&1)"
+    grep -q '规则：rule-dda8' <<<"$add_output"
+    grep -q '备注：test' <<<"$add_output"
+    grep -q 'landing-new.example:52000' <<<"$add_output"
+    grep -q '协议：TCP/UDP' <<<"$add_output"
+    grep -q '状态：启用' <<<"$add_output"
+    ! grep -q '备注：默认转发' <<<"$add_output"
+    ! grep -q '10.88.0.2:40000 -> 10.88.0.1:50000' <<<"$add_output"
+    load_rule "$PROFILE_ID" rule-dda8
+    [[ "$RULE_NOTE" == "test" ]]
+    [[ "$LANDING_HOST" == "landing-new.example" ]]
+    [[ "$LANDING_PORT" == "52000" ]]
+    [[ "$TRANSIT_PORT" != "40000" ]]
+    [[ "$TRANSIT_PORT" != "40001" ]]
+
+    code_after_add="$(generate_nat_code)"
+    parse_nat_code "$code_after_add"
+    [[ "$CODE_CODE_SCHEMA" == "3" ]]
+    [[ "$CODE_RULE_COUNT" == "3" ]]
+    grep -q $'rule-dda8\ttest\ttrue\t' <<<"$CODE_RULES_TSV"
+    [[ "$(base64url_decode "$CODE_RULES_B64")" == "$CODE_RULES_TSV" ]]
+
+    ROLE=nat-ingress
+    NAT_DIRECTION=nat-listener
+    PROFILE_ID=ing-sync
+    PROFILE_NAME=ing-sync
+    ENABLED=true
+    FORWARD_ENABLED=true
+    ET_NETWORK_NAME="$CODE_NETWORK_NAME"
+    ET_NETWORK_SECRET="$CODE_NETWORK_SECRET"
+    ET_HOSTNAME=ing-sync
+    ET_IPV4="$CODE_INGRESS_ET_CIDR"
+    ET_SUBNET="$(cidr_network24 "$ET_IPV4")"
+    INGRESS_ET_IP="$CODE_INGRESS_ET_IP"
+    INGRESS_ET_CIDR="$CODE_INGRESS_ET_CIDR"
+    NAT_ET_IP="$CODE_NAT_ET_IP"
+    NAT_ET_CIDR="$CODE_NAT_ET_CIDR"
+    NAT_PUBLIC_HOST="$CODE_NAT_PUBLIC_HOST"
+    NAT_LISTENER_PROTO="$CODE_NAT_LISTENER_PROTO"
+    NAT_LISTENER_PROTOS="$CODE_NAT_LISTENER_PROTOS"
+    NAT_LISTENER_PORT="$CODE_NAT_LISTENER_PORT"
+    ET_PEERS="tcp://nat-ix.example:20000 udp://nat-ix.example:20000"
+    ET_NO_LISTENER=true
+    sync_output="$(printf '31010\n31011\n31012\n' | IXTF_ALLOW_INTERACTIVE=1 sync_nat_listener_code_rules_to_ingress_profile "$PROFILE_ID" 2>&1)"
+    grep -q '接入码包含 3 条转发规则' <<<"$sync_output"
+    grep -q '同步结果' <<<"$sync_output"
+    grep -q '新增规则：3' <<<"$sync_output"
+    save_profile_env "$PROFILE_ID" >/dev/null
+    load_rule "$PROFILE_ID" rule-dda8
+    [[ "$CLIENT_PORT" == "31010" ]]
+    dda8_transit="$TRANSIT_PORT"
+    load_rule "$PROFILE_ID" rule-game
+    [[ "$CLIENT_PORT" == "31011" ]]
+    game_transit="$TRANSIT_PORT"
+    load_rule "$PROFILE_ID" rule-main
+    [[ "$CLIENT_PORT" == "31012" ]]
+    main_transit="$TRANSIT_PORT"
+    [[ "$dda8_transit" != "$game_transit" ]]
+    [[ "$dda8_transit" != "$main_transit" ]]
+    render_nft_all_file "$unit_tmp/render-ingress.nft" ix_test
+    grep -q "tcp dport 31010 counter dnat to 10.88.0.2:${dda8_transit}" "$unit_tmp/render-ingress.nft"
+    grep -q "tcp dport 31011 counter dnat to 10.88.0.2:${game_transit}" "$unit_tmp/render-ingress.nft"
+    grep -q "tcp dport 31012 counter dnat to 10.88.0.2:${main_transit}" "$unit_tmp/render-ingress.nft"
+
+    load_profile nat-listen
+    load_rule nat-listen rule-game
     RULE_ENABLED=false
     save_rule_env "$PROFILE_ID" rule-game
     render_nft_all_file "$unit_tmp/render-disabled.nft" ix_test
-    ! grep -q 'rule-game' "$unit_tmp/render-disabled.nft"
+    ! grep -q 'profile: nat-listen rule: rule-game' "$unit_tmp/render-disabled.nft"
+    grep -q 'profile: ing-sync rule: rule-game' "$unit_tmp/render-disabled.nft"
 
     health_out="$(print_forward_rule_health_summary nat-listen)"
     grep -q '已停止，不参与转发' <<<"$health_out"
 
-    rm -f -- "$(rule_env_path "$PROFILE_ID" rule-main)" "$(rule_env_path "$PROFILE_ID" rule-game)"
+    rm -f -- "$(rule_env_path "$PROFILE_ID" rule-main)" "$(rule_env_path "$PROFILE_ID" rule-game)" "$(rule_env_path "$PROFILE_ID" rule-dda8)"
     save_profile_env "$PROFILE_ID" >/dev/null
 
     ROLE=nat-ingress
@@ -369,13 +451,91 @@ trap cleanup_unit_tmp EXIT
     LANDING_HOST=landing-b.example
     LANDING_PORT=51002
     FORWARD_PROTO=tcp
-    save_rule_env "$PROFILE_ID" "$RULE_ID"
     set +e
-    conflict_output="$(check_all_profiles_conflicts 2>&1)"
+    conflict_output="$(save_rule_env "$PROFILE_ID" "$RULE_ID" 2>&1)"
     conflict_rc=$?
     set -e
     [[ "$conflict_rc" -ne 0 ]]
-    grep -q '31000' <<<"$conflict_output"
+    grep -q 'CLIENT_PORT：31000' <<<"$conflict_output"
+
+    ROLE=nat-transit
+    NAT_DIRECTION=nat-listener
+    PROFILE_ID=nat-a
+    PROFILE_NAME=nat-a
+    ENABLED=true
+    FORWARD_ENABLED=true
+    ET_NETWORK_NAME=ix-change-me-ta
+    ET_NETWORK_SECRET=change-me-secret-ta
+    ET_HOSTNAME=nat-a
+    ET_IPV4=10.93.0.2/24
+    ET_SUBNET=10.93.0.0/24
+    INGRESS_ET_IP=10.93.0.1
+    INGRESS_ET_CIDR=10.93.0.1/24
+    NAT_ET_IP=10.93.0.2
+    NAT_ET_CIDR=10.93.0.2/24
+    NAT_PUBLIC_HOST=nat-ta.example
+    NAT_LISTENER_PROTO=both
+    NAT_LISTENER_PROTOS="tcp udp"
+    NAT_LISTENER_PORT=23000
+    ET_LISTENER_PROTO=both
+    ET_LISTENER_PORT=23000
+    ET_LISTENERS="tcp://0.0.0.0:23000 udp://0.0.0.0:23000"
+    ET_PEERS=
+    ET_NO_LISTENER=false
+    LOCAL_PORT=
+    CLIENT_PORT=
+    TRANSIT_PORT=41000
+    LANDING_HOST=landing-ta.example
+    LANDING_PORT=52000
+    FORWARD_PROTO=tcp
+    save_profile_env "$PROFILE_ID" >/dev/null
+
+    ROLE=nat-transit
+    NAT_DIRECTION=nat-listener
+    PROFILE_ID=nat-b
+    PROFILE_NAME=nat-b
+    ENABLED=true
+    FORWARD_ENABLED=true
+    ET_NETWORK_NAME=ix-change-me-tb
+    ET_NETWORK_SECRET=change-me-secret-tb
+    ET_HOSTNAME=nat-b
+    ET_IPV4=10.96.0.2/24
+    ET_SUBNET=10.96.0.0/24
+    INGRESS_ET_IP=10.96.0.1
+    INGRESS_ET_CIDR=10.96.0.1/24
+    NAT_ET_IP=10.96.0.2
+    NAT_ET_CIDR=10.96.0.2/24
+    NAT_PUBLIC_HOST=nat-tb.example
+    NAT_LISTENER_PROTO=both
+    NAT_LISTENER_PROTOS="tcp udp"
+    NAT_LISTENER_PORT=24000
+    ET_LISTENER_PROTO=both
+    ET_LISTENER_PORT=24000
+    ET_LISTENERS="tcp://0.0.0.0:24000 udp://0.0.0.0:24000"
+    ET_PEERS=
+    ET_NO_LISTENER=false
+    LOCAL_PORT=
+    CLIENT_PORT=
+    TRANSIT_PORT=41003
+    LANDING_HOST=landing-tb.example
+    LANDING_PORT=52001
+    FORWARD_PROTO=tcp
+    save_profile_env "$PROFILE_ID" >/dev/null
+
+    RULE_ID=rule-transit-conflict
+    RULE_NOTE=transit-conflict
+    RULE_ENABLED=true
+    CLIENT_PORT=
+    TRANSIT_PORT=41000
+    LANDING_HOST=landing-tb.example
+    LANDING_PORT=52002
+    FORWARD_PROTO=tcp
+    set +e
+    transit_conflict_output="$(save_rule_env "$PROFILE_ID" "$RULE_ID" 2>&1)"
+    transit_conflict_rc=$?
+    set -e
+    [[ "$transit_conflict_rc" -ne 0 ]]
+    grep -q 'TRANSIT_PORT：41000' <<<"$transit_conflict_output"
 )
 
 echo "smoke ok"
