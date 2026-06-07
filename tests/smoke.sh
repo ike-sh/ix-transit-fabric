@@ -13,10 +13,12 @@ bash -n install.sh
 bash -n tests/smoke.sh
 
 version_output="$(bash install.sh --version)"
-[[ "$version_output" == "ix-transit-fabric 1.2.0-alpha.6" ]]
-[[ "$(tr -d '\r\n' < VERSION)" == "1.2.0-alpha.6" ]]
+[[ "$version_output" == "ix-transit-fabric 1.2.0-alpha.7" ]]
+[[ "$(tr -d '\r\n' < VERSION)" == "1.2.0-alpha.7" ]]
 
 bash install.sh --help >/dev/null
+help_no_color="$(IXTF_COLOR=never bash install.sh --help)"
+! grep -q $'\033' <<<"$help_no_color"
 
 for token in \
     "转发规则管理" \
@@ -38,19 +40,30 @@ for token in \
     "code_schema" \
     "code_schema=3" \
     "rule-main" \
+    "read_access_code_from_tty" \
+    "IXTF1:" \
     "traffic-report --sample" \
     "latency-report" \
     "公网入口机侧指定" \
     "公网入口端口" \
     "完整路径" \
-    "接入码包含以下规则" \
-    "接入码包含 %s 条转发规则" \
-    "已存在本地客户端入口端口" \
-    "按回车保留" \
+    "接入码包含规则" \
+    "接入码包含" \
+    "建议公网入口端口" \
+    "回车即可确认" \
     "同步结果" \
     "新增规则" \
     "更新规则" \
     "停用规则" \
+    "失败规则" \
+    "规则数：" \
+    "客户端连接：" \
+    "转发路径：" \
+    "IXTF_COLOR" \
+    "NO_COLOR" \
+    "IXTF_DEBUG" \
+    "rule-main\" { main = 1" \
+    "如果这段接入码已经出现在日志或聊天记录" \
     "不允许两条规则共用一个 CLIENT_PORT" \
     "不允许两条规则共用一个 TRANSIT_PORT" \
     "公网入口机侧指定 ->" \
@@ -95,7 +108,8 @@ for token in \
     "转发规则管理" \
     "alpha 注意事项" \
     "公网入口机侧指定" \
-    "1.2.0-alpha.6"; do
+    "1.2.0-alpha.7" \
+    "IXTF_COLOR=never"; do
     grep -q -- "$token" README.md
 done
 
@@ -176,6 +190,20 @@ trap cleanup_unit_tmp EXIT
     # shellcheck source=/dev/null
     . ./install.sh
 
+    IXTF_COLOR=never
+    unset NO_COLOR
+    color_init
+    [[ "$(c_red test)" == "test" ]]
+    IXTF_COLOR=always
+    color_init
+    [[ "$(c_green ok)" == $'\033[32mok\033[0m' ]]
+    NO_COLOR=1
+    color_init
+    [[ "$(c_yellow warn)" == "warn" ]]
+    IXTF_COLOR=never
+    unset NO_COLOR
+    color_init
+
     CONFIG_DIR="$unit_tmp/config"
     ENV_FILE="${CONFIG_DIR}/ix-transit.env"
     PROFILES_DIR="${CONFIG_DIR}/profiles"
@@ -249,6 +277,10 @@ trap cleanup_unit_tmp EXIT
     grep -q 'tcp dport 40001 counter dnat to 10.88.0.1:50000' "$nft_render"
 
     code="$(generate_nat_code)"
+    [[ "$(extract_landing_code "  ${code}  ")" == "$code" ]]
+    [[ "$(extract_landing_code "$(printf '提示文本 %s\r\n' "$code")")" == "$code" ]]
+    wrapped_code="${code:0:40}"$'\r\n'"${code:40}"
+    [[ "$(extract_landing_code "$wrapped_code")" == "$code" ]]
     parse_nat_code "$code"
     [[ "$CODE_CODE_SCHEMA" == "3" ]]
     [[ "$CODE_RULE_COUNT" == "2" ]]
@@ -279,8 +311,8 @@ trap cleanup_unit_tmp EXIT
 
     selected_rule_profile="$(select_profile_for_rule_menu)"
     [[ "$selected_rule_profile" == "nat-listen" ]]
-    [[ "$(rule_id_by_number "$PROFILE_ID" 1)" == "rule-game" ]]
-    [[ "$(rule_id_by_number "$PROFILE_ID" 02)" == "rule-main" ]]
+    [[ "$(rule_id_by_number "$PROFILE_ID" 1)" == "rule-main" ]]
+    [[ "$(rule_id_by_number "$PROFILE_ID" 02)" == "rule-game" ]]
     ! rule_id_by_number "$PROFILE_ID" 0 >/dev/null
     rule_menu_output="$({
         print_rule_menu_header "$PROFILE_ID"
@@ -353,24 +385,46 @@ trap cleanup_unit_tmp EXIT
     ET_NO_LISTENER=true
     sync_output="$(printf '31010\n31011\n31012\n' | IXTF_ALLOW_INTERACTIVE=1 sync_nat_listener_code_rules_to_ingress_profile "$PROFILE_ID" 2>&1)"
     grep -q '接入码包含 3 条转发规则' <<<"$sync_output"
+    grep -q '建议公网入口端口' <<<"$sync_output"
+    grep -q '回车即可确认' <<<"$sync_output"
     grep -q '同步结果' <<<"$sync_output"
     grep -q '新增规则：3' <<<"$sync_output"
+    grep -q '失败规则：0' <<<"$sync_output"
+    grep -q '实际保存规则：3' <<<"$sync_output"
     save_profile_env "$PROFILE_ID" >/dev/null
-    load_rule "$PROFILE_ID" rule-dda8
+    load_rule "$PROFILE_ID" rule-main
     [[ "$CLIENT_PORT" == "31010" ]]
+    main_transit="$TRANSIT_PORT"
+    load_rule "$PROFILE_ID" rule-dda8
+    [[ "$CLIENT_PORT" == "31011" ]]
     dda8_transit="$TRANSIT_PORT"
     load_rule "$PROFILE_ID" rule-game
-    [[ "$CLIENT_PORT" == "31011" ]]
-    game_transit="$TRANSIT_PORT"
-    load_rule "$PROFILE_ID" rule-main
     [[ "$CLIENT_PORT" == "31012" ]]
-    main_transit="$TRANSIT_PORT"
+    game_transit="$TRANSIT_PORT"
     [[ "$dda8_transit" != "$game_transit" ]]
     [[ "$dda8_transit" != "$main_transit" ]]
     render_nft_all_file "$unit_tmp/render-ingress.nft" ix_test
-    grep -q "tcp dport 31010 counter dnat to 10.88.0.2:${dda8_transit}" "$unit_tmp/render-ingress.nft"
-    grep -q "tcp dport 31011 counter dnat to 10.88.0.2:${game_transit}" "$unit_tmp/render-ingress.nft"
-    grep -q "tcp dport 31012 counter dnat to 10.88.0.2:${main_transit}" "$unit_tmp/render-ingress.nft"
+    grep -q "tcp dport 31010 counter dnat to 10.88.0.2:${main_transit}" "$unit_tmp/render-ingress.nft"
+    grep -q "tcp dport 31011 counter dnat to 10.88.0.2:${dda8_transit}" "$unit_tmp/render-ingress.nft"
+    grep -q "tcp dport 31012 counter dnat to 10.88.0.2:${game_transit}" "$unit_tmp/render-ingress.nft"
+
+    parse_nat_code "$code_after_add"
+    ROLE=nat-ingress
+    NAT_DIRECTION=nat-listener
+    PROFILE_ID=ing-sync
+    PROFILE_NAME=ing-sync
+    ENABLED=true
+    FORWARD_ENABLED=true
+    resync_output="$(printf '\n\n\n' | IXTF_ALLOW_INTERACTIVE=1 sync_nat_listener_code_rules_to_ingress_profile "$PROFILE_ID" 2>&1)"
+    grep -q '更新规则：3' <<<"$resync_output"
+    grep -q '实际保存规则：3' <<<"$resync_output"
+    ! grep -q '已被.*使用' <<<"$resync_output"
+    load_rule "$PROFILE_ID" rule-main
+    [[ "$CLIENT_PORT" == "31010" ]]
+    load_rule "$PROFILE_ID" rule-dda8
+    [[ "$CLIENT_PORT" == "31011" ]]
+    load_rule "$PROFILE_ID" rule-game
+    [[ "$CLIENT_PORT" == "31012" ]]
 
     load_profile nat-listen
     load_rule nat-listen rule-game
@@ -456,7 +510,7 @@ trap cleanup_unit_tmp EXIT
     conflict_rc=$?
     set -e
     [[ "$conflict_rc" -ne 0 ]]
-    grep -q 'CLIENT_PORT：31000' <<<"$conflict_output"
+    grep -q '端口 31000 已被线路 ing-a 的规则 rule-main' <<<"$conflict_output"
 
     ROLE=nat-transit
     NAT_DIRECTION=nat-listener
@@ -535,7 +589,7 @@ trap cleanup_unit_tmp EXIT
     transit_conflict_rc=$?
     set -e
     [[ "$transit_conflict_rc" -ne 0 ]]
-    grep -q 'TRANSIT_PORT：41000' <<<"$transit_conflict_output"
+    grep -q '端口 41000 已被线路 nat-a 的规则 rule-main' <<<"$transit_conflict_output"
 )
 
 echo "smoke ok"
