@@ -7544,16 +7544,17 @@ enabled_forwarding_ingress_count() {
 }
 
 profile_role_counts() {
-    local id landing=0 ingress=0 other=0
+    local id landing=0 ingress=0 transit=0 other=0
     for id in $(profile_ids); do
         load_profile "$id" >/dev/null 2>&1 || continue
         case "${ROLE:-}" in
             panel-landing) landing=$((landing + 1)) ;;
-            panel-ingress|nat-ingress|nat-transit) ingress=$((ingress + 1)) ;;
+            nat-transit) transit=$((transit + 1)) ;;
+            panel-ingress|nat-ingress) ingress=$((ingress + 1)) ;;
             *) other=$((other + 1)) ;;
         esac
     done
-    printf '%s %s %s\n' "$landing" "$ingress" "$other"
+    printf '%s %s %s %s\n' "$landing" "$ingress" "$transit" "$other"
 }
 
 nft_profile_rule_status() {
@@ -7782,9 +7783,9 @@ print_rule_list() {
 verify_nft_profiles_core() {
     local text source id issues=0 expected=0 expected_rules actual_rules missing_rules extra_rules
     local expected_ports actual_ports port unknown_count=0 disabled_residue=0 standby_residue=0 rule
-    local forwarding_count landing_count ingress_count other_count
+    local forwarding_count landing_count ingress_count transit_count other_count
 
-    read -r landing_count ingress_count other_count < <(profile_role_counts)
+    read -r landing_count ingress_count transit_count other_count < <(profile_role_counts)
     forwarding_count="$(enabled_forwarding_ingress_count)"
     if [[ "$forwarding_count" -eq 0 ]]; then
         printf 'nftables profile verification\n'
@@ -8482,7 +8483,14 @@ print_forward_rule_health_summary() {
 latency_report() {
     require_root "$@"
     local parsed profile_id sample rule_id metric
-    parsed="$(latency_report_parse_args "$@")" || return $?
+    local args=("$@")
+    if [[ ${#args[@]} -eq 0 || -z "${args[0]:-}" ]]; then
+        if ! profile_id="$(resolve_profile_id_for_cmd "" latency-report)"; then
+            return_or_exit 2 || return $?
+        fi
+        args=("$profile_id" "${args[@]:1}")
+    fi
+    parsed="$(latency_report_parse_args "${args[@]}")" || return $?
     IFS=$'\t' read -r profile_id sample rule_id <<<"$parsed"
     load_profile_or_die "$profile_id"
     case "${ROLE:-}" in
@@ -12374,14 +12382,16 @@ self_check() {
         profile_count="$(profile_ids | awk 'NF{c++} END{print c+0}')"
     fi
     [[ "$profile_count" -gt 0 ]] && self_check_line OK "profiles" "${profile_count}" || self_check_line WARN "profiles" "none"
-    read -r landing_count ingress_count other_count < <(profile_role_counts)
+    read -r landing_count ingress_count transit_count other_count < <(profile_role_counts)
     self_check_line INFO "landing line count" "${landing_count:-0}"
     self_check_line INFO "ingress line count" "${ingress_count:-0}"
-    case "${landing_count:-0}:${ingress_count:-0}" in
-        0:0) role_hint="尚未创建线路；请先创建 NAT IX 中转线路或导入接入码" ;;
-        *:0) role_hint="当前机器是落地侧，不负责入口 nftables 转发" ;;
-        0:*) role_hint="当前机器是入口侧，负责 LOCAL_PORT -> LANDING_ET_IP:REMOTE_PORT" ;;
-        *) role_hint="当前机器同时承担落地和入口角色" ;;
+    self_check_line INFO "nat transit line count" "${transit_count:-0}"
+    case "${landing_count:-0}:${ingress_count:-0}:${transit_count:-0}" in
+        0:0:0) role_hint="尚未创建线路；请先创建 NAT IX 中转线路或导入接入码" ;;
+        *:0:0) role_hint="当前机器是落地侧，不负责入口 nftables 转发" ;;
+        0:*:0) role_hint="当前机器是公网入口侧，负责 CLIENT_PORT -> NAT_IX:TRANSIT_PORT" ;;
+        0:0:*) role_hint="当前机器是 NAT IX 中转侧，负责 TRANSIT_PORT -> LANDING_HOST:LANDING_PORT" ;;
+        *) role_hint="当前机器同时承担多种线路角色" ;;
     esac
     self_check_line INFO "current host role" "$role_hint"
     [[ -e "$PROFILE_SERVICE_TEMPLATE" ]] && self_check_line OK "profile systemd template" "$PROFILE_SERVICE_TEMPLATE" || self_check_line WARN "profile systemd template" "missing"

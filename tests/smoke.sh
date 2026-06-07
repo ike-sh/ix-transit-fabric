@@ -191,6 +191,9 @@ trap cleanup_unit_tmp EXIT
     grep -q 'rule-main' <<<"$CODE_RULES_TSV"
     grep -q 'rule-game' <<<"$CODE_RULES_TSV"
 
+    resolved_latency="$(resolve_profile_id_for_cmd "" latency-report)"
+    [[ "$resolved_latency" == "nat-listen" ]]
+
     rm -f -- "$(rule_env_path "$PROFILE_ID" rule-main)" "$(rule_env_path "$PROFILE_ID" rule-game)"
     [[ -d "$(profile_rules_dir "$PROFILE_ID")" ]]
     [[ -z "$(profile_rule_ids "$PROFILE_ID")" ]]
