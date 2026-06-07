@@ -13,8 +13,8 @@ bash -n install.sh
 bash -n tests/smoke.sh
 
 version_output="$(bash install.sh --version)"
-[[ "$version_output" == "ix-transit-fabric 1.2.0-alpha.4" ]]
-[[ "$(tr -d '\r\n' < VERSION)" == "1.2.0-alpha.4" ]]
+[[ "$version_output" == "ix-transit-fabric 1.2.0-alpha.5" ]]
+[[ "$(tr -d '\r\n' < VERSION)" == "1.2.0-alpha.5" ]]
 
 bash install.sh --help >/dev/null
 
@@ -41,6 +41,16 @@ for token in \
     "traffic-report --sample" \
     "latency-report" \
     "公网入口机侧指定" \
+    "当前线路：" \
+    "当前转发规则：" \
+    "请选择转发规则" \
+    "请输入序号" \
+    "无效选择，请输入列表中的序号" \
+    "公网入口机不建议直接新增落地规则" \
+    "NAT IX 机器新增转发规则" \
+    "请刷新接入码，并在公网入口机重新导入" \
+    "已应用全部线路的 nftables 项目表" \
+    "TCP/UDP" \
     "线路类型：" \
     "线路模式：" \
     "组网协议：" \
@@ -69,9 +79,10 @@ for token in \
     "EasyTier 组网协议" \
     "1.1.0 单规则兼容" \
     "公网入口机重新导入接入码" \
+    "转发规则管理" \
     "alpha 注意事项" \
     "公网入口机侧指定" \
-    "1.2.0-alpha.4"; do
+    "1.2.0-alpha.5"; do
     grep -q -- "$token" README.md
 done
 
@@ -84,7 +95,12 @@ for forbidden in \
     "current host role" \
     "Required commands:" \
     "Runtime:" \
-    "===== Profile " \
+    "===== ""Profile " \
+    "已应用全部 ""Profile"" 的 nftables 项目表" \
+    "(""both"")" \
+    "公网入口机""生成接入码" \
+    "模式 ""A" \
+    "模式 ""B" \
     'PROFILE_ID\tROLE\tGROUP'; do
     ! grep -qF -- "$forbidden" install.sh
 done
@@ -123,7 +139,7 @@ forbidden_killall_rw="$(printf '\153\151\154\154\141\154\154\040\162\167\055\143
 forbidden_killall_et="$(printf '\153\151\154\154\141\154\154\040\145\141\163\171\164\151\145\162\055\143\157\162\145')"
 forbidden_tg_token="$(printf '\061\062\063\064\065\066\072\101\102\103')"
 forbidden_tg_token_pattern="$(printf '\124\107\137\102\117\124\137\124\117\113\105\116\075\056\052\133\060\055\071\135\056\052\072')"
-forbidden_reported_ip_pattern="$(printf '\061\061\064[.]\061\061\061|\070\067[.]\067\066|\070[.]\061\066\063|\070\071[.]\062\061\063|\061\060[.]\071\064|\061\067\070[.]\070\063|\061\060[.]\066\070|\061\060[.]\061\061\060|\061\060[.]\071\065|\061\060[.]\066\065|\061\060[.]\067\066')"
+forbidden_reported_ip_pattern="$(printf '\061\061\064[.]\061\061\061|\070\067[.]\067\066|\070[.]\061\066\063|\070\071[.]\062\061\063|\061\060[.]\071\064|\061\067\070[.]\070\063|\061\060[.]\066\070|\061\060[.]\061\061\060|\061\060[.]\071\065|\061\060[.]\066\065|\061\060[.]\067\066|\061\060[.]\061\060\067')"
 
 ! grep -R -q "$forbidden_client_name" README.md install.sh tests examples CHANGELOG.md
 ! grep -R -q "$forbidden_real_code_prefix" README.md tests examples CHANGELOG.md
@@ -247,6 +263,35 @@ trap cleanup_unit_tmp EXIT
     grep -q '汇总：线路总数=1 启用=1 转发中=1 健康=0 警告=0 故障=0 未检查=1' <<<"$status_output"
     ! grep -q '主备角色' <<<"$status_output"
     ! grep -q 'standalone' <<<"$status_output"
+
+    selected_rule_profile="$(select_profile_for_rule_menu)"
+    [[ "$selected_rule_profile" == "nat-listen" ]]
+    [[ "$(rule_id_by_number "$PROFILE_ID" 1)" == "rule-game" ]]
+    [[ "$(rule_id_by_number "$PROFILE_ID" 02)" == "rule-main" ]]
+    ! rule_id_by_number "$PROFILE_ID" 0 >/dev/null
+    rule_menu_output="$({
+        print_rule_menu_header "$PROFILE_ID"
+        print_rule_menu_rules "$PROFILE_ID"
+    } 2>&1)"
+    grep -q '当前线路：nat-listen（NAT IX 中转线路）' <<<"$rule_menu_output"
+    grep -q '当前转发规则：' <<<"$rule_menu_output"
+    grep -Eq '^[0-9]+[.] rule-main  启用  \[默认转发\]' <<<"$rule_menu_output"
+    grep -Eq '^[0-9]+[.] rule-game  启用  \[game\]' <<<"$rule_menu_output"
+    grep -q '客户端入口端口：公网入口机侧指定' <<<"$rule_menu_output"
+    grep -q '虚拟网中转端口：40001' <<<"$rule_menu_output"
+    grep -q '落地目标：10.88.0.1:50000' <<<"$rule_menu_output"
+    grep -q '协议：TCP' <<<"$rule_menu_output"
+    ! grep -q "请输入线路 ""ID（留空时自动选择唯一线路）" <<<"$rule_menu_output"
+    ! grep -q 'PROFILE_ID 格式不正确：2' <<<"$rule_menu_output"
+    ! grep -q "无法读取 ""Profile：" <<<"$rule_menu_output"
+
+    rule_choice_output="$(print_rule_choice_list "$PROFILE_ID" 2>&1)"
+    grep -q '请选择转发规则' <<<"$rule_choice_output"
+    grep -Eq '^[0-9]+[.] rule-main  启用  \[默认转发\]' <<<"$rule_choice_output"
+
+    code_summary="$(format_rules_for_code_summary "$PROFILE_ID")"
+    grep -q '（TCP/UDP）' <<<"$code_summary"
+    ! grep -q "(""both"")" <<<"$code_summary"
 
     RULE_ENABLED=false
     save_rule_env "$PROFILE_ID" rule-game

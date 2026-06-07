@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-SCRIPT_VERSION="1.2.0-alpha.4"
+SCRIPT_VERSION="1.2.0-alpha.5"
 APP_NAME="ix-transit-fabric"
 
 CONFIG_DIR="/etc/ix-transit-fabric"
@@ -2857,7 +2857,7 @@ load_profile() {
 
 load_profile_or_die() {
     local profile_id="$1"
-    load_profile "$profile_id" || die_user "无法读取 Profile：${profile_id}"
+    load_profile "$profile_id" || die_user "无法读取线路：${profile_id}"
 }
 
 save_profile_env() {
@@ -4203,7 +4203,7 @@ resolve_profile_id_for_menu() {
 
 latency_report_from_menu() {
     local profile_id=""
-    printf '请输入线路 ID（留空时自动选择唯一线路）：' >&2
+    printf '请输入线路编号或 ID（留空时自动选择唯一线路）：' >&2
     IFS= read -r profile_id || return 1
     if ! profile_id="$(resolve_profile_id_for_menu latency-report "$profile_id")"; then
         return 2
@@ -4214,7 +4214,7 @@ latency_report_from_menu() {
 
 show_profile_from_menu() {
     local profile_id=""
-    printf '请输入线路 ID（留空时自动选择唯一线路）：' >&2
+    printf '请输入线路编号或 ID（留空时自动选择唯一线路）：' >&2
     IFS= read -r profile_id || return 1
     if ! profile_id="$(resolve_profile_id_for_menu show-config "$profile_id")"; then
         return 2
@@ -4601,7 +4601,7 @@ validate_all_enabled_profiles() {
     for id in $(profile_ids); do
         path="$(profile_env_path "$id")"
         profile_path_enabled "$path" || continue
-        load_profile "$id" || die_user "无法读取 Profile：${id}"
+        load_profile "$id" || die_user "无法读取线路：${id}"
         profile_needs_nft_forward || continue
         validate_profile_config "$id"
     done
@@ -4675,7 +4675,7 @@ apply_nft_all() {
     backup_path="$(backup_current_nft_table)"
     nft delete table ip "$NFT_TABLE" >/dev/null 2>&1 || true
     if nft -f "$NFT_FILE"; then
-        log_ok "已应用全部 Profile 的 nftables 项目表。"
+        log_ok "已应用全部线路的 nftables 项目表。"
         return 0
     fi
     log_error "应用全部 nftables 规则失败，正在回滚。"
@@ -5000,8 +5000,8 @@ format_rules_for_code_summary() {
     saved_local="${LOCAL_PORT:-}"; saved_transit="${TRANSIT_PORT:-}"; saved_landing_host="${LANDING_HOST:-}"; saved_landing_port="${LANDING_PORT:-}"; saved_proto="${FORWARD_PROTO:-both}"
     for rule_id in $(profile_rule_ids "$profile_id"); do
         load_rule "$profile_id" "$rule_id" || continue
-        printf '  - %s [%s] %s:%s -> %s:%s (%s)\n' \
-            "$rule_id" "${RULE_NOTE:-}" "${NAT_ET_IP:-NAT IX 虚拟 IP}" "${TRANSIT_PORT:-}" "${LANDING_HOST:-}" "${LANDING_PORT:-}" "${FORWARD_PROTO:-both}"
+        printf '  - %s [%s] %s:%s -> %s:%s（%s）\n' \
+            "$rule_id" "$(rule_note_display)" "${NAT_ET_IP:-NAT IX 虚拟 IP}" "${TRANSIT_PORT:-}" "${LANDING_HOST:-}" "${LANDING_PORT:-}" "$(proto_display_user "${FORWARD_PROTO:-both}")"
     done
     LOCAL_PORT="$saved_local"; TRANSIT_PORT="$saved_transit"; LANDING_HOST="$saved_landing_host"; LANDING_PORT="$saved_landing_port"; FORWARD_PROTO="$saved_proto"
 }
@@ -7390,6 +7390,406 @@ list_rules() {
     return 0
 }
 
+rule_id_by_number() {
+    local profile_id="$1" wanted="$2" wanted_num rule_id index=0
+    [[ "$wanted" =~ ^[0-9]+$ ]] || return 1
+    wanted_num=$((10#$wanted))
+    for rule_id in $(profile_rule_ids "$profile_id"); do
+        index=$((index + 1))
+        if [[ "$index" -eq "$wanted_num" ]]; then
+            printf '%s\n' "$rule_id"
+            return 0
+        fi
+    done
+    return 1
+}
+
+rule_menu_rule_count() {
+    local profile_id="$1"
+    profile_rule_count "$profile_id"
+}
+
+enabled_rule_count() {
+    local profile_id="$1" rule_id count=0
+    local saved_rule_id="${RULE_ID:-}" saved_note="${RULE_NOTE:-}" saved_enabled="${RULE_ENABLED:-}" saved_client="${CLIENT_PORT:-}"
+    local saved_transit="${TRANSIT_PORT:-}" saved_landing_host="${LANDING_HOST:-}" saved_landing_port="${LANDING_PORT:-}" saved_proto="${FORWARD_PROTO:-both}" saved_created="${CREATED_AT:-}" saved_updated="${UPDATED_AT:-}"
+    for rule_id in $(profile_rule_ids "$profile_id"); do
+        load_rule "$profile_id" "$rule_id" || continue
+        [[ "${RULE_ENABLED:-true}" == "true" ]] && count=$((count + 1))
+    done
+    RULE_ID="$saved_rule_id"; RULE_NOTE="$saved_note"; RULE_ENABLED="$saved_enabled"; CLIENT_PORT="$saved_client"
+    TRANSIT_PORT="$saved_transit"; LANDING_HOST="$saved_landing_host"; LANDING_PORT="$saved_landing_port"; FORWARD_PROTO="$saved_proto"; CREATED_AT="$saved_created"; UPDATED_AT="$saved_updated"
+    printf '%s\n' "$count"
+}
+
+print_rule_menu_header() {
+    local profile_id="$1"
+    load_profile_or_die "$profile_id"
+    printf '当前线路：%s（%s）\n' "$profile_id" "$(profile_role_label_zh "${ROLE:-}")"
+}
+
+print_rule_menu_rules() {
+    local profile_id="$1" rule_id index=0 target
+    local saved_rule_id="${RULE_ID:-}" saved_note="${RULE_NOTE:-}" saved_enabled="${RULE_ENABLED:-}" saved_client="${CLIENT_PORT:-}"
+    local saved_transit="${TRANSIT_PORT:-}" saved_landing_host="${LANDING_HOST:-}" saved_landing_port="${LANDING_PORT:-}" saved_proto="${FORWARD_PROTO:-both}" saved_created="${CREATED_AT:-}" saved_updated="${UPDATED_AT:-}"
+    printf '\n当前转发规则：\n\n'
+    for rule_id in $(profile_rule_ids "$profile_id"); do
+        load_rule "$profile_id" "$rule_id" || continue
+        index=$((index + 1))
+        if [[ -n "${LANDING_HOST:-}" && -n "${LANDING_PORT:-}" ]]; then
+            target="${LANDING_HOST}:${LANDING_PORT}"
+        else
+            target="未配置"
+        fi
+        printf '%s. %s  %s  [%s]\n' "$index" "$rule_id" "$(profile_rule_status_display)" "$(rule_note_display)"
+        printf '   客户端入口端口：%s\n' "$(rule_client_port_display)"
+        printf '   虚拟网中转端口：%s\n' "${TRANSIT_PORT:-未配置}"
+        printf '   落地目标：%s\n' "$target"
+        printf '   协议：%s\n\n' "$(proto_display_user "${FORWARD_PROTO:-both}")"
+    done
+    if [[ "$index" -eq 0 ]]; then
+        printf '暂无转发规则。\n\n'
+    fi
+    RULE_ID="$saved_rule_id"; RULE_NOTE="$saved_note"; RULE_ENABLED="$saved_enabled"; CLIENT_PORT="$saved_client"
+    TRANSIT_PORT="$saved_transit"; LANDING_HOST="$saved_landing_host"; LANDING_PORT="$saved_landing_port"; FORWARD_PROTO="$saved_proto"; CREATED_AT="$saved_created"; UPDATED_AT="$saved_updated"
+}
+
+print_rule_choice_list() {
+    local profile_id="$1" rule_id index=0
+    local saved_rule_id="${RULE_ID:-}" saved_note="${RULE_NOTE:-}" saved_enabled="${RULE_ENABLED:-}" saved_client="${CLIENT_PORT:-}"
+    local saved_transit="${TRANSIT_PORT:-}" saved_landing_host="${LANDING_HOST:-}" saved_landing_port="${LANDING_PORT:-}" saved_proto="${FORWARD_PROTO:-both}" saved_created="${CREATED_AT:-}" saved_updated="${UPDATED_AT:-}"
+    printf '请选择转发规则：\n\n' >&2
+    for rule_id in $(profile_rule_ids "$profile_id"); do
+        load_rule "$profile_id" "$rule_id" || continue
+        index=$((index + 1))
+        printf '%s. %s  %s  [%s]\n' "$index" "$rule_id" "$(profile_rule_status_display)" "$(rule_note_display)" >&2
+    done
+    printf '\n' >&2
+    RULE_ID="$saved_rule_id"; RULE_NOTE="$saved_note"; RULE_ENABLED="$saved_enabled"; CLIENT_PORT="$saved_client"
+    TRANSIT_PORT="$saved_transit"; LANDING_HOST="$saved_landing_host"; LANDING_PORT="$saved_landing_port"; FORWARD_PROTO="$saved_proto"; CREATED_AT="$saved_created"; UPDATED_AT="$saved_updated"
+}
+
+select_rule_from_menu() {
+    local profile_id="$1" count choice rule_id
+    count="$(rule_menu_rule_count "$profile_id")"
+    if [[ "$count" -eq 0 ]]; then
+        log_warn "当前线路没有转发规则。"
+        return 1
+    fi
+    while true; do
+        print_rule_choice_list "$profile_id"
+        printf '请输入序号 [1-%s]：' "$count" >&2
+        IFS= read -r choice || return 1
+        choice="$(trim_space "${choice%$'\r'}")"
+        if [[ "$choice" =~ ^[0-9]+$ ]]; then
+            if rule_id="$(rule_id_by_number "$profile_id" "$choice")"; then
+                printf '%s\n' "$rule_id"
+                return 0
+            fi
+            log_warn "无效选择，请输入列表中的序号。"
+            continue
+        fi
+        if [[ -n "$choice" ]] && validate_rule_id "$choice" && load_rule "$profile_id" "$choice" >/dev/null 2>&1; then
+            printf '%s\n' "$choice"
+            return 0
+        fi
+        log_warn "无效选择，请输入列表中的序号。"
+    done
+}
+
+select_profile_for_rule_menu() {
+    local count choice choice_num id index selected
+    local -a menu_ids=()
+    count="$(profile_count)"
+    if [[ "$count" -eq 0 ]]; then
+        printf '当前没有线路，请先创建 NAT IX 中转线路或导入接入码。\n' >&2
+        return 2
+    fi
+    if [[ "$count" -eq 1 ]]; then
+        profile_ids | head -n 1
+        return 0
+    fi
+    printf '请选择线路：\n\n' >&2
+    index=0
+    for id in $(sorted_profile_ids); do
+        load_profile "$id" >/dev/null 2>&1 || continue
+        menu_ids+=("$id")
+        index=$((index + 1))
+        printf '%s. %s（%s，规则数：%s）\n' "$index" "$id" "$(profile_role_label_zh "${ROLE:-}")" "$(rule_menu_rule_count "$id")" >&2
+    done
+    if [[ "$index" -eq 0 ]]; then
+        printf '当前没有可读取的线路，请检查线路配置文件权限。\n' >&2
+        return 2
+    fi
+    printf '\n' >&2
+    while true; do
+        printf '请选择线路 [1-%s]：' "$index" >&2
+        IFS= read -r choice || return 1
+        choice="$(trim_space "${choice%$'\r'}")"
+        if [[ "$choice" =~ ^[0-9]+$ ]]; then
+            choice_num=$((10#$choice))
+            if (( choice_num >= 1 && choice_num <= index )); then
+                selected="${menu_ids[$((choice_num - 1))]}"
+                printf '%s\n' "$selected"
+                return 0
+            fi
+            log_warn "无效选择，请输入列表中的序号。"
+            continue
+        fi
+        if [[ -n "$choice" ]] && validate_profile_id "$choice" && [[ -f "$(profile_env_path "$choice" 2>/dev/null || printf /nonexistent)" ]]; then
+            printf '%s\n' "$choice"
+            return 0
+        fi
+        log_warn "无效选择，请输入列表中的序号。"
+    done
+}
+
+prompt_forward_proto_menu() {
+    local choice default_proto="${1:-both}" default_choice=1
+    require_tty
+    case "$default_proto" in
+        tcp) default_choice=2 ;;
+        udp) default_choice=3 ;;
+        *) default_proto="both"; default_choice=1 ;;
+    esac
+    cat >&2 <<'EOF'
+转发协议：
+
+1. TCP/UDP（推荐）
+2. TCP
+3. UDP
+EOF
+    while true; do
+        printf '请选择 [1-3]，默认 %s：' "$(proto_display_user "$default_proto")" >&2
+        IFS= read -r choice || return 1
+        choice="${choice:-$default_choice}"
+        case "$choice" in
+            1) printf 'both\n'; return 0 ;;
+            2) printf 'tcp\n'; return 0 ;;
+            3) printf 'udp\n'; return 0 ;;
+            *) log_warn "请选择 1、2 或 3。" ;;
+        esac
+    done
+}
+
+menu_add_rule() {
+    local profile_id="$1" rule_id default_transit custom
+    load_profile_or_die "$profile_id"
+    profile_supports_forward_rules || die_user "当前线路不支持转发规则管理：${ROLE:-unknown}"
+    if [[ "${ROLE:-}" == "nat-ingress" ]]; then
+        cat <<'EOF'
+公网入口机不建议直接新增落地规则。
+请先在 NAT IX 机器新增转发规则，刷新接入码，然后在公网入口机重新导入。
+公网入口机侧只负责为远端规则指定客户端入口端口。
+EOF
+        prompt_yes_no "是否返回" "true" >/dev/null || true
+        return 0
+    fi
+    [[ "${ROLE:-}" == "nat-transit" ]] || die_user "新增落地规则请在 NAT IX 机器执行。"
+    printf '\nNAT IX 机器新增转发规则\n'
+    printf '新增转发规则\n\n'
+    rule_id="$(generate_unique_rule_id "$profile_id" rule)"
+    RULE_ID="$rule_id"
+    RULE_NOTE="$(prompt_optional_text "请输入规则备注，例如：游戏、网页、备用落地" "")" || return 1
+    LANDING_HOST="$(prompt_validated "请输入落地机地址" "" validate_host "请输入 IPv4 或域名。")" || return 1
+    LANDING_PORT="$(prompt_port "请输入落地业务端口" "")" || return 1
+    FORWARD_PROTO="$(prompt_forward_proto_menu both)" || return 1
+    default_transit="$(pick_random_rule_port "$profile_id" transit || true)"
+    custom="$(prompt_yes_no "是否自定义虚拟网中转端口" "false")" || return 1
+    if [[ "$custom" == "true" || -z "$default_transit" ]]; then
+        TRANSIT_PORT="$(prompt_port "请输入虚拟网中转端口" "$default_transit")" || return 1
+        port_used_by_profile_rule "$profile_id" transit "$TRANSIT_PORT" && die_user "虚拟网中转端口已被同线路其他规则使用：${TRANSIT_PORT}"
+    else
+        TRANSIT_PORT="$default_transit"
+    fi
+    CLIENT_PORT=""
+    RULE_ENABLED="true"
+    save_rule_env "$profile_id" "$rule_id"
+    apply_nft_all
+    printf '\n转发规则已新增：\n\n'
+    printf '* 规则：%s\n' "$rule_id"
+    printf '* 备注：%s\n' "$(rule_note_display)"
+    printf '* 虚拟网中转：%s:%s -> %s:%s\n' "${NAT_ET_IP:-NAT IX 虚拟 IP}" "$TRANSIT_PORT" "$LANDING_HOST" "$LANDING_PORT"
+    printf '* 状态：%s\n\n' "$(profile_rule_status_display)"
+    printf '下一步：\n'
+    printf '请刷新接入码，并在公网入口机重新导入。\n'
+    return 0
+}
+
+menu_edit_rule() {
+    local profile_id="$1" rule_id choice value changed=0
+    rule_id="$(select_rule_from_menu "$profile_id")" || return 0
+    load_profile_or_die "$profile_id"
+    load_rule "$profile_id" "$rule_id" || die_user "未找到规则：${rule_id}"
+    while true; do
+        printf '\n修改规则：%s [%s]\n\n' "$rule_id" "$(rule_note_display)" >&2
+        cat >&2 <<'EOF'
+可修改：
+
+1. 备注
+2. 落地机地址
+3. 落地业务端口
+4. 转发协议
+5. 虚拟网中转端口
+6. 客户端入口端口
+7. 返回
+EOF
+        printf '请选择：' >&2
+        IFS= read -r choice || return 1
+        case "$choice" in
+            1)
+                RULE_NOTE="$(prompt_optional_text "请输入规则备注" "${RULE_NOTE:-}")" || return 1
+                changed=1
+                ;;
+            2)
+                if [[ "${ROLE:-}" == "nat-transit" ]]; then
+                    LANDING_HOST="$(prompt_validated "请输入落地机地址" "${LANDING_HOST:-}" validate_host "请输入 IPv4 或域名。")" || return 1
+                    changed=1
+                else
+                    printf '公网入口线路不允许修改落地地址。请到 NAT IX 机器修改并刷新接入码。\n'
+                    return 0
+                fi
+                ;;
+            3)
+                if [[ "${ROLE:-}" == "nat-transit" ]]; then
+                    LANDING_PORT="$(prompt_port "请输入落地业务端口" "${LANDING_PORT:-}")" || return 1
+                    changed=1
+                else
+                    printf '公网入口线路不允许修改落地业务端口。请到 NAT IX 机器修改并刷新接入码。\n'
+                    return 0
+                fi
+                ;;
+            4)
+                if [[ "${ROLE:-}" == "nat-transit" ]]; then
+                    FORWARD_PROTO="$(prompt_forward_proto_menu "${FORWARD_PROTO:-both}")" || return 1
+                    changed=1
+                else
+                    printf '公网入口线路不允许修改转发协议。请到 NAT IX 机器修改并刷新接入码。\n'
+                    return 0
+                fi
+                ;;
+            5)
+                if [[ "${ROLE:-}" == "nat-transit" ]]; then
+                    value="$(prompt_port "请输入新的虚拟网中转端口" "${TRANSIT_PORT:-}")" || return 1
+                    port_used_by_profile_rule "$profile_id" transit "$value" "$rule_id" && die_user "虚拟网中转端口已被同线路其他规则使用：${value}"
+                    TRANSIT_PORT="$value"
+                    printf '该修改会影响公网入口机。\n'
+                    printf '请刷新接入码，并在公网入口机重新导入。\n'
+                    changed=1
+                else
+                    printf '公网入口线路不允许修改虚拟网中转端口。请到 NAT IX 机器修改并刷新接入码。\n'
+                    return 0
+                fi
+                ;;
+            6)
+                if [[ "${ROLE:-}" == "nat-ingress" ]]; then
+                    value="$(prompt_port "请输入新的客户端入口端口" "${CLIENT_PORT:-}")" || return 1
+                    port_used_by_profile_rule "$profile_id" client "$value" "$rule_id" && die_user "客户端入口端口已被同线路其他规则使用：${value}"
+                    CLIENT_PORT="$value"
+                    changed=1
+                else
+                    printf 'NAT IX 中转线路的客户端入口端口由公网入口机侧指定。\n'
+                    return 0
+                fi
+                ;;
+            7|0|"")
+                return 0
+                ;;
+            *)
+                log_warn "未知选项，请重新选择。"
+                continue
+                ;;
+        esac
+        if [[ "$changed" -eq 1 ]]; then
+            save_rule_env "$profile_id" "$rule_id"
+            apply_nft_all
+            log_ok "已修改转发规则：${rule_id}"
+            return 0
+        fi
+    done
+}
+
+menu_enable_rule() {
+    local profile_id="$1" rule_id
+    rule_id="$(select_rule_from_menu "$profile_id")" || return 0
+    load_profile_or_die "$profile_id"
+    load_rule "$profile_id" "$rule_id" || die_user "未找到规则：${rule_id}"
+    if [[ "${RULE_ENABLED:-true}" == "true" ]]; then
+        printf '转发规则已启用：%s\n' "$rule_id"
+        return 0
+    fi
+    RULE_ENABLED="true"
+    save_rule_env "$profile_id" "$rule_id"
+    apply_nft_all
+    printf '转发规则已启用：%s\n' "$rule_id"
+    return 0
+}
+
+menu_disable_rule() {
+    local profile_id="$1" rule_id answer
+    rule_id="$(select_rule_from_menu "$profile_id")" || return 0
+    load_profile_or_die "$profile_id"
+    load_rule "$profile_id" "$rule_id" || die_user "未找到规则：${rule_id}"
+    if [[ "${RULE_ENABLED:-true}" != "true" ]]; then
+        printf '转发规则已停止：%s\n' "$rule_id"
+        return 0
+    fi
+    if [[ "$(enabled_rule_count "$profile_id")" -le 1 ]]; then
+        printf '这是当前线路最后一条启用规则，停止后该线路不会转发流量。\n'
+        answer="$(prompt_yes_no "是否继续" "false")" || return 1
+        [[ "$answer" == "true" ]] || { log_warn "已取消停止规则。"; return 0; }
+    fi
+    RULE_ENABLED="false"
+    save_rule_env "$profile_id" "$rule_id"
+    apply_nft_all
+    printf '转发规则已停止：%s\n' "$rule_id"
+    if [[ "${ROLE:-}" == "nat-transit" ]]; then
+        printf '下一步：请刷新接入码，并在公网入口机重新导入。\n'
+    fi
+    return 0
+}
+
+menu_delete_rule() {
+    local profile_id="$1" rule_id note path
+    rule_id="$(select_rule_from_menu "$profile_id")" || return 0
+    load_profile_or_die "$profile_id"
+    load_rule "$profile_id" "$rule_id" || die_user "未找到规则：${rule_id}"
+    note="$(rule_note_display)"
+    if ! read_exact_confirmation "确认删除规则 ${rule_id} [${note}]？请输入 DELETE：" "DELETE"; then
+        log_warn "已取消删除规则。"
+        return 0
+    fi
+    path="$(rule_env_path "$profile_id" "$rule_id")"
+    [[ -f "$path" ]] || die_user "未找到规则文件：${rule_id}"
+    rm -f -- "$path"
+    apply_nft_all
+    printf '已删除转发规则：%s\n' "$rule_id"
+    printf '请刷新接入码，并在公网入口机重新导入。\n'
+    return 0
+}
+
+menu_refresh_rule_code() {
+    local profile_id="$1"
+    load_profile_or_die "$profile_id"
+    if [[ "${ROLE:-}" != "nat-transit" || "${NAT_DIRECTION:-ingress-listener}" != "nat-listener" ]]; then
+        printf '接入码应在 NAT IX 机器上刷新。\n'
+        printf '请到 NAT IX 机器运行“刷新接入码”，然后回到公网入口机重新导入。\n'
+        return 0
+    fi
+    refresh_nat_code "$profile_id"
+    printf '公网入口机需要重新导入该接入码才能同步最新规则。\n'
+    return 0
+}
+
+menu_apply_rules() {
+    local profile_id="$1"
+    load_profile_or_die "$profile_id"
+    apply_rules "$profile_id"
+    printf '已重新应用项目转发规则。\n'
+    printf '本操作只渲染 ix-transit-fabric 项目表，不会重置全局 nftables 规则集。\n'
+    return 0
+}
+
 show_rule() {
     require_root "$@"
     local profile_id rule_id
@@ -9735,7 +10135,7 @@ health_all() {
     require_root "$@"
     local id output rc status total=0 healthy=0 warning=0 down=0 unknown=0
     for id in $(profile_ids); do
-        load_profile "$id" || { printf '[WARN] 无法读取 Profile：%s\n' "$id"; continue; }
+        load_profile "$id" || { printf '[WARN] 无法读取线路：%s\n' "$id"; continue; }
         [[ "${ENABLED:-true}" == "true" && "${HEALTH_CHECK_ENABLED:-true}" == "true" ]] || continue
         printf '\n===== 线路 %s =====\n' "$id"
         set +e
@@ -11663,7 +12063,7 @@ health_all() {
     require_root "$@"
     local id output rc status reason total=0 healthy=0 warning=0 down=0 unknown=0
     for id in $(profile_ids); do
-        load_profile "$id" || { printf '[WARN] 无法读取 Profile：%s\n' "$id"; continue; }
+        load_profile "$id" || { printf '[WARN] 无法读取线路：%s\n' "$id"; continue; }
         [[ "${ENABLED:-true}" == "true" && "${HEALTH_CHECK_ENABLED:-true}" == "true" ]] || continue
         printf '\n===== 线路 %s =====\n' "$id"
         set +e
@@ -13842,7 +14242,7 @@ check_business() {
     if [[ "$target" == "--all" ]]; then
         for id in $(profile_ids); do
             printf '\n===== 线路 %s =====\n' "$id"
-            load_profile "$id" || { printf '[WARN] 无法读取 Profile：%s\n' "$id"; continue; }
+            load_profile "$id" || { printf '[WARN] 无法读取线路：%s\n' "$id"; continue; }
             check_business_core || true
         done
         return 0
@@ -14406,7 +14806,7 @@ run_nat_menu_action() {
         2) add_nat_ingress_from_listener_code ;;
         3) show_port_map --all --compact ;;
         4)
-            printf '请输入线路 ID（留空时自动选择唯一线路）：' >&2
+            printf '请输入线路编号或 ID（留空时自动选择唯一线路）：' >&2
             IFS= read -r profile_id || return 1
             health_profile "$profile_id"
             ;;
@@ -14607,86 +15007,58 @@ MENU
 }
 
 run_rule_menu_action() {
-    local choice="$1" profile_id rule_id
+    local choice="$1" profile_id="$2"
     case "$choice" in
-        1)
-            printf '请输入线路 ID（留空时自动选择唯一线路）：' >&2
-            IFS= read -r profile_id || return 1
-            list_rules "$profile_id"
-            ;;
-        2)
-            printf '请输入线路 ID（留空时自动选择唯一线路）：' >&2
-            IFS= read -r profile_id || return 1
-            add_rule "$profile_id"
-            ;;
-        3)
-            printf '请输入线路 ID：' >&2
-            IFS= read -r profile_id || return 1
-            printf '请输入规则 ID：' >&2
-            IFS= read -r rule_id || return 1
-            edit_rule "$profile_id" "$rule_id"
-            ;;
-        4)
-            printf '请输入线路 ID：' >&2
-            IFS= read -r profile_id || return 1
-            printf '请输入规则 ID：' >&2
-            IFS= read -r rule_id || return 1
-            enable_rule "$profile_id" "$rule_id"
-            ;;
-        5)
-            printf '请输入线路 ID：' >&2
-            IFS= read -r profile_id || return 1
-            printf '请输入规则 ID：' >&2
-            IFS= read -r rule_id || return 1
-            disable_rule "$profile_id" "$rule_id"
-            ;;
-        6)
-            printf '请输入线路 ID：' >&2
-            IFS= read -r profile_id || return 1
-            printf '请输入规则 ID：' >&2
-            IFS= read -r rule_id || return 1
-            delete_rule "$profile_id" "$rule_id"
-            ;;
-        7)
-            printf '请输入线路 ID（留空时自动选择唯一线路）：' >&2
-            IFS= read -r profile_id || return 1
-            refresh_nat_code "$profile_id"
-            ;;
-        8)
-            printf '请输入线路 ID（留空时自动选择唯一线路）：' >&2
-            IFS= read -r profile_id || return 1
-            apply_rules "$profile_id"
-            ;;
+        1) menu_add_rule "$profile_id" ;;
+        2) menu_edit_rule "$profile_id" ;;
+        3) menu_enable_rule "$profile_id" ;;
+        4) menu_disable_rule "$profile_id" ;;
+        5) menu_delete_rule "$profile_id" ;;
+        6) menu_refresh_rule_code "$profile_id" ;;
+        7) menu_apply_rules "$profile_id" ;;
         9|0|"") return 10 ;;
         *) log_warn "未知选项，请重新选择。"; return 0 ;;
     esac
 }
 
 show_rule_menu() {
-    local choice rc
+    local choice rc profile_id
+    if ! profile_id="$(select_profile_for_rule_menu)"; then
+        return 0
+    fi
     while true; do
+        printf '\n转发规则管理\n'
+        print_rule_menu_header "$profile_id"
+        print_rule_menu_rules "$profile_id"
         cat >&2 <<'MENU'
 
-转发规则管理
+操作：
 
-  1) 查看转发规则
-  2) 新增转发规则
-  3) 修改转发规则
-  4) 启用转发规则
-  5) 停止转发规则
-  6) 删除转发规则
-  7) 刷新接入码
-  8) 重新应用转发规则
-  9) 返回
+  1) 新增转发规则
+  2) 修改转发规则
+  3) 启用转发规则
+  4) 停止转发规则
+  5) 删除转发规则
+  6) 刷新接入码
+  7) 重新应用转发规则
+  8) 切换线路
+  9) 返回主菜单
 MENU
         printf '请选择：' >&2
         IFS= read -r choice || return 0
+
+        if [[ "$choice" == "8" ]]; then
+            if profile_id="$(select_profile_for_rule_menu)"; then
+                continue
+            fi
+            return 0
+        fi
 
         set +e
         trap - ERR
         export IXTF_IN_MENU=1
         export IXTF_ALLOW_INTERACTIVE=1
-        ( trap - ERR; set +e; run_rule_menu_action "$choice" )
+        ( trap - ERR; set +e; run_rule_menu_action "$choice" "$profile_id" )
         rc=$?
         trap 'on_error $LINENO' ERR
         set -e
@@ -14706,7 +15078,7 @@ run_menu_action() {
         3) show_rule_menu ;;
         4) status_all ;;
         5)
-            printf '请输入线路 ID（留空时自动选择唯一线路）：' >&2
+            printf '请输入线路编号或 ID（留空时自动选择唯一线路）：' >&2
             IFS= read -r profile_id || return 1
             health_profile "$profile_id"
             ;;
