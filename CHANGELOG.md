@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.2.0-alpha.2
+
+### Fixed
+
+- 延迟诊断菜单留空自动选择唯一线路失败。
+- NAT IX 侧规则列表客户端入口端口为空的问题。
+- self-check 旧角色语义。
+- 普通状态、流量、端口地图输出中的英文内部字段。
+
+### Changed
+
+- 普通 traffic-report、status、self-check 继续中文化。
+- 多规则健康检查输出更适合普通用户。
+
 ## 1.2.0-alpha.1
 
 ### Added

@@ -13,8 +13,8 @@ bash -n install.sh
 bash -n tests/smoke.sh
 
 version_output="$(bash install.sh --version)"
-[[ "$version_output" == "ix-transit-fabric 1.2.0-alpha.1" ]]
-[[ "$(tr -d '\r\n' < VERSION)" == "1.2.0-alpha.1" ]]
+[[ "$version_output" == "ix-transit-fabric 1.2.0-alpha.2" ]]
+[[ "$(tr -d '\r\n' < VERSION)" == "1.2.0-alpha.2" ]]
 
 bash install.sh --help >/dev/null
 
@@ -39,8 +39,20 @@ for token in \
     "code_schema=3" \
     "rule-main" \
     "traffic-report --sample" \
-    "latency-report"; do
-    grep -q -- "$token" install.sh README.md
+    "latency-report" \
+    "公网入口机侧指定" \
+    "线路ID" \
+    "当前机器是 NAT IX 中转机" \
+    "当前机器是公网入口机" \
+    "nft_rule_state_display" \
+    "nftables 规则：" \
+    "只读检查：不会切换线路" \
+    "必需命令" \
+    "运行状态" \
+    "计数器只统计本项目转发规则命中的流量" \
+    "latency_report_from_menu" \
+    "resolve_profile_id_for_menu"; do
+    grep -q -- "$token" install.sh
 done
 
 for token in \
@@ -49,8 +61,21 @@ for token in \
     "备注" \
     "EasyTier 组网协议" \
     "1.1.0 单规则兼容" \
-    "公网入口机重新导入接入码"; do
+    "公网入口机重新导入接入码" \
+    "alpha 注意事项" \
+    "公网入口机侧指定"; do
     grep -q -- "$token" README.md
+done
+
+for forbidden in \
+    'PROFILE_ID\tROLE\tGROUP' \
+    "Note: nftables counter only counts" \
+    "===== Profile " \
+    "current host role" \
+    "Required commands:" \
+    "Runtime:" \
+    "LOCAL_PORT -> LANDING_ET_IP:REMOTE_PORT"; do
+    ! grep -qF -- "$forbidden" install.sh
 done
 
 for file in \
@@ -191,8 +216,14 @@ trap cleanup_unit_tmp EXIT
     grep -q 'rule-main' <<<"$CODE_RULES_TSV"
     grep -q 'rule-game' <<<"$CODE_RULES_TSV"
 
-    resolved_latency="$(resolve_profile_id_for_cmd "" latency-report)"
+    resolved_latency="$(resolve_profile_id_for_menu latency-report "")"
     [[ "$resolved_latency" == "nat-listen" ]]
+    [[ "$(rule_client_port_display)" == "公网入口机侧指定" ]]
+
+    RULE_ENABLED=false
+    save_rule_env "$PROFILE_ID" rule-game
+    render_nft_all_file "$unit_tmp/render-disabled.nft" ix_test
+    ! grep -q 'rule-game' "$unit_tmp/render-disabled.nft"
 
     rm -f -- "$(rule_env_path "$PROFILE_ID" rule-main)" "$(rule_env_path "$PROFILE_ID" rule-game)"
     [[ -d "$(profile_rules_dir "$PROFILE_ID")" ]]

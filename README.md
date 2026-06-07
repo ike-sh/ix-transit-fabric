@@ -1,6 +1,6 @@
 # ix-transit-fabric
 
-当前版本：`1.2.0-alpha.1`
+当前版本：`1.2.0-alpha.2`
 
 `ix-transit-fabric` 用于管理 NAT-IX 中转线路：公网入口机接收客户端连接，通过 EasyTier 连接 NAT IX 机器，NAT IX 机器再用 nftables 转发到落地机业务端口。
 
@@ -138,6 +138,14 @@ NAT IX 接入码 v3 使用 `code_schema=3`，包含 `rules` 数组。v2 旧接�
 
 1.1.0 的单转发配置会自动兼容为一条默认转发规则 `rule-main`，备注为“默认转发”。旧 profile 中的 `LOCAL_PORT / TRANSIT_PORT / LANDING_HOST / LANDING_PORT / FORWARD_PROTO` 会在运行时映射为默认规则，不会让升级后的单规则用户断链。
 
+## alpha 注意事项
+
+- `1.2.0-alpha.2` 是多规则测试版；`1.1.0` 仍是稳定正式版。
+- 多规则修改后，NAT IX 机器需要刷新接入码，公网入口机需要重新导入。
+- 客户端入口端口只在公网入口机侧指定；NAT IX 机器规则列表会显示“公网入口机侧指定”。
+- 虚拟网中转端口只在 EasyTier 虚拟网内部使用，不是公网端口。
+- 停用规则不会删除配置；删除规则需要二次确认。
+
 ## 常用诊断
 
 ```bash
@@ -157,7 +165,7 @@ bash install.sh export-diagnostic
 流量统计按规则显示：
 
 ```text
-线路ID / 规则ID / 备注 / 客户端入口端口 / 虚拟网中转端口 / 落地目标 / 状态 / packets / bytes / human readable
+线路ID / 规则ID / 备注 / 状态 / 客户端入口端口 / 虚拟网中转端口 / 落地目标 / 数据包 / 字节 / 可读流量
 ```
 
 ## 端口解释
