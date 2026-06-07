@@ -13,8 +13,8 @@ bash -n install.sh
 bash -n tests/smoke.sh
 
 version_output="$(bash install.sh --version)"
-[[ "$version_output" == "ix-transit-fabric 1.2.0-alpha.7" ]]
-[[ "$(tr -d '\r\n' < VERSION)" == "1.2.0-alpha.7" ]]
+[[ "$version_output" == "ix-transit-fabric 1.2.0-alpha.8" ]]
+[[ "$(tr -d '\r\n' < VERSION)" == "1.2.0-alpha.8" ]]
 
 bash install.sh --help >/dev/null
 help_no_color="$(IXTF_COLOR=never bash install.sh --help)"
@@ -38,7 +38,10 @@ for token in \
     "set-easytier-protocol" \
     "rules" \
     "code_schema" \
-    "code_schema=3" \
+    "code_schema=4" \
+    "NAT_PUBLIC_PORT" \
+    "NAT_PUBLIC_PORTS" \
+    "nat_public_port" \
     "rule-main" \
     "read_access_code_from_tty" \
     "IXTF1:" \
@@ -63,7 +66,7 @@ for token in \
     "NO_COLOR" \
     "IXTF_DEBUG" \
     "rule-main\" { main = 1" \
-    "如果这段接入码已经出现在日志或聊天记录" \
+    "如果接入码已经出现在日志、截图、聊天记录或工单" \
     "不允许两条规则共用一个 CLIENT_PORT" \
     "不允许两条规则共用一个 TRANSIT_PORT" \
     "公网入口机侧指定 ->" \
@@ -108,7 +111,7 @@ for token in \
     "转发规则管理" \
     "alpha 注意事项" \
     "公网入口机侧指定" \
-    "1.2.0-alpha.7" \
+    "1.2.0-alpha.8" \
     "IXTF_COLOR=never"; do
     grep -q -- "$token" README.md
 done
@@ -244,6 +247,8 @@ trap cleanup_unit_tmp EXIT
     NAT_ET_IP=10.88.0.2
     NAT_ET_CIDR=10.88.0.2/24
     NAT_PUBLIC_HOST=nat-ix.example
+    NAT_PUBLIC_PORTS=20000,20001,20002
+    NAT_PUBLIC_PORT_MODE=list
     NAT_LISTENER_PROTO=both
     NAT_LISTENER_PROTOS="tcp udp"
     NAT_LISTENER_PORT=20000
@@ -263,6 +268,7 @@ trap cleanup_unit_tmp EXIT
     RULE_NOTE=game
     RULE_ENABLED=true
     CLIENT_PORT=
+    NAT_PUBLIC_PORT=20001
     TRANSIT_PORT=40001
     LANDING_HOST=10.88.0.1
     LANDING_PORT=50000
@@ -282,8 +288,10 @@ trap cleanup_unit_tmp EXIT
     wrapped_code="${code:0:40}"$'\r\n'"${code:40}"
     [[ "$(extract_landing_code "$wrapped_code")" == "$code" ]]
     parse_nat_code "$code"
-    [[ "$CODE_CODE_SCHEMA" == "3" ]]
+    [[ "$CODE_CODE_SCHEMA" == "4" ]]
     [[ "$CODE_RULE_COUNT" == "2" ]]
+    grep -q $'rule-main\t默认转发\ttrue\t20000\t40000' <<<"$CODE_RULES_TSV"
+    grep -q $'rule-game\tgame\ttrue\t20001\t40001' <<<"$CODE_RULES_TSV"
 
     resolved_latency="$(resolve_profile_id_for_menu latency-report "")"
     [[ "$resolved_latency" == "nat-listen" ]]
@@ -323,9 +331,10 @@ trap cleanup_unit_tmp EXIT
     grep -Eq '^[0-9]+[.] rule-main  启用  \[默认转发\]' <<<"$rule_menu_output"
     grep -Eq '^[0-9]+[.] rule-game  启用  \[game\]' <<<"$rule_menu_output"
     grep -q '公网入口端口：公网入口机侧指定' <<<"$rule_menu_output"
+    grep -q '商家入口端口：20001' <<<"$rule_menu_output"
     grep -q '虚拟网中转端口：40001' <<<"$rule_menu_output"
     grep -q '落地目标：10.88.0.1:50000' <<<"$rule_menu_output"
-    grep -q '完整路径：公网入口机侧指定 -> 10.88.0.2:40001 -> 10.88.0.1:50000' <<<"$rule_menu_output"
+    grep -q '完整路径：公网入口机侧指定 -> nat-ix.example:20001 -> 10.88.0.2:40001 -> 10.88.0.1:50000' <<<"$rule_menu_output"
     grep -q '协议：TCP' <<<"$rule_menu_output"
     ! grep -q "请输入线路 ""ID（留空时自动选择唯一线路）" <<<"$rule_menu_output"
     ! grep -q 'PROFILE_ID 格式不正确：2' <<<"$rule_menu_output"
@@ -352,15 +361,24 @@ trap cleanup_unit_tmp EXIT
     [[ "$RULE_NOTE" == "test" ]]
     [[ "$LANDING_HOST" == "landing-new.example" ]]
     [[ "$LANDING_PORT" == "52000" ]]
+    [[ "$NAT_PUBLIC_PORT" == "20002" ]]
     [[ "$TRANSIT_PORT" != "40000" ]]
     [[ "$TRANSIT_PORT" != "40001" ]]
 
     code_after_add="$(generate_nat_code)"
     parse_nat_code "$code_after_add"
-    [[ "$CODE_CODE_SCHEMA" == "3" ]]
+    [[ "$CODE_CODE_SCHEMA" == "4" ]]
     [[ "$CODE_RULE_COUNT" == "3" ]]
-    grep -q $'rule-dda8\ttest\ttrue\t' <<<"$CODE_RULES_TSV"
+    grep -q $'rule-dda8\ttest\ttrue\t20002\t' <<<"$CODE_RULES_TSV"
+    grep -q '"nat_public_port":20002' <<<"$(base64url_decode "${code_after_add#IXTF1:}")"
     [[ "$(base64url_decode "$CODE_RULES_B64")" == "$CODE_RULES_TSV" ]]
+
+    CODE_NAT_LISTENER_PORT=29999
+    CODE_RULES_TSV=$'rule-old\told\ttrue\t49999\told.example\t59999\ttcp'
+    validate_code_rules_tsv
+    [[ "$CODE_RULES_COMPAT_NAT_PORT" == "true" ]]
+    grep -q $'rule-old\told\ttrue\t29999\t49999\told.example\t59999\ttcp' <<<"$CODE_RULES_TSV"
+    parse_nat_code "$code_after_add"
 
     ROLE=nat-ingress
     NAT_DIRECTION=nat-listener
@@ -378,9 +396,13 @@ trap cleanup_unit_tmp EXIT
     NAT_ET_IP="$CODE_NAT_ET_IP"
     NAT_ET_CIDR="$CODE_NAT_ET_CIDR"
     NAT_PUBLIC_HOST="$CODE_NAT_PUBLIC_HOST"
+    NAT_PUBLIC_PORTS="$CODE_NAT_PUBLIC_PORTS"
+    NAT_PUBLIC_PORT_MODE="$CODE_NAT_PUBLIC_PORT_MODE"
     NAT_LISTENER_PROTO="$CODE_NAT_LISTENER_PROTO"
     NAT_LISTENER_PROTOS="$CODE_NAT_LISTENER_PROTOS"
     NAT_LISTENER_PORT="$CODE_NAT_LISTENER_PORT"
+    REMOTE_NAT_PROFILE_ID="$CODE_PROFILE_ID"
+    REMOTE_NAT_PUBLIC_HOST="$CODE_NAT_PUBLIC_HOST"
     ET_PEERS="tcp://nat-ix.example:20000 udp://nat-ix.example:20000"
     ET_NO_LISTENER=true
     sync_output="$(printf '31010\n31011\n31012\n' | IXTF_ALLOW_INTERACTIVE=1 sync_nat_listener_code_rules_to_ingress_profile "$PROFILE_ID" 2>&1)"
@@ -394,13 +416,22 @@ trap cleanup_unit_tmp EXIT
     save_profile_env "$PROFILE_ID" >/dev/null
     load_rule "$PROFILE_ID" rule-main
     [[ "$CLIENT_PORT" == "31010" ]]
+    [[ "$NAT_PUBLIC_PORT" == "20000" ]]
     main_transit="$TRANSIT_PORT"
     load_rule "$PROFILE_ID" rule-dda8
     [[ "$CLIENT_PORT" == "31011" ]]
+    [[ "$NAT_PUBLIC_PORT" == "20002" ]]
     dda8_transit="$TRANSIT_PORT"
     load_rule "$PROFILE_ID" rule-game
     [[ "$CLIENT_PORT" == "31012" ]]
+    [[ "$NAT_PUBLIC_PORT" == "20001" ]]
     game_transit="$TRANSIT_PORT"
+    load_profile "$PROFILE_ID" >/dev/null
+    grep -q 'nat-ix.example:20000' <<<"$ET_PEERS"
+    grep -q 'nat-ix.example:20001' <<<"$ET_PEERS"
+    grep -q 'nat-ix.example:20002' <<<"$ET_PEERS"
+    parse_nat_code "$code_after_add"
+    [[ "$(find_existing_nat_ingress_profile_for_code)" == "ing-sync" ]]
     [[ "$dda8_transit" != "$game_transit" ]]
     [[ "$dda8_transit" != "$main_transit" ]]
     render_nft_all_file "$unit_tmp/render-ingress.nft" ix_test
@@ -421,10 +452,13 @@ trap cleanup_unit_tmp EXIT
     ! grep -q '已被.*使用' <<<"$resync_output"
     load_rule "$PROFILE_ID" rule-main
     [[ "$CLIENT_PORT" == "31010" ]]
+    [[ "$NAT_PUBLIC_PORT" == "20000" ]]
     load_rule "$PROFILE_ID" rule-dda8
     [[ "$CLIENT_PORT" == "31011" ]]
+    [[ "$NAT_PUBLIC_PORT" == "20002" ]]
     load_rule "$PROFILE_ID" rule-game
     [[ "$CLIENT_PORT" == "31012" ]]
+    [[ "$NAT_PUBLIC_PORT" == "20001" ]]
 
     load_profile nat-listen
     load_rule nat-listen rule-game

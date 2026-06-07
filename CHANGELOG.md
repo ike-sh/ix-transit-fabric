@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.2.0-alpha.8
+
+### Fixed
+
+- 修复多规则推荐模式下所有规则复用同一个商家 NAT/IX 入口端口的问题。
+- 修复公网入口机重复导入同一 NAT IX 接入码时可能新建线路并触发 `ET_SUBNET` 冲突的问题。
+- 精简普通输出中的 systemd 原始输出和重复接入码安全提醒。
+
+### Changed
+
+- 每条转发规则新增独立 `NAT_PUBLIC_PORT`，NAT IX 线路新增 `NAT_PUBLIC_PORTS` / `NAT_PUBLIC_PORT_MODE` 端口池。
+- NAT IX 推荐模式接入码升级为 `code_schema=4`，每条规则包含 `nat_public_port`。
+- NAT IX EasyTier listener 和公网入口机 EasyTier peer 会按启用规则的商家入口端口去重渲染。
+- 刷新、导入和规则列表摘要显示商家入口端口与完整转发路径。
+
 ## 1.2.0-alpha.7
 
 ### Fixed
