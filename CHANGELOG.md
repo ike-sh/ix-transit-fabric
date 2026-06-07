@@ -1,5 +1,22 @@
 # Changelog
 
+## 1.2.0-alpha.1
+
+### Added
+
+- Multi forwarding rules per NAT IX line.
+- Forward rule add/edit/enable/disable/delete.
+- Per-rule notes.
+- Multiple client ports forwarding to different landing targets.
+- NAT IX v3 access codes with `rules` and `rules_b64`.
+- EasyTier protocol selection and protocol update command.
+- Per-rule health, latency, and traffic reporting.
+
+### Compatibility
+
+- Existing 1.1.0 single-rule profiles are migrated or mapped to a default rule.
+- NAT IX listener workflow remains the only recommended deployment flow.
+
 ## 1.1.0
 
 正式版。

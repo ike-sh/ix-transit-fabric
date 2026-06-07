@@ -13,6 +13,7 @@ bash install.sh health public-ingress-example
 
 ```bash
 bash install.sh latency-report nat-ix-listener-example
+bash install.sh latency-report nat-ix-listener-example rule-main
 bash install.sh latency-report public-ingress-example --sample 10
 ```
 
@@ -21,6 +22,13 @@ bash install.sh latency-report public-ingress-example --sample 10
 ```bash
 bash install.sh traffic-report
 bash install.sh traffic-report --sample 10
+```
+
+规则列表：
+
+```bash
+bash install.sh list-rules nat-ix-listener-example
+bash install.sh list-rules public-ingress-example
 ```
 
 脱敏诊断报告：
