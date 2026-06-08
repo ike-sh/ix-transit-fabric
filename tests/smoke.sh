@@ -13,8 +13,8 @@ bash -n install.sh
 bash -n tests/smoke.sh
 
 version_output="$(bash install.sh --version)"
-[[ "$version_output" == "ix-transit-fabric 1.2.0-alpha.23" ]]
-[[ "$(tr -d '\r\n' < VERSION)" == "1.2.0-alpha.23" ]]
+[[ "$version_output" == "ix-transit-fabric 1.2.0-alpha.24" ]]
+[[ "$(tr -d '\r\n' < VERSION)" == "1.2.0-alpha.24" ]]
 bash install.sh --help >/dev/null
 help_no_color="$(IXTF_COLOR=never bash install.sh --help)"
 ! grep -q $'\033' <<<"$help_no_color"
@@ -127,6 +127,10 @@ for token in \
     "立即刷新 DDNS" \
     "监控 / 通知 / DDNS" \
     "ddns-refresh --timer" \
+    "prompt_profile_id_for_menu" \
+    "health_profile_from_menu" \
+    "0 返回" \
+    "已自动选择唯一线路" \
     "NAT-IX 公网入口缺少 TRANSIT_PORT" \
     "ensure_ddns_timer_enabled" \
     "ix-transit-ddns.timer"; do
@@ -143,7 +147,7 @@ for token in \
     "转发规则管理" \
     "alpha 注意事项" \
     "公网入口机侧指定" \
-    "1.2.0-alpha.23" \
+    "1.2.0-alpha.24" \
     "DDNS" \
     "ddns-status" \
     "ddns-disable" \

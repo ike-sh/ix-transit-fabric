@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-SCRIPT_VERSION="1.2.0-alpha.23"
+SCRIPT_VERSION="1.2.0-alpha.24"
 APP_NAME="ix-transit-fabric"
 
 CONFIG_DIR="/etc/ix-transit-fabric"
@@ -4850,30 +4850,55 @@ resolve_profile_id_for_menu() {
     printf '当前机器已有线路：\n' >&2
     profile_ids | sed 's/^/  - /' >&2
     printf '请输入线路 ID：' >&2
-    IFS= read -r requested || return 1
+    IFS= read -r requested || return 0
     [[ -n "$requested" ]] || die_user "请指定线路 ID。"
     resolve_profile_id_for_menu "$verb" "$requested"
 }
 
+prompt_profile_id_for_menu() {
+    local verb="${1:-}" count only profile_id
+    count="$(profile_count)"
+    if [[ "$count" == "1" ]]; then
+        only="$(profile_ids | head -n 1)"
+        printf '已自动选择唯一线路：%s\n' "$only" >&2
+        printf '%s\n' "$only"
+        return 0
+    fi
+    printf '请输入线路编号或 ID（直接回车自动选择唯一线路）：' >&2
+    IFS= read -r profile_id || return 0
+    if ! profile_id="$(resolve_profile_id_for_menu "$verb" "$profile_id")"; then
+        return 0
+    fi
+    printf '%s\n' "$profile_id"
+}
+
 latency_report_from_menu() {
     local profile_id=""
-    printf '请输入线路编号或 ID（留空时自动选择唯一线路）：' >&2
-    IFS= read -r profile_id || return 1
-    if ! profile_id="$(resolve_profile_id_for_menu latency-report "$profile_id")"; then
-        return 2
+    if ! profile_id="$(prompt_profile_id_for_menu latency-report)"; then
+        return 0
     fi
+    [[ -n "$profile_id" ]] || return 0
     latency_report "$profile_id"
     return 0
 }
 
 show_profile_from_menu() {
     local profile_id=""
-    printf '请输入线路编号或 ID（留空时自动选择唯一线路）：' >&2
-    IFS= read -r profile_id || return 1
-    if ! profile_id="$(resolve_profile_id_for_menu show-config "$profile_id")"; then
-        return 2
+    if ! profile_id="$(prompt_profile_id_for_menu show-config)"; then
+        return 0
     fi
+    [[ -n "$profile_id" ]] || return 0
     show_profile "$profile_id"
+    return 0
+}
+
+health_profile_from_menu() {
+    local profile_id=""
+    if ! profile_id="$(prompt_profile_id_for_menu health)"; then
+        return 0
+    fi
+    [[ -n "$profile_id" ]] || return 0
+    health_profile "$profile_id"
     return 0
 }
 
@@ -7734,9 +7759,12 @@ select_rule_from_menu() {
     fi
     while true; do
         print_rule_choice_list "$profile_id"
-        printf '请输入序号 [1-%s]：' "$count" >&2
+        printf '请输入序号 [0 返回 / 1-%s]：' "$count" >&2
         IFS= read -r choice || return 1
         choice="$(trim_space "${choice%$'\r'}")"
+        if [[ "$choice" == "0" ]]; then
+            return 1
+        fi
         if [[ "$choice" =~ ^[0-9]+$ ]]; then
             if rule_id="$(rule_id_by_number "$profile_id" "$choice")"; then
                 printf '%s\n' "$rule_id"
@@ -7779,9 +7807,12 @@ select_profile_for_rule_menu() {
     fi
     printf '\n' >&2
     while true; do
-        printf '请选择线路 [1-%s]：' "$index" >&2
+        printf '请选择线路 [0 返回 / 1-%s]：' "$index" >&2
         IFS= read -r choice || return 1
         choice="$(trim_space "${choice%$'\r'}")"
+        if [[ "$choice" == "0" ]]; then
+            return 1
+        fi
         if [[ "$choice" =~ ^[0-9]+$ ]]; then
             choice_num=$((10#$choice))
             if (( choice_num >= 1 && choice_num <= index )); then
@@ -10057,7 +10088,6 @@ run_line_health_check() {
     fi
     normalize_profile_compat_vars
     case "${ROLE:-}" in
-        nat-transit) role_text="落地线路" ;;
         nat-ingress) role_text="公网入口线路" ;;
         nat-transit) role_text="NAT IX 中转线路" ;;
         *) role_text="${ROLE:-未知}" ;;
@@ -15169,7 +15199,7 @@ ix-transit-fabric 高级维护
   0) 返回主菜单
 MENU
         printf '请选择：' >&2
-        IFS= read -r choice || return 0
+        IFS= read -r choice || { printf '\n' >&2; return 0; }
 
         set +e
         trap - ERR
@@ -15255,11 +15285,7 @@ run_nat_menu_action() {
         1) add_nat_listener_profile ;;
         2) add_nat_ingress_from_listener_code ;;
         3) show_port_map --all --compact ;;
-        4)
-            printf '请输入线路编号或 ID（留空时自动选择唯一线路）：' >&2
-            IFS= read -r profile_id || return 1
-            health_profile "$profile_id"
-            ;;
+        4) health_profile_from_menu ;;
         5) latency_report_from_menu ;;
         6) show_nat_advanced_explanation ;;
         7) return 10 ;;
@@ -15286,7 +15312,7 @@ NAT-IX 中转模式
   7) 返回
 MENU
         printf '请选择：' >&2
-        IFS= read -r choice || return 0
+        IFS= read -r choice || { printf '\n' >&2; return 0; }
 
         set +e
         trap - ERR
@@ -15411,7 +15437,7 @@ show_monitor_menu() {
   0) 返回
 MENU
         printf '请选择：' >&2
-        IFS= read -r choice || return 0
+        IFS= read -r choice || { printf '\n' >&2; return 0; }
 
         set +e
         trap - ERR
@@ -15451,7 +15477,7 @@ show_health_menu() {
   0) 返回
 MENU
         printf '请选择：' >&2
-        IFS= read -r choice || return 0
+        IFS= read -r choice || { printf '\n' >&2; return 0; }
 
         set +e
         trap - ERR
@@ -15508,7 +15534,7 @@ show_rule_menu() {
   9) 返回主菜单
 MENU
         printf '请选择：' >&2
-        IFS= read -r choice || return 0
+        IFS= read -r choice || { printf '\n' >&2; return 0; }
 
         if [[ "$choice" == "8" ]]; then
             if profile_id="$(select_profile_for_rule_menu)"; then
@@ -15540,11 +15566,7 @@ run_menu_action() {
         2) add_nat_ingress_from_listener_code ;;
         3) show_rule_menu ;;
         4) status_all ;;
-        5)
-            printf '请输入线路编号或 ID（留空时自动选择唯一线路）：' >&2
-            IFS= read -r profile_id || return 1
-            health_profile "$profile_id"
-            ;;
+        5) health_profile_from_menu ;;
         6) latency_report_from_menu ;;
         7) traffic_report ;;
         8) install_easytier ;;
@@ -15575,7 +15597,7 @@ ix-transit-fabric 管理菜单
  10) 退出
 MENU
         printf '请选择：' >&2
-        IFS= read -r choice || return 0
+        IFS= read -r choice || { printf '\n' >&2; return 0; }
 
         set +e
         trap - ERR
