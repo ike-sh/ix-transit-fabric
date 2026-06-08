@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-SCRIPT_VERSION="1.2.0-alpha.14"
+SCRIPT_VERSION="1.2.0-alpha.15"
 APP_NAME="ix-transit-fabric"
 
 CONFIG_DIR="/etc/ix-transit-fabric"
@@ -6557,7 +6557,7 @@ verify_nat_transit_rule_consistency() {
         for item in "${issues[@]}"; do
             log_warn "  * ${item}"
         done
-        log_warn "建议运行：bash install.sh show-easytier-status ${profile_id}"
+        log_warn "建议运行：bash install.sh diagnose ${profile_id}"
         return 1
     fi
     return 0
@@ -10099,9 +10099,9 @@ print_service_status_short() {
     if command_exists systemctl; then
         active="$(systemctl is-active "$service" 2>/dev/null || true)"
         enabled="$(systemctl is-enabled "$service" 2>/dev/null || true)"
-        printf 'systemd: active=%s enabled=%s service=%s\n' "${active:-unknown}" "${enabled:-unknown}" "$service"
+        printf 'systemd：运行=%s 自启=%s 服务=%s\n' "${active:-未知}" "${enabled:-未知}" "$service"
     else
-        printf 'systemd: unavailable service=%s\n' "$service"
+        printf 'systemd：不可用 服务=%s\n' "$service"
     fi
 }
 
@@ -12012,12 +12012,12 @@ validate_primary_backup() {
         printf '[%s] %s\n' "$status" "$message"
     }
 
-    printf 'Primary/backup validation: %s\n' "$group"
+    printf '主备模型校验：%s\n' "$group"
     if group_exists "$group"; then
-        pb_item OK "GROUP exists."
+        pb_item OK "线路组 ${group} 存在。"
     else
-        pb_item FAIL "GROUP does not exist. Existing groups: $(list_existing_groups_for_message)"
-        printf '\nRecommendation: create or assign profiles with set-line-group before validating.\n'
+        pb_item FAIL "线路组 ${group} 不存在。已有线路组：$(list_existing_groups_for_message)"
+        printf '\n建议：先用 set-line-group 创建或分配线路后再校验。\n'
         return 1
     fi
 
@@ -12029,12 +12029,12 @@ validate_primary_backup() {
     forwarding_count="$(printf '%s\n' "$forwarding_ids" | awk 'NF{c++} END{print c+0}')"
     ingress_count="$(list_group_ingress_profiles "$group" | awk 'NF{c++} END{print c+0}')"
 
-    [[ "$ingress_count" -gt 0 ]] && pb_item OK "Group has ${ingress_count} ingress Profile(s)." || pb_item FAIL "Group has no ingress Profile."
-    [[ "$primary_count" -gt 0 ]] && pb_item OK "Primary exists: $(printf '%s\n' "$primary_ids" | join_profile_list)." || pb_item FAIL "No primary Profile."
-    [[ "$backup_count" -gt 0 ]] && pb_item OK "Backup exists: $(printf '%s\n' "$backup_ids" | join_profile_list)." || pb_item FAIL "No backup Profile."
-    [[ "$primary_count" -le 1 ]] && pb_item OK "No multiple primary." || pb_item FAIL "Multiple primary Profiles: $(printf '%s\n' "$primary_ids" | join_profile_list)."
-    [[ "$forwarding_count" -le 1 ]] && pb_item OK "No multiple FORWARD_ENABLED=true ingress Profile in this group." || pb_item FAIL "Multiple forwarding Profiles: $(printf '%s\n' "$forwarding_ids" | join_profile_list)."
-    [[ "$forwarding_count" -gt 0 ]] && pb_item OK "Current forwarding Profile: $(printf '%s\n' "$forwarding_ids" | join_profile_list)." || pb_item FAIL "No FORWARD_ENABLED=true ingress Profile."
+    [[ "$ingress_count" -gt 0 ]] && pb_item OK "线路组含 ${ingress_count} 条入口线路。" || pb_item FAIL "线路组没有入口线路。"
+    [[ "$primary_count" -gt 0 ]] && pb_item OK "主线路：$(printf '%s\n' "$primary_ids" | join_profile_list)。" || pb_item FAIL "未配置主线路（primary）。"
+    [[ "$backup_count" -gt 0 ]] && pb_item OK "备线路：$(printf '%s\n' "$backup_ids" | join_profile_list)。" || pb_item FAIL "未配置备线路（backup）。"
+    [[ "$primary_count" -le 1 ]] && pb_item OK "主线路唯一。" || pb_item FAIL "存在多条主线路：$(printf '%s\n' "$primary_ids" | join_profile_list)。"
+    [[ "$forwarding_count" -le 1 ]] && pb_item OK "线路组内仅一条线路处于转发中。" || pb_item FAIL "多条线路同时转发：$(printf '%s\n' "$forwarding_ids" | join_profile_list)。"
+    [[ "$forwarding_count" -gt 0 ]] && pb_item OK "当前转发线路：$(printf '%s\n' "$forwarding_ids" | join_profile_list)。" || pb_item FAIL "没有 FORWARD_ENABLED=true 的入口线路。"
 
     if [[ "$forwarding_count" -gt 0 ]]; then
         while IFS= read -r id; do
@@ -12044,18 +12044,18 @@ validate_primary_backup() {
                 current_found=1
             fi
         done <<<"$forwarding_ids"
-        [[ "$current_found" -eq 1 ]] && pb_item OK "Current forwarding Profile belongs to GROUP ${group}." || pb_item FAIL "Current forwarding Profile is not in GROUP ${group}."
+        [[ "$current_found" -eq 1 ]] && pb_item OK "当前转发线路属于线路组 ${group}。" || pb_item FAIL "当前转发线路不属于线路组 ${group}。"
     else
-        pb_item FAIL "Cannot confirm forwarding Profile belongs to GROUP because no group forwarding Profile is active."
+        pb_item FAIL "无法确认转发线路归属：线路组内没有处于转发的入口线路。"
     fi
 
     while IFS= read -r id; do
         [[ -n "$id" ]] || continue
         load_profile "$id" >/dev/null 2>&1 || continue
         if [[ "${ENABLED:-true}" == "true" ]]; then
-            pb_item OK "Primary ${id} is enabled."
+            pb_item OK "主线路 ${id} 已启用。"
         else
-            pb_item FAIL "Primary ${id} is disabled."
+            pb_item FAIL "主线路 ${id} 已停用。"
         fi
         [[ "${HEALTH_STATUS:-unknown}" == "down" ]] && primary_down=1
     done <<<"$primary_ids"
@@ -12064,9 +12064,9 @@ validate_primary_backup() {
         [[ -n "$id" ]] || continue
         load_profile "$id" >/dev/null 2>&1 || continue
         if [[ "${ENABLED:-true}" == "true" ]]; then
-            pb_item OK "Backup ${id} is enabled."
+            pb_item OK "备线路 ${id} 已启用。"
         else
-            pb_item WARN "Backup ${id} is disabled: cold standby, enable it before switching."
+            pb_item WARN "备线路 ${id} 为冷备（已停用），切换前请先 enable-profile。"
         fi
         [[ "${HEALTH_STATUS:-unknown}" == "healthy" && -z "$healthy_backup" ]] && healthy_backup="$id"
     done <<<"$backup_ids"
@@ -12076,9 +12076,9 @@ validate_primary_backup() {
         load_profile "$id" >/dev/null 2>&1 || continue
         missing="$(profile_four_ports_missing)"
         if [[ "$missing" == "complete" ]]; then
-            pb_item OK "Profile ${id} four-port config complete: $(profile_four_port_summary)"
+            pb_item OK "线路 ${id} 四端口配置完整：$(profile_four_port_summary)"
         else
-            pb_item FAIL "Profile ${id} four-port config incomplete: missing ${missing}."
+            pb_item FAIL "线路 ${id} 四端口配置不完整，缺少：${missing}。"
         fi
     done <<<"$(printf '%s\n%s\n' "$primary_ids" "$backup_ids" | awk 'NF' | sort -u)"
 
@@ -12092,7 +12092,7 @@ validate_primary_backup() {
             seen_ports="${seen_ports}${LOCAL_PORT}"$'\n'
         fi
     done
-    [[ -z "$dup_ports" ]] && pb_item OK "No active LOCAL_PORT conflict inside this group." || pb_item FAIL "Active forwarding LOCAL_PORT conflict: ${dup_ports}."
+    [[ -z "$dup_ports" ]] && pb_item OK "线路组内无 CLIENT_PORT 冲突。" || pb_item FAIL "转发中 CLIENT_PORT 冲突：${dup_ports}。"
 
     if nft_text="$(nft_table_text 2>/dev/null)"; then
         nft_available=1
@@ -12118,37 +12118,37 @@ validate_primary_backup() {
             [[ -n "$port" ]] || continue
             grep -qxF "$port" <<<"$expected_ports" || nft_issues=$((nft_issues + 1))
         done <<<"$actual_ports"
-        [[ "$nft_issues" -eq 0 ]] && pb_item OK "nftables only contains rules for enabled + FORWARD_ENABLED=true ingress Profiles." || pb_item FAIL "nftables rules do not match Profile forwarding state; run verify-nft-profiles."
+        [[ "$nft_issues" -eq 0 ]] && pb_item OK "nftables 规则与启用中的入口转发线路一致。" || pb_item FAIL "nftables 规则与 Profile 转发状态不一致，请运行 verify-nft-profiles。"
     else
-        pb_item WARN "Cannot read nftables project table or ${NFT_FILE}; run verify-nft-profiles on the ingress host."
+        pb_item WARN "无法读取 nftables 项目表或 ${NFT_FILE}；请在入口机上运行 verify-nft-profiles。"
     fi
 
     while IFS= read -r id; do
         [[ -n "$id" ]] || continue
         load_profile "$id" >/dev/null 2>&1 || continue
         if [[ "${ENABLED:-true}" == "true" && "${FORWARD_ENABLED:-true}" == "false" ]]; then
-            pb_item OK "Backup ${id} is hot standby: ENABLED=true and FORWARD_ENABLED=false."
+            pb_item OK "备线路 ${id} 为热备：ENABLED=true 且 FORWARD_ENABLED=false。"
         elif [[ "${ENABLED:-true}" == "true" && "${FORWARD_ENABLED:-true}" == "true" ]]; then
-            pb_item WARN "Backup ${id} is currently forwarding; it is active now, not standby."
+            pb_item WARN "备线路 ${id} 当前正在转发，不是待机状态。"
         fi
         if [[ "${ENABLED:-true}" == "false" ]]; then
-            pb_item WARN "Backup ${id} is cold standby: ENABLED=false. Enable it before switch-line."
+            pb_item WARN "备线路 ${id} 为冷备（ENABLED=false），切换前请先 enable-profile。"
         fi
     done <<<"$backup_ids"
 
-    printf '\nResult: OK=%s WARN=%s FAIL=%s\n' "$pass_count" "$warn_count" "$fail_count"
-    printf 'Recommendation:\n'
+    printf '\n结果：通过=%s 警告=%s 失败=%s\n' "$pass_count" "$warn_count" "$fail_count"
+    printf '建议：\n'
     if [[ "$fail_count" -gt 0 ]]; then
-        printf '  - Fix FAIL items first. For nft drift, run: bash install.sh verify-nft-profiles\n'
-        printf '  - After config changes, run: bash install.sh apply-nft-all\n'
+        printf '  - 先修复 FAIL 项；nft 漂移可运行：bash install.sh verify-nft-profiles\n'
+        printf '  - 配置变更后运行：bash install.sh apply-nft-all\n'
     elif [[ "$primary_down" -eq 1 && -n "$healthy_backup" ]]; then
-        printf '  - Primary is down and backup %s is healthy.\n' "$healthy_backup"
+        printf '  - 主线路故障，备线路 %s 健康。\n' "$healthy_backup"
         printf '  - 建议：bash install.sh switch-dry-run %s %s\n' "$group" "$healthy_backup"
         printf '  - 执行：bash install.sh switch-line %s %s\n' "$group" "$healthy_backup"
     elif [[ "$warn_count" -gt 0 ]]; then
-        printf '  - Review WARN items; cold standby needs enable-profile before switching.\n'
+        printf '  - 请检查 WARN 项；冷备需先 enable-profile 再切换。\n'
     else
-        printf '  - Model looks ready. Use switch-dry-run before any manual switch.\n'
+        printf '  - 主备模型就绪。切换前请先 switch-dry-run。\n'
     fi
     [[ "$fail_count" -eq 0 ]]
 }
@@ -12176,13 +12176,13 @@ primary_backup_check() {
         printf '[%s] %s\n' "$state" "$message"
     }
 
-    printf 'Primary/backup real-machine check: %s\n' "$group"
+    printf '主备实机检查：%s\n' "$group"
     if ! group_exists "$group"; then
-        pb_check_item FAIL "GROUP does not exist. Existing groups: $(list_existing_groups_for_message)"
-        printf '主备组状态：not-ready\n'
+        pb_check_item FAIL "线路组 ${group} 不存在。已有线路组：$(list_existing_groups_for_message)"
+        printf '主备组状态：未就绪\n'
         return 1
     fi
-    pb_check_item OK "GROUP exists."
+    pb_check_item OK "线路组 ${group} 存在。"
 
     primary_ids="$(list_group_primary_profiles "$group")"
     backup_ids="$(list_group_backup_profiles "$group")"
@@ -12194,30 +12194,30 @@ primary_backup_check() {
     active_profile="$(printf '%s\n' "$forwarding_ids" | awk 'NF{print; exit}')"
     primary_id="$(printf '%s\n' "$primary_ids" | awk 'NF{print; exit}')"
 
-    [[ "$ingress_count" -ge 2 ]] && pb_check_item OK "GROUP has at least 2 ingress Profiles (${ingress_count})." || pb_check_item FAIL "GROUP has fewer than 2 ingress Profiles (${ingress_count})."
-    [[ "$primary_count" -eq 1 ]] && pb_check_item OK "Exactly one primary: ${primary_id}." || pb_check_item FAIL "Primary count must be 1, current=${primary_count}."
-    [[ "$backup_count" -ge 1 ]] && pb_check_item OK "Backup count=${backup_count}." || pb_check_item FAIL "No backup Profile."
-    [[ "$forwarding_count" -eq 1 ]] && pb_check_item OK "Exactly one FORWARD_ENABLED=true ingress Profile: ${active_profile}." || pb_check_item FAIL "FORWARD_ENABLED=true ingress count must be 1, current=${forwarding_count}."
+    [[ "$ingress_count" -ge 2 ]] && pb_check_item OK "线路组至少 2 条入口线路（当前 ${ingress_count}）。" || pb_check_item FAIL "线路组入口线路不足 2 条（当前 ${ingress_count}）。"
+    [[ "$primary_count" -eq 1 ]] && pb_check_item OK "主线路唯一：${primary_id}。" || pb_check_item FAIL "主线路数量必须为 1，当前=${primary_count}。"
+    [[ "$backup_count" -ge 1 ]] && pb_check_item OK "备线路数量=${backup_count}。" || pb_check_item FAIL "未配置备线路。"
+    [[ "$forwarding_count" -eq 1 ]] && pb_check_item OK "仅一条入口线路处于转发中：${active_profile}。" || pb_check_item FAIL "FORWARD_ENABLED=true 入口线路数必须为 1，当前=${forwarding_count}。"
 
     if [[ -n "$active_profile" ]]; then
         load_profile "$active_profile" >/dev/null 2>&1 || true
-        [[ "${ENABLED:-true}" == "true" ]] && pb_check_item OK "Current forwarding Profile ${active_profile} is enabled." || pb_check_item FAIL "Current forwarding Profile ${active_profile} is disabled."
+        [[ "${ENABLED:-true}" == "true" ]] && pb_check_item OK "当前转发线路 ${active_profile} 已启用。" || pb_check_item FAIL "当前转发线路 ${active_profile} 已停用。"
     fi
 
     for id in $(list_group_backup_profiles "$group"); do
         load_profile "$id" >/dev/null 2>&1 || continue
         if [[ "${ENABLED:-true}" == "true" ]]; then
-            pb_check_item OK "Backup ${id} is enabled."
+            pb_check_item OK "备线路 ${id} 已启用。"
         else
-            pb_check_item WARN "Backup ${id} is cold standby (ENABLED=false); enable it before switching."
+            pb_check_item WARN "备线路 ${id} 为冷备（ENABLED=false），切换前请先 enable-profile。"
         fi
         if [[ "${HEALTH_STATUS:-unknown}" == "down" ]]; then
-            pb_check_item FAIL "Backup ${id} is down; do not switch to this backup."
+            pb_check_item FAIL "备线路 ${id} 故障，请勿切换到该备线路。"
         else
             available_backup_count=$((available_backup_count + 1))
         fi
         if [[ "${ENABLED:-true}" == "true" && "${FORWARD_ENABLED:-true}" == "false" ]]; then
-            pb_check_item OK "Backup ${id} can run as hot standby with FORWARD_ENABLED=false."
+            pb_check_item OK "备线路 ${id} 可作为热备（FORWARD_ENABLED=false）。"
         fi
     done
 
@@ -12226,22 +12226,22 @@ primary_backup_check() {
         service="$(profile_service_name "$id")"
         active="$(profile_service_status "$service")"
         if [[ "$active" == "active" ]]; then
-            pb_check_item OK "Service ${service} is active."
+            pb_check_item OK "服务 ${service} 运行中。"
         elif [[ "$active" == "unknown" ]]; then
-            pb_check_item WARN "Service ${service} cannot be checked."
+            pb_check_item WARN "无法检查服务 ${service}。"
         else
-            pb_check_item WARN "Service ${service} is not active (${active})."
+            pb_check_item WARN "服务 ${service} 未运行（${active}）。"
         fi
         set +e
         check_et_ip_present >/dev/null 2>&1
         et_rc=$?
         set -e
         case "$et_rc" in
-            0) pb_check_item OK "ET IP exists for ${id}: ${ET_IPV4:-unknown}." ;;
-            2) pb_check_item WARN "Cannot check ET IP for ${id}." ;;
-            *) pb_check_item WARN "ET IP missing for ${id}: ${ET_IPV4:-unknown}." ;;
+            0) pb_check_item OK "线路 ${id} ET IP 存在：${ET_IPV4:-未知}。" ;;
+            2) pb_check_item WARN "无法检查线路 ${id} 的 ET IP。" ;;
+            *) pb_check_item WARN "线路 ${id} ET IP 缺失：${ET_IPV4:-未知}。" ;;
         esac
-        [[ "${HEALTH_STATUS:-unknown}" == "down" ]] && pb_check_item WARN "Health status is down for ${id}: ${LAST_HEALTH_REASON:-未检查}."
+        [[ "${HEALTH_STATUS:-unknown}" == "down" ]] && pb_check_item WARN "线路 ${id} 健康=down，原因=${LAST_HEALTH_REASON:-未检查}。"
     done
 
     if nft_text="$(nft_table_text 2>/dev/null)"; then
@@ -12254,9 +12254,9 @@ primary_backup_check() {
                 nft_text_has_profile_rule "$nft_text" && nft_issues=$((nft_issues + 1))
             fi
         done <<<"$(list_group_ingress_profiles "$group")"
-        [[ "$nft_issues" -eq 0 ]] && pb_check_item OK "nftables only contains current forwarding rules for this group." || pb_check_item FAIL "nftables rules differ from this group Profile state; run verify-nft-profiles."
+        [[ "$nft_issues" -eq 0 ]] && pb_check_item OK "nftables 规则与线路组当前转发状态一致。" || pb_check_item FAIL "nftables 规则与线路组 Profile 状态不一致，请运行 verify-nft-profiles。"
     else
-        pb_check_item WARN "Cannot read nftables project table or ${NFT_FILE}."
+        pb_check_item WARN "无法读取 nftables 项目表或 ${NFT_FILE}。"
     fi
 
     if [[ -n "$primary_id" ]]; then
@@ -12264,23 +12264,23 @@ primary_backup_check() {
         if [[ "${HEALTH_STATUS:-unknown}" == "down" ]]; then
             recommended_backup="$(first_healthy_backup_in_group "$group" || true)"
             if [[ -n "$recommended_backup" ]]; then
-                pb_check_item WARN "Primary down but backup ${recommended_backup} healthy."
+                pb_check_item WARN "主线路故障，备线路 ${recommended_backup} 健康。"
                 printf '建议：bash install.sh switch-dry-run %s %s\n' "$group" "$recommended_backup"
                 printf '执行：bash install.sh switch-line %s %s\n' "$group" "$recommended_backup"
             fi
         fi
     fi
-    [[ "$available_backup_count" -gt 0 ]] || pb_check_item FAIL "No available backup; current group is not a complete primary/backup group."
+    [[ "$available_backup_count" -gt 0 ]] || pb_check_item FAIL "无可用备线路，当前线路组主备配置不完整。"
 
-    printf '\nOK=%s WARN=%s FAIL=%s\n' "$ok_count" "$warn_count" "$fail_count"
+    printf '\n通过=%s 警告=%s 失败=%s\n' "$ok_count" "$warn_count" "$fail_count"
     if [[ "$fail_count" -gt 0 ]]; then
-        printf '主备组状态：not-ready\n'
+        printf '主备组状态：未就绪\n'
         return 1
     elif [[ "$warn_count" -gt 0 ]]; then
-        printf '主备组状态：warning\n'
+        printf '主备组状态：有警告\n'
         return 0
     fi
-    printf '主备组状态：ready\n'
+    printf '主备组状态：就绪\n'
 }
 
 primary_backup_runbook() {
@@ -12678,7 +12678,7 @@ switch_dry_run() {
     printf '  PROFILE=%s ENABLED=%s FORWARD=%s HEALTH=%s\n' "$target" "$enabled_state" "${FORWARD_ENABLED:-true}" "$target_status"
     printf '  PORTS=%s\n' "$target_summary"
     if [[ "$enabled_state" != "true" ]]; then
-        printf '[WARN] Target is cold standby (ENABLED=false). Enable it before real switch-line.\n'
+        printf '[WARN] 目标线路为冷备（ENABLED=false），正式 switch-line 前请先 enable-profile。\n'
     fi
 
     printf '\nChanges that would happen:\n'
@@ -13174,7 +13174,7 @@ switch_dry_run() {
     [[ "$risk_count" -gt 0 ]] || printf '  - none\n'
 
     if [[ "$enabled_state" != "true" ]]; then
-        printf '[WARN] Target is cold standby (ENABLED=false). Enable it before real switch-line.\n'
+        printf '[WARN] 目标线路为冷备（ENABLED=false），正式 switch-line 前请先 enable-profile。\n'
     fi
     printf '\nDry-run guarantee: 本命令不修改配置、不重启服务、不应用 nftables。\n'
     printf 'Dry-run guarantee: no Profile files were written, apply-nft-all was not executed, LAST_SWITCH_AT and SWITCH_NOTE were not changed.\n'
@@ -14593,70 +14593,70 @@ export_diagnostic() {
     output="${IXTF_DIAGNOSTIC_DIR:-/tmp}/ix-transit-diagnostic-${stamp}.txt"
     tmp="$(make_tmp_file "ix-transit-diagnostic")"
     {
-        diagnostic_section "version"
+        diagnostic_section "版本信息"
         printf 'ix-transit-fabric %s\n' "$SCRIPT_VERSION"
-        printf 'hostname: %s\n' "$(hostname 2>/dev/null || printf unknown)"
-        printf 'date: %s\n' "$(date -Is 2>/dev/null || utc_now)"
+        printf '主机名：%s\n' "$(hostname 2>/dev/null || printf 未知)"
+        printf '时间：%s\n' "$(date -Is 2>/dev/null || utc_now)"
 
-        diagnostic_section "self-check"
+        diagnostic_section "自检"
         self_check 2>&1 || true
 
-        diagnostic_section "status-all"
+        diagnostic_section "线路状态汇总"
         status_all 2>&1 || true
 
-        diagnostic_section "health-report"
+        diagnostic_section "健康报告"
         health_report 2>&1 || true
 
-        diagnostic_section "primary-backup-summary"
+        diagnostic_section "主备摘要"
         primary_backup_summary 2>&1 || true
 
-        diagnostic_section "verify-nft-profiles"
+        diagnostic_section "nftables 转发校验"
         verify_nft_profiles_core 2>&1 || true
 
-        diagnostic_section "monitor-status"
+        diagnostic_section "监控状态"
         monitor_status 2>&1 || true
 
-        diagnostic_section "notify-status"
+        diagnostic_section "通知配置"
         diagnostic_notify_status 2>&1 || true
 
-        diagnostic_section "traffic-report"
+        diagnostic_section "流量统计"
         traffic_report 2>&1 || true
 
-        diagnostic_section "profile-raw-config"
+        diagnostic_section "线路原始配置"
         if [[ -d "$PROFILES_DIR" ]]; then
             for unit in $(profile_ids); do
                 printf '\n--- %s ---\n' "$unit"
                 if load_profile "$unit"; then
                     print_config_summary_diagnostic loaded 2>&1 || true
                 else
-                    printf 'unreadable profile\n'
+                    printf '无法读取线路配置\n'
                 fi
             done
         else
-            printf 'no profiles dir\n'
+            printf '无 profiles 目录\n'
         fi
 
-        diagnostic_section "recent switch-history"
-        diagnostic_tsv_tail "$(switch_history_path)" 20 "No switch history found." 2>&1 || true
+        diagnostic_section "最近切换历史"
+        diagnostic_tsv_tail "$(switch_history_path)" 20 "无切换历史记录。" 2>&1 || true
 
-        diagnostic_section "recent health-history"
-        diagnostic_tsv_tail "$HEALTH_HISTORY_FILE" 50 "No health history found." 2>&1 || true
+        diagnostic_section "最近健康历史"
+        diagnostic_tsv_tail "$HEALTH_HISTORY_FILE" 50 "无健康检查历史。" 2>&1 || true
 
-        diagnostic_section "show-port-map --all"
+        diagnostic_section "端口映射"
         show_port_map --all 2>&1 || true
 
-        diagnostic_section "nftables project table"
+        diagnostic_section "nftables 项目表"
         show_nft 2>&1 || true
 
-        diagnostic_section "systemd unit summary"
+        diagnostic_section "systemd 服务摘要"
         if command_exists systemctl; then
             for unit in "$SERVICE_NAME" "$MONITOR_SERVICE_NAME" "$MONITOR_TIMER_NAME"; do
-                printf '%s active=%s enabled=%s\n' "$unit" \
-                    "$(systemctl is-active "$unit" 2>/dev/null || printf unknown)" \
-                    "$(systemctl is-enabled "$unit" 2>/dev/null || printf unknown)"
+                printf '%s 运行=%s 自启=%s\n' "$unit" \
+                    "$(systemctl is-active "$unit" 2>/dev/null || printf 未知)" \
+                    "$(systemctl is-enabled "$unit" 2>/dev/null || printf 未知)"
             done
         else
-            printf 'systemctl unavailable\n'
+            printf 'systemctl 不可用\n'
         fi
     } | redact_diagnostic_stream >"$tmp"
     install -m 0600 "$tmp" "$output"
@@ -14721,7 +14721,7 @@ doctor_group_warnings() {
     local group
     while IFS= read -r group; do
         [[ -n "$group" ]] || continue
-        printf '\n===== Group %s =====\n' "$group"
+        printf '\n===== 线路组 %s =====\n' "$group"
         print_group_advice "$group"
     done < <(profile_groups)
 }
@@ -14834,9 +14834,9 @@ status_all() {
     printf '\n汇总：线路总数=%s 启用=%s 转发中=%s 健康=%s 警告=%s 故障=%s 未检查=%s\n' \
         "$total" "$enabled_count" "$forwarding_count" "$healthy" "$warning" "$down" "$unknown"
     if [[ "$verbose" == "--verbose" ]]; then
-        printf '\nGroup details:\n'
+        printf '\n线路组详情：\n'
         doctor_group_warnings
-        printf '\nnftables read-only check:\n'
+        printf '\nnftables 只读校验：\n'
         verify_nft_profiles_core || true
     fi
     return 0
@@ -14847,8 +14847,8 @@ doctor_all() {
     local id profile_count=0 enabled_count=0 forwarding_count=0 healthy=0 warning=0 down=0 unknown=0 rc status output reason
     local group_issue_total=0 group issue backup_id service active enabled_label forward_label status_row group_count issue_count nat_profile_count=0
     local -a health_rows=()
-    printf 'ix-transit-fabric doctor-all\n'
-    printf 'This command is read-only and never performs automatic switching.\n'
+    printf 'ix-transit-fabric 全量诊断（doctor-all）\n'
+    printf '说明：本命令只读，不会自动切换线路。\n'
 
     printf '\n===== 线路级问题 =====\n'
     for id in $(sorted_profile_ids); do
@@ -14872,7 +14872,7 @@ doctor_all() {
         health_rows+=("${id}"$'\t'"${status}"$'\t'"${reason}")
         if [[ "$rc" -ne 0 ]]; then
             unknown=$((unknown + 1))
-            printf '[WARN] Profile diagnostic failed for %s (exit=%s); continuing.\n' "$id" "$rc"
+            printf '[WARN] 线路 %s 诊断失败（退出码 %s），已继续检查其他线路。\n' "$id" "$rc"
         else
             case "$status" in
                 healthy) healthy=$((healthy + 1)) ;;
@@ -14883,17 +14883,17 @@ doctor_all() {
         fi
     done
 
-    printf '\n===== Group level issues =====\n'
+    printf '\n===== 线路组级问题 =====\n'
     group_count="$(profile_group_count)"
     if [[ "$group_count" -eq 0 ]]; then
         print_no_group_message
     else
         while IFS= read -r group; do
             [[ -n "$group" ]] || continue
-            printf '\n--- Group %s ---\n' "$group"
+            printf '\n--- 线路组 %s ---\n' "$group"
             issue_count="$(group_issue_count "$group")"
             if [[ "$issue_count" -eq 0 ]]; then
-                printf '[OK] no group issue detected\n'
+                printf '[OK] 未发现线路组问题\n'
                 continue
             fi
             while IFS= read -r issue; do
@@ -14909,7 +14909,7 @@ doctor_all() {
         done < <(profile_groups || true)
     fi
 
-    printf '\n===== Group role hints =====\n'
+    printf '\n===== 线路组角色提示 =====\n'
     while IFS= read -r id; do
         [[ -n "$id" ]] || continue
         load_profile "$id" >/dev/null 2>&1 || continue
@@ -14920,44 +14920,44 @@ doctor_all() {
         fi
     done < <(profile_ids || true)
     if [[ "$group_count" -eq 0 ]]; then
-        printf '[OK] standalone Profile 不需要 LINE_GROUP。\n'
+        printf '[OK] 独立线路（standalone）无需设置 LINE_GROUP。\n'
     fi
 
-    printf '\n===== nftables rule issues =====\n'
+    printf '\n===== nftables 规则问题 =====\n'
     verify_nft_profiles_core || true
 
-    printf '\n===== service issues =====\n'
+    printf '\n===== 服务状态 =====\n'
     for id in $(sorted_profile_ids); do
-        load_profile "$id" >/dev/null 2>&1 || { printf '[WARN] %s: cannot read Profile for service check\n' "$id"; continue; }
+        load_profile "$id" >/dev/null 2>&1 || { printf '[WARN] %s：无法读取线路配置，跳过服务检查\n' "$id"; continue; }
         service="$(profile_service_name "$id")"
         if command_exists systemctl; then
             active="$(systemctl is-active "$service" 2>/dev/null || true)"
             enabled_label="$(systemctl is-enabled "$service" 2>/dev/null || true)"
-            printf '%s\t%s\t%s\n' "$id" "${active:-unknown}" "${enabled_label:-unknown}"
+            printf '%s\t%s\t%s\n' "$id" "${active:-未知}" "${enabled_label:-未知}"
         else
-            printf '%s\tsystemctl-unavailable\tunknown\n' "$id"
+            printf '%s\tsystemctl不可用\t未知\n' "$id"
         fi
     done
 
-    printf '\n===== health status issues =====\n'
+    printf '\n===== 健康状态异常 =====\n'
     for status_row in "${health_rows[@]}"; do
         IFS=$'\t' read -r id status reason <<<"$status_row"
         case "${status:-unknown}" in
             healthy) ;;
-            *) printf '[WARN] %s health=%s reason=%s\n' "$id" "${status:-unknown}" "${reason:-未检查}" ;;
+            *) printf '[WARN] %s 健康=%s 原因=%s\n' "$id" "${status:-unknown}" "${reason:-未检查}" ;;
         esac
     done
 
-    printf '\nSummary:\n'
-    printf 'profile_count=%s\n' "$profile_count"
-    printf 'enabled_count=%s\n' "$enabled_count"
-    printf 'forwarding_count=%s\n' "$forwarding_count"
-    printf 'healthy=%s warning=%s down=%s unknown=%s\n' "$healthy" "$warning" "$down" "$unknown"
-    printf 'group_issue_count=%s\n' "$group_issue_total"
+    printf '\n汇总：\n'
+    printf '线路数=%s\n' "$profile_count"
+    printf '启用数=%s\n' "$enabled_count"
+    printf '转发中=%s\n' "$forwarding_count"
+    printf '健康=%s 警告=%s 故障=%s 未检查=%s\n' "$healthy" "$warning" "$down" "$unknown"
+    printf '线路组问题数=%s\n' "$group_issue_total"
     if [[ "$nat_profile_count" -gt 0 ]]; then
-        printf 'NAT-IX latency details: bash install.sh latency-report PROFILE_ID\n'
+        printf 'NAT-IX 延迟诊断：bash install.sh latency-report 线路ID\n'
     fi
-    printf 'Automatic switching: disabled. Run switch-dry-run first, then switch-line only after manual confirmation.\n'
+    printf '自动切换：已禁用。请先 switch-dry-run，确认后再手动 switch-line。\n'
 }
 
 restart_all() {

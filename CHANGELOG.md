@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.2.0-alpha.15
+
+### Changed
+
+- `doctor-all`、`export-diagnostic`、主备校验（validate-primary-backup / primary-backup-check）用户面向输出统一为中文。
+- `show-easytier-status` 的 systemd 摘要改为中文。
+- NAT IX 一致性检查警告建议命令改为 `diagnose`。
+
 ## 1.2.0-alpha.14
 
 ### Added
