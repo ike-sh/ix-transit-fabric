@@ -10,8 +10,6 @@ logs/
 /dist/
 /build/
 coverage/
-.smoke.out
-.smoke.err
 .tmp/
 *.log
 local.env

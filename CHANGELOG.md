@@ -1,5 +1,24 @@
 # Changelog
 
+## 1.2.0
+
+**正式版** — NAT-IX 双机中转线路管理，经双机实机验证。
+
+### Highlights
+
+- 全局命令 `ix` / `IX`：无参数进菜单，带子命令等同 `install.sh`（`ix health`、`ix --version` 等）。
+- 多转发规则（`code_schema=4`）、DDNS 默认定时解析、健康检查 / 延迟诊断 / 流量统计。
+- 菜单 UX：单线路自动选择、空回车静默、CRLF 输入兼容；健康检查支持「未挂网卡但虚拟网可用」。
+- 移除开发用 `self-test` / `check-wrapper` 与 `tests/smoke.sh`。
+
+### Upgrade
+
+```bash
+curl -fsSL -o install.sh \
+  "https://raw.githubusercontent.com/ike-sh/ix-transit-fabric/v1.2.0/install.sh?ts=$(date +%s)"
+bash install.sh install-ix-cli
+```
+
 ## 1.2.0-alpha.29
 
 ### Added

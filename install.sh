@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-SCRIPT_VERSION="1.2.0-alpha.29"
+SCRIPT_VERSION="1.2.0"
 APP_NAME="ix-transit-fabric"
 
 CONFIG_DIR="/etc/ix-transit-fabric"
@@ -245,9 +245,7 @@ on_error() {
     local line="${1:-unknown}"
     log_error "脚本在第 ${line} 行异常退出（退出码 ${exit_code}）。"
 }
-if [[ "${IXTF_TEST_SOURCE:-}" != "1" ]]; then
-    trap 'on_error $LINENO' ERR
-fi
+trap 'on_error $LINENO' ERR
 
 die_user() {
     log_error "$*"
@@ -255,11 +253,7 @@ die_user() {
 }
 
 return_or_exit() {
-    local rc="${1:-1}"
-    if [[ "${IXTF_TEST_SOURCE:-}" == "1" ]]; then
-        return "$rc"
-    fi
-    exit "$rc"
+    exit "${1:-1}"
 }
 
 usage() {
@@ -3957,8 +3951,11 @@ render_ix_cli_wrappers() {
     tmp_IX="$(make_tmp_file "ix-transit-fabric.IX-cli")"
     render_ix_cli_wrapper_file >"$tmp_ix"
     cp -a -- "$tmp_ix" "$tmp_IX"
-    install_if_changed "$tmp_ix" "$IX_CLI_BIN" 0755 "ix 快捷命令"
-    install_if_changed "$tmp_IX" "$IX_CLI_BIN_UPPER" 0755 "IX 快捷命令"
+    install -d -m 0755 /usr/local/bin
+    install -m 0755 "$tmp_ix" "$IX_CLI_BIN"
+    install -m 0755 "$tmp_IX" "$IX_CLI_BIN_UPPER"
+    rm -f -- "$tmp_ix" "$tmp_IX"
+    log_debug "已写入 ix / IX 快捷命令。"
 }
 
 ensure_ix_cli_shortcut() {
@@ -7059,7 +7056,7 @@ $(c_cyan "${LANDING_ET_IP}:${REMOTE_PORT}")
   1. 确认 CNIX 面板入口 IP / 端口 / 协议正确。
   2. 入口 VPS 安全组放行 LOCAL_PORT。
   3. 运行：bash install.sh doctor
-  4. 运行：bash install.sh self-test
+  4. 运行：bash install.sh self-check
   5. 客户端连接：入口 VPS 公网 IP:${LOCAL_PORT}
 EOF
         else
@@ -8048,7 +8045,6 @@ EOF
 
 prompt_refresh_access_code_after_rule_change() {
     local profile_id="$1"
-    [[ -n "${IXTF_TEST_SOURCE:-}" ]] && return 0
     load_profile_or_die "$profile_id"
     [[ "${ROLE:-}" == "nat-transit" && "${NAT_DIRECTION:-ingress-listener}" == "nat-listener" ]] || return 0
     printf '\n公网入口机需要重新导入接入码才能同步该规则。\n'
@@ -14596,61 +14592,6 @@ logs() {
     analyze_recent_easytier_logs
 }
 
-check_wrapper() {
-    local mode service_exec
-    printf 'EasyTier 启动包装器检查\n'
-    printf 'wrapper 路径：%s\n' "$WRAPPER_FILE"
-
-    if [[ -f "$WRAPPER_FILE" ]]; then
-        mode="$(path_mode "$WRAPPER_FILE")"
-        printf 'wrapper 是否存在：是\n'
-        printf 'wrapper 权限：%s\n' "$mode"
-        case "$mode" in
-            700|750|755) printf 'wrapper 权限是否合理：是\n' ;;
-            *) printf '[WARN] wrapper 权限不常见，建议 700、750 或 755。\n' ;;
-        esac
-
-        if grep -q 'set -x' "$WRAPPER_FILE"; then
-            printf '[WARN] wrapper 包含 set -x，可能暴露敏感运行信息。\n'
-        else
-            printf 'wrapper set -x：未发现\n'
-        fi
-
-        if grep -Eq 'echo[[:space:]].*ET_NETWORK_SECRET|printf[[:space:]].*ET_NETWORK_SECRET' "$WRAPPER_FILE"; then
-            printf '[WARN] wrapper 可能直接输出 ET_NETWORK_SECRET。\n'
-        else
-            printf 'wrapper 直接输出密钥：未发现\n'
-        fi
-
-        if grep -q "$ENV_FILE" "$WRAPPER_FILE"; then
-            printf 'wrapper 引用 EnvironmentFile：是\n'
-        else
-            printf '[WARN] wrapper 未引用 %s。\n' "$ENV_FILE"
-        fi
-
-        if grep -q 'exec "$EASYTIER_BIN"' "$WRAPPER_FILE"; then
-            printf 'wrapper 前台运行 easytier-core：是\n'
-        else
-            printf '[WARN] wrapper 可能没有用 exec 前台运行 easytier-core。\n'
-        fi
-    else
-        printf 'wrapper 是否存在：否\n'
-        printf '[WARN] 请重新运行 add-nat-listener-profile 或 add-nat-ingress-from-listener-code 生成 wrapper。\n'
-    fi
-
-    if [[ -f "$SYSTEMD_SERVICE" ]]; then
-        service_exec="$(grep -E '^ExecStart=' "$SYSTEMD_SERVICE" | tail -n 1 || true)"
-        printf 'systemd ExecStart：%s\n' "${service_exec:-未找到}"
-        if [[ "$service_exec" == "ExecStart=${WRAPPER_FILE}" ]]; then
-            printf 'systemd 是否指向 wrapper：是\n'
-        else
-            printf '[WARN] systemd ExecStart 未指向 wrapper。\n'
-        fi
-    else
-        printf 'systemd 服务文件：不存在\n'
-    fi
-}
-
 check_port() {
     local target="${1:-}" ss_output ip_forward nc_cmd
     if [[ "$target" == "--all" ]]; then
@@ -15151,50 +15092,6 @@ check_route() {
             fi
         fi
     fi
-}
-
-self_test() {
-    local passed=0 warning=0 failed=0 output rc
-
-    self_show_config() {
-        print_config_summary || printf '[WARN] show-config 无法读取已保存配置。\n'
-        return 0
-    }
-
-    run_self_step() {
-        local name="$1"
-        shift
-        printf '\n===== %s =====\n' "$name"
-        set +e
-        output="$("$@" 2>&1)"
-        rc=$?
-        set -e
-        printf '%s\n' "$output"
-        if [[ "$rc" -ne 0 ]]; then
-            failed=$((failed + 1))
-            printf '[自检] %s：失败（退出码 %s）\n' "$name" "$rc"
-        elif grep -q '\[WARN\]' <<<"$output"; then
-            warning=$((warning + 1))
-            printf '[自检] %s：有警告\n' "$name"
-        else
-            passed=$((passed + 1))
-            printf '[自检] %s：通过\n' "$name"
-        fi
-    }
-
-    run_self_step "show-config" self_show_config
-    run_self_step "status" status
-    run_self_step "doctor" doctor
-    run_self_step "check-port" check_port
-    run_self_step "check-business" check_business
-    run_self_step "check-route" check_route
-    run_self_step "show-port-map" show_port_map
-
-    printf '\n自检完成：\n'
-    printf '%s\n' "- 通过：${passed}"
-    printf '%s\n' "- 警告：${warning}"
-    printf '%s\n' "- 失败：${failed}"
-    return 0
 }
 
 uninstall() {
@@ -15877,7 +15774,14 @@ main() {
         --version|version)
             printf '%s %s\n' "$APP_NAME" "$SCRIPT_VERSION"
             ;;
-        --menu|menu|ix|IX)
+        --menu|menu)
+            show_menu
+            ;;
+        ix|IX)
+            if [[ -n "${args[1]:-}" ]]; then
+                main "${args[@]:1}"
+                return 0
+            fi
             show_menu
             ;;
         install-ix-cli)
@@ -16196,12 +16100,6 @@ main() {
         cleanup-state)
             cleanup_state
             ;;
-        self-test)
-            self_test
-            ;;
-        check-wrapper)
-            check_wrapper
-            ;;
         show-easytier-command)
             show_easytier_command "${args[1]:-}"
             ;;
@@ -16247,6 +16145,4 @@ main() {
     esac
 }
 
-if [[ "${IXTF_TEST_SOURCE:-}" != "1" ]]; then
-    main "$@"
-fi
+main "$@"
