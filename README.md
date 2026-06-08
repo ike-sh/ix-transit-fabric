@@ -1,6 +1,6 @@
 # ix-transit-fabric
 
-当前版本：`1.2.0-alpha.28`
+当前版本：`1.2.0-alpha.29`
 作者：`ike`  
 项目地址：[https://github.com/ike-sh/ix-transit-fabric](https://github.com/ike-sh/ix-transit-fabric)
 
@@ -53,10 +53,13 @@ IXTF_EASYTIER_DOWNLOAD_URL=https://example.com/easytier.tar.gz bash install.sh i
 
 ```bash
 bash install.sh install-ix-cli
-ix
+ix                    # 进管理菜单
+ix --version          # 查看版本
+ix health             # 健康检查（单线路自动选择）
+ix diagnose 线路ID    # 一键诊断
 ```
 
-首次运行 `bash install.sh ix` 也会自动全局安装；已有线路时执行 `apply-nft-all` 同样会自动安装。
+无参数进菜单；带参数时等同 `bash install.sh ...`。首次 `bash install.sh ix` 也会自动安装；已有线路时 `apply-nft-all` 同样会自动安装。
 
 1. 在 NAT IX 机器创建中转线路：
 
@@ -204,6 +207,7 @@ NAT IX 接入码 v4 使用 `code_schema=4`，每条 `rules` 规则包含独立 `
 
 ## alpha 注意事项
 
+- `1.2.0-alpha.29` `ix` 子命令透传：`ix health` / `ix --version` 等等同 `install.sh`。
 - `1.2.0-alpha.28` 菜单空回车 / CRLF 输入不再误报「未知选项」；清理 peer 路由重复 case。
 - `1.2.0-alpha.27` 修复健康检查虚拟 IP 误报：未挂网卡但 peer 路由可用时显示「未挂网卡但虚拟网可用」。
 - `1.2.0-alpha.26` 全局安装 `ix` / `IX` 到 PATH，直接输入进菜单；`install-ix-cli` 手动安装。

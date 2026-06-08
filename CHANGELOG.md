@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.2.0-alpha.29
+
+### Added
+
+- 全局 `ix` / `IX` 支持子命令透传：无参数进菜单；`ix health`、`ix diagnose`、`ix --version` 等等同 `bash install.sh ...`。
+
 ## 1.2.0-alpha.28
 
 ### Fixed

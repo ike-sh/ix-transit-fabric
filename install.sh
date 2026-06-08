@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-SCRIPT_VERSION="1.2.0-alpha.28"
+SCRIPT_VERSION="1.2.0-alpha.29"
 APP_NAME="ix-transit-fabric"
 
 CONFIG_DIR="/etc/ix-transit-fabric"
@@ -274,7 +274,7 @@ ix-transit-fabric - NAT-IX + EasyTier + nftables 中转线路管理脚本
   bash install.sh --menu
   bash install.sh ix
   bash install.sh IX
-  ix / IX                 # 安装快捷命令后，直接输入即可进菜单
+  ix / IX                 # 无参数进菜单；ix health / ix diagnose / ix --version 等同子命令
   bash install.sh install-ix-cli
   bash install.sh --debug install-easytier
 
@@ -366,7 +366,7 @@ ix-transit-fabric - NAT-IX + EasyTier + nftables 中转线路管理脚本
 
 说明：
   - 无参数且当前是交互式 TTY 时进入菜单。
-  - 运行 install-ix-cli 后，可直接输入 ix 或 IX 进入管理菜单（首次 bash install.sh ix 也会自动安装）。
+  - 运行 install-ix-cli 后：直接输入 ix / IX 进菜单；带参数时等同 bash install.sh（如 ix health、ix --version）。
   - monitor / notify 只做检查和提醒，不会自动切换。
   - DDNS 默认启用：商家域名 IP 变化时自动刷新 nftables / EasyTier（每 3 分钟）；`ddns-disable` 可关闭定时刷新。
 	  - 普通菜单只展示 NAT IX listener 正式流程。
@@ -3942,7 +3942,12 @@ sync_ix_cli_install_sh() {
 render_ix_cli_wrapper_file() {
     cat <<EOF
 #!/usr/bin/env bash
-exec bash "${IX_CLI_INSTALL_SH}" ix "\$@"
+set -Eeuo pipefail
+if ((\$#)); then
+    exec bash "${IX_CLI_INSTALL_SH}" "\$@"
+else
+    exec bash "${IX_CLI_INSTALL_SH}" ix
+fi
 EOF
 }
 
@@ -3965,7 +3970,7 @@ ensure_ix_cli_shortcut() {
 install_ix_cli() {
     require_root "$@"
     ensure_ix_cli_shortcut
-    log_ok "已安装快捷命令：ix / IX（直接输入即可进入管理菜单）"
+    log_ok "已安装快捷命令：ix / IX（无参数进菜单；ix health / ix --version 等同 install.sh 子命令）"
     log_info "安装脚本副本：${IX_CLI_INSTALL_SH}"
     if [[ -x "$IX_CLI_BIN" && -x "$IX_CLI_BIN_UPPER" ]]; then
         log_ok "验证通过：$(command -v ix) 与 $(command -v IX)"

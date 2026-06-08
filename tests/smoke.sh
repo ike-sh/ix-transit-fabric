@@ -13,8 +13,8 @@ bash -n install.sh
 bash -n tests/smoke.sh
 
 version_output="$(bash install.sh --version)"
-[[ "$version_output" == "ix-transit-fabric 1.2.0-alpha.28" ]]
-[[ "$(tr -d '\r\n' < VERSION)" == "1.2.0-alpha.28" ]]
+[[ "$version_output" == "ix-transit-fabric 1.2.0-alpha.29" ]]
+[[ "$(tr -d '\r\n' < VERSION)" == "1.2.0-alpha.29" ]]
 bash install.sh --help >/dev/null
 help_no_color="$(IXTF_COLOR=never bash install.sh --help)"
 ! grep -q $'\033' <<<"$help_no_color"
@@ -140,6 +140,7 @@ for token in \
     "assess_et_ip_health" \
     "normalize_menu_choice" \
     "profile_peer_route_target" \
+    'if ((\$#)); then' \
     "未挂网卡但虚拟网可用" \
     "IX_CLI_BIN" \
     "/usr/local/bin/ix" \
@@ -161,7 +162,8 @@ for token in \
     "转发规则管理" \
     "alpha 注意事项" \
     "公网入口机侧指定" \
-    "1.2.0-alpha.28" \
+    "1.2.0-alpha.29" \
+    "ix health" \
     "install-ix-cli" \
     "全局安装" \
     "DDNS" \
