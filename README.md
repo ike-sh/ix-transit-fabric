@@ -1,6 +1,6 @@
 # ix-transit-fabric
 
-当前版本：`1.2.0-alpha.21`
+当前版本：`1.2.0-alpha.22`
 
 `ix-transit-fabric` 用于管理 NAT-IX 中转线路：公网入口机接收客户端连接，通过 EasyTier 连接 NAT IX 机器，NAT IX 机器再用 nftables 转发到落地机业务端口。
 
@@ -136,10 +136,14 @@ bash install.sh apply-rules 线路ID
 
 - 默认刷新间隔：3 分钟（首次应用 nftables 或启动线路后自动启用 systemd timer）
 - 无需额外配置；安装线路并 `apply-nft-all` 后即生效
+- 不需要自动刷新时运行 `ddns-disable`；`apply-nft-all` 不会擅自重新启用
+- 菜单路径：**高级维护 → 监控 / 通知 / DDNS**（选项 15–18）
 
 ```bash
-bash install.sh ddns-status    # 查看 timer 状态与上次刷新时间
-bash install.sh ddns-refresh   # 立即刷新一次（root）
+bash install.sh ddns-status      # 查看 timer 状态与上次刷新时间
+bash install.sh ddns-refresh     # 立即手动刷新一次（root，禁用后仍可用）
+bash install.sh ddns-disable     # 关闭定时自动刷新
+bash install.sh ddns-enable      # 重新开启定时自动刷新
 ```
 
 解析结果会缓存到 profile / rule env 的 `LANDING_IP`、`NAT_PUBLIC_IP`、`INGRESS_PUBLIC_IP`，解析失败时 nftables 可回退到上次成功 IP。
@@ -189,6 +193,7 @@ NAT IX 接入码 v4 使用 `code_schema=4`，每条 `rules` 规则包含独立 `
 
 ## alpha 注意事项
 
+- `1.2.0-alpha.22` DDNS 增加 `ddns-enable` / `ddns-disable` 开关；菜单「高级维护 → 监控 / 通知 / DDNS」。
 - `1.2.0-alpha.21` 新增 DDNS：商家域名默认定时解析，IP 变化自动刷新 nftables / EasyTier。
 - `1.2.0-alpha.20` 彻底移除 panel 兼容：加载 panel profile 直接报错；删除 panel 接入码/CLI/legacy 示例；仅保留 NAT IX。
 - `1.2.0-alpha.19` 运行时 panel→nat 映射（已被 alpha.20 取代）。

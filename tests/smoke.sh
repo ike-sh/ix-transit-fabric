@@ -13,8 +13,8 @@ bash -n install.sh
 bash -n tests/smoke.sh
 
 version_output="$(bash install.sh --version)"
-[[ "$version_output" == "ix-transit-fabric 1.2.0-alpha.21" ]]
-[[ "$(tr -d '\r\n' < VERSION)" == "1.2.0-alpha.21" ]]
+[[ "$version_output" == "ix-transit-fabric 1.2.0-alpha.22" ]]
+[[ "$(tr -d '\r\n' < VERSION)" == "1.2.0-alpha.22" ]]
 bash install.sh --help >/dev/null
 help_no_color="$(IXTF_COLOR=never bash install.sh --help)"
 ! grep -q $'\033' <<<"$help_no_color"
@@ -119,8 +119,15 @@ for token in \
     "prompt_refresh_access_code_after_rule_change" \
     "ddns-refresh" \
     "ddns-status" \
+    "ddns-enable" \
+    "ddns-disable" \
+    "ddns-disabled" \
+    "ddns_user_disabled" \
     "DDNS 定时刷新" \
-    "ensure_ddns_timer_enabled" \
+    "立即刷新 DDNS" \
+    "监控 / 通知 / DDNS" \
+    "ddns-refresh --timer" \
+    "监控 / 通知 / DDNS" \
     "ix-transit-ddns.timer"; do
     grep -q -- "$token" install.sh
 done
@@ -135,9 +142,10 @@ for token in \
     "转发规则管理" \
     "alpha 注意事项" \
     "公网入口机侧指定" \
-    "1.2.0-alpha.21" \
+    "1.2.0-alpha.22" \
     "DDNS" \
     "ddns-status" \
+    "ddns-disable" \
     "IXTF_COLOR=never"; do
     grep -q -- "$token" README.md
 done

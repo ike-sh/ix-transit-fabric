@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.2.0-alpha.22
+
+### Added
+
+- DDNS 手动开关：`ddns-enable` / `ddns-disable`（`state/ddns-disabled`）；禁用后 `apply-nft-all` 不会重新启用 timer。
+- 交互菜单：高级维护 → 监控 / 通知 / DDNS（15–18：手动刷新、启用、禁用、查看状态）。
+- `ddns-refresh` 在禁用后仍可手动执行；systemd timer 走 `ddns-refresh --timer` 并尊重禁用状态。
+
 ## 1.2.0-alpha.21
 
 ### Added

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-SCRIPT_VERSION="1.2.0-alpha.21"
+SCRIPT_VERSION="1.2.0-alpha.22"
 APP_NAME="ix-transit-fabric"
 
 CONFIG_DIR="/etc/ix-transit-fabric"
@@ -27,6 +27,7 @@ DDNS_SERVICE_FILE="/etc/systemd/system/${DDNS_SERVICE_NAME}"
 DDNS_TIMER_FILE="/etc/systemd/system/${DDNS_TIMER_NAME}"
 DDNS_INTERVAL_FILE="${STATE_DIR}/ddns-interval"
 DDNS_LAST_RUN_FILE="${STATE_DIR}/ddns-last-run"
+DDNS_DISABLED_FILE="${STATE_DIR}/ddns-disabled"
 DDNS_DEFAULT_INTERVAL_MINUTES=3
 BACKUP_DIR="/var/backups/ix-transit-fabric"
 SERVICE_NAME="ix-transit-easytier.service"
@@ -333,6 +334,8 @@ ix-transit-fabric - NAT-IX + EasyTier + nftables 中转线路管理脚本
   bash install.sh monitor-status
   bash install.sh ddns-refresh
   bash install.sh ddns-status
+  bash install.sh ddns-enable
+  bash install.sh ddns-disable
   bash install.sh notify-config
   bash install.sh notify-test
   bash install.sh notify-status
@@ -355,7 +358,7 @@ ix-transit-fabric - NAT-IX + EasyTier + nftables 中转线路管理脚本
 说明：
   - 无参数且当前是交互式 TTY 时进入菜单。
   - monitor / notify 只做检查和提醒，不会自动切换。
-  - DDNS 默认启用：商家域名 IP 变化时自动刷新 nftables / EasyTier（每 3 分钟）。
+  - DDNS 默认启用：商家域名 IP 变化时自动刷新 nftables / EasyTier（每 3 分钟）；`ddns-disable` 可关闭定时刷新。
 	  - 普通菜单只展示 NAT IX listener 正式流程。
 	  - 历史配置仍尽量兼容，但新部署只推荐 NAT IX listener 流程。
 	  - show-port-map / verify-nft-profiles / traffic-report 支持 NAT-IX 线路。
@@ -4412,7 +4415,7 @@ render_ddns_systemd_files() {
         printf 'Description=ix-transit-fabric DDNS refresh\n\n'
         printf '[Service]\n'
         printf 'Type=oneshot\n'
-        printf 'ExecStart=/bin/bash %s ddns-refresh\n' "$script_path"
+        printf 'ExecStart=/bin/bash %s ddns-refresh --timer\n' "$script_path"
     } >"$tmp_service"
     {
         printf '[Unit]\n'
@@ -4433,15 +4436,48 @@ render_ddns_systemd_files() {
 ensure_ddns_timer_enabled() {
     command_exists systemctl || return 0
     [[ -d "$PROFILES_DIR" && "$(profile_count)" != "0" ]] || return 0
+    if ddns_user_disabled; then
+        systemctl disable --now "$DDNS_TIMER_NAME" >/dev/null 2>&1 || true
+        return 0
+    fi
     render_ddns_systemd_files
     systemctl daemon-reload >/dev/null 2>&1 || true
     systemctl enable --now "$DDNS_TIMER_NAME" >/dev/null 2>&1 || true
 }
 
+ddns_user_disabled() {
+    [[ -f "$DDNS_DISABLED_FILE" ]]
+}
+
+ddns_disable() {
+    require_root "$@"
+    ensure_profile_dirs
+    install -d -m 700 "$STATE_DIR"
+    : >"$DDNS_DISABLED_FILE"
+    chmod 600 "$DDNS_DISABLED_FILE" 2>/dev/null || true
+    if command_exists systemctl; then
+        systemctl disable --now "$DDNS_TIMER_NAME" >/dev/null 2>&1 || true
+    fi
+    log_ok "已禁用 DDNS 定时刷新。仍可手动运行：bash install.sh ddns-refresh"
+}
+
+ddns_enable() {
+    require_root "$@"
+    ensure_profile_dirs
+    rm -f -- "$DDNS_DISABLED_FILE"
+    ensure_ddns_timer_enabled
+    log_ok "已启用 DDNS 定时刷新：${DDNS_TIMER_NAME}"
+}
+
 ddns_status() {
     require_root "$@"
-    local enabled active next_run last_run interval
+    local enabled active next_run last_run interval policy
     interval="$(ddns_interval_minutes)"
+    if ddns_user_disabled; then
+        policy="已禁用（用户关闭定时刷新）"
+    else
+        policy="已启用（默认）"
+    fi
     if command_exists systemctl; then
         enabled="$(systemctl is-enabled "$DDNS_TIMER_NAME" 2>/dev/null || printf disabled)"
         active="$(systemctl is-active "$DDNS_TIMER_NAME" 2>/dev/null || printf inactive)"
@@ -4452,7 +4488,7 @@ ddns_status() {
         next_run="-"
     fi
     last_run="$(cat "$DDNS_LAST_RUN_FILE" 2>/dev/null || printf '从未运行')"
-    printf 'DDNS 定时刷新：默认启用（商家域名解析）\n'
+    printf 'DDNS 定时刷新：%s\n' "$policy"
     printf '刷新间隔：%s 分钟\n' "$interval"
     printf 'timer 状态：%s / %s\n' "$enabled" "$active"
     printf '下次运行：%s\n' "${next_run:-未知}"
@@ -4460,6 +4496,10 @@ ddns_status() {
 }
 
 ddns_run_once() {
+    if ddns_user_disabled; then
+        log_debug "DDNS 定时刷新已禁用，跳过本次刷新。"
+        return 0
+    fi
     ddns_refresh_all "$@"
 }
 
@@ -4861,6 +4901,10 @@ self_check_monitor_timer_status() {
 
 self_check_ddns_timer_status() {
     local enabled
+    if ddns_user_disabled; then
+        printf '已禁用'
+        return 0
+    fi
     if ! command_exists systemctl; then
         printf '未安装'
         return 0
@@ -15092,6 +15136,7 @@ run_advanced_menu_action() {
         10) self_check ;;
         11) cleanup_history ;;
         12) cleanup_state ;;
+        13) show_monitor_menu ;;
         0) return 10 ;;
         *) log_warn "未知选项，请重新选择。"; return 0 ;;
     esac
@@ -15116,6 +15161,7 @@ ix-transit-fabric 高级维护
  10) 最终自检
  11) 清理 history
  12) 清理 state
+ 13) 监控 / 通知 / DDNS
   0) 返回主菜单
 MENU
         printf '请选择：' >&2
@@ -15319,6 +15365,15 @@ run_monitor_menu_action() {
         12) traffic_status ;;
         13) traffic_report ;;
         14) traffic_reset_all ;;
+        15)
+            if ddns_user_disabled; then
+                log_warn "DDNS 定时刷新已禁用；本次为手动刷新。"
+            fi
+            ddns_refresh_all
+            ;;
+        16) ddns_enable ;;
+        17) ddns_disable ;;
+        18) ddns_status ;;
         0) return 10 ;;
         *) log_warn "未知选项，请重新选择。"; return 0 ;;
     esac
@@ -15329,7 +15384,7 @@ show_monitor_menu() {
     while true; do
         cat >&2 <<'MENU'
 
-监控 / 通知 / 流量统计
+监控 / 通知 / 流量统计 / DDNS
 
   1) 立即运行一次监控
   2) 启用定时健康检查
@@ -15345,6 +15400,10 @@ show_monitor_menu() {
  12) 查看流量统计
  13) 查看流量报告
  14) 重置流量计数
+ 15) 立即刷新 DDNS（手动）
+ 16) 启用 DDNS 定时刷新
+ 17) 禁用 DDNS 定时刷新
+ 18) 查看 DDNS 状态
   0) 返回
 MENU
         printf '请选择：' >&2
@@ -15747,10 +15806,23 @@ main() {
             monitor_status
             ;;
         ddns-refresh)
-            ddns_run_once
+            if [[ "${args[1]:-}" == "--timer" ]]; then
+                ddns_run_once
+            else
+                if ddns_user_disabled; then
+                    log_warn "DDNS 定时刷新已禁用；本次为手动刷新。"
+                fi
+                ddns_refresh_all
+            fi
             ;;
         ddns-status)
             ddns_status
+            ;;
+        ddns-enable)
+            ddns_enable
+            ;;
+        ddns-disable)
+            ddns_disable
             ;;
         monitor-logs)
             monitor_logs
