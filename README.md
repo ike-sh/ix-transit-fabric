@@ -1,6 +1,6 @@
 # ix-transit-fabric
 
-当前版本：`1.2.0-alpha.26`
+当前版本：`1.2.0-alpha.27`
 作者：`ike`  
 项目地址：[https://github.com/ike-sh/ix-transit-fabric](https://github.com/ike-sh/ix-transit-fabric)
 
@@ -204,6 +204,7 @@ NAT IX 接入码 v4 使用 `code_schema=4`，每条 `rules` 规则包含独立 `
 
 ## alpha 注意事项
 
+- `1.2.0-alpha.27` 修复健康检查虚拟 IP 误报：未挂网卡但 peer 路由可用时显示「未挂网卡但虚拟网可用」。
 - `1.2.0-alpha.26` 全局安装 `ix` / `IX` 到 PATH，直接输入进菜单；`install-ix-cli` 手动安装。
 - `1.2.0-alpha.25` 增加脚本子命令 `ix` / `IX`（等价于 `--menu`）；补充作者与项目地址信息。
 - `1.2.0-alpha.24` 菜单优化：单线路自动选择；规则/线路选择 `0` 返回；Ctrl+C 友好取消。

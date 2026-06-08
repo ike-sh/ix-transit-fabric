@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.2.0-alpha.27
+
+### Fixed
+
+- 健康检查：EasyTier 虚拟 IP 未挂在内核网卡但 peer 路由已建立时，不再误报 `本机虚拟 IP 不存在` / `HEALTH_STATUS=down`（NAT IX / 公网入口 nat-listener 模式通过 `ip route get` 确认虚拟网可用）。
+
 ## 1.2.0-alpha.26
 
 ### Added

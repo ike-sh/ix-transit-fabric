@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-SCRIPT_VERSION="1.2.0-alpha.26"
+SCRIPT_VERSION="1.2.0-alpha.27"
 APP_NAME="ix-transit-fabric"
 
 CONFIG_DIR="/etc/ix-transit-fabric"
@@ -4090,6 +4090,47 @@ check_et_ip_present() {
     ip addr show 2>/dev/null | grep -Fq "$et_ip"
 }
 
+# 0=网卡可见 3=未挂网卡但 peer 路由可用 2=无法检查 1=不可用
+assess_et_ip_health() {
+    local et_ip="${1:-${ET_IPV4:-}}"
+    et_ip="${et_ip%%/*}"
+    [[ -n "$et_ip" ]] || return 1
+    command_exists ip || return 2
+    if ip addr show 2>/dev/null | grep -Fq "$et_ip"; then
+        return 0
+    fi
+    check_easytier_process || return 1
+    case "${ROLE:-}" in
+        nat-transit)
+            if [[ "${NAT_DIRECTION:-ingress-listener}" == "nat-listener" && -n "${INGRESS_ET_IP:-}" ]]; then
+                ip route get "$INGRESS_ET_IP" >/dev/null 2>&1 && return 3
+            fi
+            ;;
+        nat-ingress)
+            if [[ "${NAT_DIRECTION:-ingress-listener}" == "nat-listener" && -n "${NAT_ET_IP:-}" ]]; then
+                ip route get "$NAT_ET_IP" >/dev/null 2>&1 && return 3
+            fi
+            ;;
+    esac
+    return 1
+}
+
+et_ip_health_label() {
+    case "$1" in
+        0) printf '存在\n' ;;
+        3) printf '未挂网卡但虚拟网可用\n' ;;
+        2) printf '无法检查\n' ;;
+        *) printf '不存在\n' ;;
+    esac
+}
+
+apply_et_ip_health_mark() {
+    case "$1" in
+        2) health_mark warning "无法检查本机虚拟 IP" ;;
+        1) health_mark down "本机虚拟 IP 不存在" ;;
+    esac
+}
+
 check_listener_present() {
     profile_uses_easytier_listener || return 3
     check_listener_proto_port "${ET_LISTENER_PROTO:-tcp}" "${ET_LISTENER_PORT:-0}"
@@ -4137,10 +4178,10 @@ health_check_easytier() {
     fi
 
     set +e
-    check_et_ip_present
+    assess_et_ip_health
     rc=$?
     set -e
-    [[ "$rc" -eq 0 || "$rc" -eq 2 ]] && ip_ok="true"
+    [[ "$rc" -eq 0 || "$rc" -eq 2 || "$rc" -eq 3 ]] && ip_ok="true"
 
     if profile_uses_easytier_listener; then
             set +e
@@ -8533,7 +8574,7 @@ wait_for_peer_or_route() {
 }
 
 wait_for_easytier_ready() {
-    local profile_id="${1:-}" service max_wait="${2:-30}" interval=2 elapsed=0 remaining active proc_ok="false" et_ip
+    local profile_id="${1:-}" service max_wait="${2:-30}" interval=2 elapsed=0 remaining active proc_ok="false" et_ip rc
     profile_id="$(resolve_profile_id "$profile_id")"
     load_profile_or_die "$profile_id"
     service="$(profile_service_name "$profile_id")"
@@ -8543,8 +8584,13 @@ wait_for_easytier_ready() {
         active="$(profile_service_status "$service")"
         proc_ok="false"
         check_easytier_process && proc_ok="true"
-        if [[ ( "$active" == "active" || "$active" == "activating" ) && "$proc_ok" == "true" ]] && check_et_ip_present "$et_ip" >/dev/null 2>&1; then
-            log_debug "EasyTier 本机虚拟 IP ${et_ip} 已就绪"
+        if [[ ( "$active" == "active" || "$active" == "activating" ) && "$proc_ok" == "true" ]]; then
+            set +e
+            assess_et_ip_health "$et_ip"
+            rc=$?
+            set -e
+            [[ "$rc" -eq 0 || "$rc" -eq 3 ]] || { sleep "$interval"; elapsed=$((elapsed + interval)); continue; }
+            log_debug "EasyTier 虚拟网已就绪（${et_ip}，assess=${rc}）"
             remaining=$((max_wait - elapsed))
             [[ "$remaining" -gt 0 ]] || remaining="$interval"
             case "${ROLE:-}" in
@@ -9434,11 +9480,12 @@ show_easytier_status() {
         printf 'easytier-core 进程：未检测到\n'
     fi
     set +e
-    check_et_ip_present
+    assess_et_ip_health
     rc=$?
     set -e
     case "$rc" in
         0) printf '本机 ET IP：存在（%s）\n' "${ET_IPV4:-}" ;;
+        3) printf '本机 ET IP：未挂网卡但虚拟网可用（%s）\n' "${ET_IPV4:-}" ;;
         2) printf '本机 ET IP：无法检查（ip 命令不可用）\n' ;;
         *) printf '本机 ET IP：不存在（%s）\n' "${ET_IPV4:-未配置}" ;;
     esac
@@ -10054,14 +10101,11 @@ run_formal_nat_health_check() {
     fi
 
     set +e
-    check_et_ip_present
+    assess_et_ip_health
     rc=$?
     set -e
-    case "$rc" in
-        0) printf '* 本机虚拟 IP：存在\n' ;;
-        2) printf '* 本机虚拟 IP：无法检查\n'; health_mark warning "无法检查本机虚拟 IP" ;;
-        *) printf '* 本机虚拟 IP：不存在\n'; health_mark down "本机虚拟 IP 不存在" ;;
-    esac
+    printf '* 本机虚拟 IP：%s' "$(et_ip_health_label "$rc")"
+    apply_et_ip_health_mark "$rc"
 
     printf '\n转发状态：\n'
     nft_label="$(nft_profile_rule_status "$profile_id")"
@@ -10225,14 +10269,16 @@ run_line_health_check() {
     fi
 
     set +e
-    check_et_ip_present
+    assess_et_ip_health
     rc=$?
     set -e
     case "$rc" in
         0) health_line "本机虚拟 IP" "存在" ;;
-        2) health_line "本机虚拟 IP" "无法检查（ip 命令不可用）"; health_mark warning "无法检查本机虚拟 IP" ;;
-        *) health_line "本机虚拟 IP" "不存在"; health_mark down "本机虚拟 IP 不存在" ;;
+        3) health_line "本机虚拟 IP" "未挂网卡但虚拟网可用" ;;
+        2) health_line "本机虚拟 IP" "无法检查（ip 命令不可用）" ;;
+        *) health_line "本机虚拟 IP" "不存在" ;;
     esac
+    apply_et_ip_health_mark "$rc"
 
     if profile_port_map_complete; then
         health_line "四端口信息" "完整"
