@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.2.0-alpha.23
+
+### Fixed
+
+- 修复公网入口机导入 NAT IX 接入码时报 `REMOTE_PORT 为空但业务转发已启用`：`nat-ingress` + `nat-listener` 模式改用 `LANDING_HOST` / `LANDING_PORT`，不再误要求 `REMOTE_PORT`。
+- 修复 `current_profile_forward_client_ports` / `profile_port_map_complete` 中重复的 `nat-ingress` case 分支（仅首分支生效导致校验错误）。
+
 ## 1.2.0-alpha.22
 
 ### Added

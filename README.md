@@ -1,6 +1,6 @@
 # ix-transit-fabric
 
-当前版本：`1.2.0-alpha.22`
+当前版本：`1.2.0-alpha.23`
 
 `ix-transit-fabric` 用于管理 NAT-IX 中转线路：公网入口机接收客户端连接，通过 EasyTier 连接 NAT IX 机器，NAT IX 机器再用 nftables 转发到落地机业务端口。
 
@@ -193,6 +193,7 @@ NAT IX 接入码 v4 使用 `code_schema=4`，每条 `rules` 规则包含独立 `
 
 ## alpha 注意事项
 
+- `1.2.0-alpha.23` 修复公网入口导入 NAT IX 接入码时误报 `REMOTE_PORT 为空`。
 - `1.2.0-alpha.22` DDNS 增加 `ddns-enable` / `ddns-disable` 开关；菜单「高级维护 → 监控 / 通知 / DDNS」。
 - `1.2.0-alpha.21` 新增 DDNS：商家域名默认定时解析，IP 变化自动刷新 nftables / EasyTier。
 - `1.2.0-alpha.20` 彻底移除 panel 兼容：加载 panel profile 直接报错；删除 panel 接入码/CLI/legacy 示例；仅保留 NAT IX。

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-SCRIPT_VERSION="1.2.0-alpha.22"
+SCRIPT_VERSION="1.2.0-alpha.23"
 APP_NAME="ix-transit-fabric"
 
 CONFIG_DIR="/etc/ix-transit-fabric"
@@ -5099,9 +5099,6 @@ current_profile_forward_client_ports() {
     [[ "${ENABLED:-true}" == "true" && "${FORWARD_ENABLED:-true}" == "true" ]] || return 0
     case "${ROLE:-}" in
         nat-ingress)
-            [[ -n "${LOCAL_PORT:-}" ]] && printf '%s\n' "$LOCAL_PORT"
-            ;;
-        nat-ingress)
             for rule_id in $(profile_rule_ids "$profile_id"); do
                 load_rule "$profile_id" "$rule_id" || continue
                 [[ "${RULE_ENABLED:-true}" == "true" && -n "${CLIENT_PORT:-}" ]] || continue
@@ -5155,8 +5152,16 @@ check_profile_conflicts() {
             fi
         done < <(current_profile_forward_client_ports "$profile_id")
         if [[ "${ROLE:-}" == "nat-ingress" ]]; then
-            [[ -n "${REMOTE_PORT:-}" ]] || die_user "REMOTE_PORT 为空但业务转发已启用。"
+            if [[ "${NAT_DIRECTION:-ingress-listener}" == "nat-listener" ]]; then
+                [[ -n "${TRANSIT_PORT:-}" && -n "${LANDING_HOST:-}" && -n "${LANDING_PORT:-}" ]] \
+                    || die_user "NAT-IX 公网入口缺少 TRANSIT_PORT / LANDING_HOST / LANDING_PORT。"
+            else
+                [[ -n "${REMOTE_PORT:-}" ]] || die_user "REMOTE_PORT 为空但业务转发已启用。"
+            fi
         fi
+    fi
+    if [[ "${ROLE:-}" == "nat-ingress" && "${NAT_DIRECTION:-ingress-listener}" == "nat-listener" && "${FORWARD_ENABLED:-true}" == "true" ]]; then
+        [[ -n "${TRANSIT_PORT:-}" ]] || die_user "TRANSIT_PORT 为空但 NAT-IX 转发已启用。"
     fi
     if [[ "${ROLE:-}" == "nat-ingress" && "${NAT_DIRECTION:-ingress-listener}" == "ingress-listener" && "${FORWARD_ENABLED:-true}" == "true" ]]; then
         [[ -n "${TRANSIT_PORT:-}" ]] || die_user "TRANSIT_PORT 为空但 NAT-IX 转发已启用。"
@@ -9085,19 +9090,18 @@ profile_port_map_complete() {
             [[ -n "${LISTENER_PORT:-${ET_LISTENER_PORT:-}}" && -n "${ET_LISTENERS:-}" ]]
             ;;
         nat-ingress)
-            [[ -n "${CNIX_ENTRY_HOST:-}" && -n "${CNIX_ENTRY_PORT:-}" && -n "${ET_PEERS:-}" ]] || return 1
-            if [[ "${FORWARD_ENABLED:-true}" == "true" ]]; then
-                [[ -n "${LOCAL_PORT:-}" && -n "${LANDING_ET_IP:-}" && -n "${REMOTE_PORT:-}" && -n "${FORWARD_PROTO:-}" ]]
-            fi
-            ;;
-        nat-ingress)
             if [[ "${NAT_DIRECTION:-ingress-listener}" == "nat-listener" ]]; then
                 [[ -n "${ET_PEERS:-}" && -n "${NAT_PUBLIC_HOST:-}" && -n "${NAT_LISTENER_PORT:-}" && -n "${INGRESS_ET_IP:-}" && -n "${NAT_ET_IP:-}" ]] || return 1
             else
+                [[ -n "${CNIX_ENTRY_HOST:-}" && -n "${CNIX_ENTRY_PORT:-}" && -n "${ET_PEERS:-}" ]] || return 1
                 [[ -n "${ET_LISTENERS:-}" && -n "${INGRESS_PUBLIC_HOST:-}" && -n "${INGRESS_ET_IP:-}" && -n "${NAT_ET_IP:-}" ]] || return 1
             fi
             if [[ "${FORWARD_ENABLED:-true}" == "true" ]]; then
-                [[ -n "${LOCAL_PORT:-}" && -n "${TRANSIT_PORT:-}" && -n "${FORWARD_PROTO:-}" ]]
+                if [[ "${NAT_DIRECTION:-ingress-listener}" == "nat-listener" ]]; then
+                    [[ -n "${LOCAL_PORT:-}" && -n "${TRANSIT_PORT:-}" && -n "${LANDING_HOST:-}" && -n "${LANDING_PORT:-}" && -n "${FORWARD_PROTO:-}" ]]
+                else
+                    [[ -n "${LOCAL_PORT:-}" && -n "${LANDING_ET_IP:-}" && -n "${REMOTE_PORT:-}" && -n "${FORWARD_PROTO:-}" ]]
+                fi
             fi
             ;;
         nat-transit)
