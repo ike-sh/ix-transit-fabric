@@ -1,6 +1,6 @@
 # ix-transit-fabric
 
-当前版本：`1.2.0-alpha.19`
+当前版本：`1.2.0-alpha.20`
 
 `ix-transit-fabric` 用于管理 NAT-IX 中转线路：公网入口机接收客户端连接，通过 EasyTier 连接 NAT IX 机器，NAT IX 机器再用 nftables 转发到落地机业务端口。
 
@@ -175,7 +175,8 @@ NAT IX 接入码 v4 使用 `code_schema=4`，每条 `rules` 规则包含独立 `
 
 ## alpha 注意事项
 
-- `1.2.0-alpha.19` 加载时自动将 panel profile 迁移为 nat-ingress / nat-transit；新增 `migrate-panel-profiles`；移除 panel 运行时分支与 dead 命令实现。
+- `1.2.0-alpha.20` 彻底移除 panel 兼容：加载 panel profile 直接报错；删除 panel 接入码/CLI/legacy 示例；仅保留 NAT IX。
+- `1.2.0-alpha.19` 运行时 panel→nat 映射（已被 alpha.20 取代）。
 - `1.2.0-alpha.18` 移除 panel-landing / panel-ingress 新建入口与 README 兼容说明；仅保留 NAT IX 正式流程。
 - `1.2.0-alpha.17` 删除重复 `show_group` 死代码；health-report 表头中文化；switch-dry-run 说明中文化。
 - `1.2.0-alpha.15` doctor-all / export-diagnostic / 主备校验输出全面中文化。

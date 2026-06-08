@@ -13,8 +13,8 @@ bash -n install.sh
 bash -n tests/smoke.sh
 
 version_output="$(bash install.sh --version)"
-[[ "$version_output" == "ix-transit-fabric 1.2.0-alpha.19" ]]
-[[ "$(tr -d '\r\n' < VERSION)" == "1.2.0-alpha.19" ]]
+[[ "$version_output" == "ix-transit-fabric 1.2.0-alpha.20" ]]
+[[ "$(tr -d '\r\n' < VERSION)" == "1.2.0-alpha.20" ]]
 bash install.sh --help >/dev/null
 help_no_color="$(IXTF_COLOR=never bash install.sh --help)"
 ! grep -q $'\033' <<<"$help_no_color"
@@ -130,7 +130,7 @@ for token in \
     "转发规则管理" \
     "alpha 注意事项" \
     "公网入口机侧指定" \
-    "1.2.0-alpha.19" \
+    "1.2.0-alpha.20" \
     "IXTF_COLOR=never"; do
     grep -q -- "$token" README.md
 done

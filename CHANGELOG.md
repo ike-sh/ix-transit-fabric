@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.2.0-alpha.20
+
+### Removed (breaking)
+
+- 不再兼容 `panel-landing` / `panel-ingress`：加载含该 ROLE 的 env 将直接报错，需重建 NAT IX 线路。
+- 删除 panel 接入码（`mode=panel`）、`parse_landing_code`、`import-code` panel 路径、`examples/legacy/`。
+- 删除全部 panel CLI（install-panel-*、add-landing-profile、change-landing、panel-guide 等）。
+
 ## 1.2.0-alpha.19
 
 ### Changed
