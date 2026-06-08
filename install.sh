@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-SCRIPT_VERSION="1.2.0-alpha.18"
+SCRIPT_VERSION="1.2.0-alpha.19"
 APP_NAME="ix-transit-fabric"
 
 CONFIG_DIR="/etc/ix-transit-fabric"
@@ -132,29 +132,6 @@ print_port_map_compact() {
     local nat_listener_port="${NAT_LISTENER_PORT:-${ET_LISTENER_PORT:-}}"
 
     case "${ROLE:-}" in
-        panel-landing)
-            printf '线路：%s\n\n' "$profile_id"
-            printf 'CNIX 面板：\n'
-            printf '  出口：%s:%s\n\n' "$landing_public" "$(c_cyan "$listener_port")"
-            printf '端口含义：\n'
-            printf '  %s = EasyTier listener，填到 CNIX 面板出口\n' "$listener_port"
-            printf '  %s = 落地业务端口\n' "$remote_port"
-            ;;
-        panel-ingress)
-            printf '线路：%s\n\n' "$profile_id"
-            printf '客户端连接：\n'
-            printf '  入口 VPS 公网 IP:%s\n\n' "$(c_cyan "$local_port")"
-            printf 'CNIX 面板：\n'
-            printf '  入口：%s:%s\n' "$cnix_host" "$(c_cyan "$cnix_port")"
-            printf '  出口：%s:%s\n\n' "$landing_public" "$(c_cyan "$listener_port")"
-            printf '内部转发：\n'
-            printf '  %s -> %s:%s\n\n' "$local_port" "$landing_ip" "$remote_port"
-            printf '端口含义：\n'
-            printf '  %s = 客户端连接入口机的端口\n' "$local_port"
-            printf '  %s = 商家入口端口\n' "$cnix_port"
-            printf '  %s = EasyTier listener，填到 CNIX 面板出口\n' "$listener_port"
-            printf '  %s = 落地业务端口\n' "$remote_port"
-            ;;
         nat-ingress)
             if [[ "$nat_direction" == "nat-listener" ]]; then
                 printf '线路：%s（公网入口线路）\n\n' "$profile_id"
@@ -230,6 +207,53 @@ log_error() { print_error "$*"; }
 
 panel_mode_removed() {
     die_user "panel-landing / panel-ingress 已移除。请运行 bash install.sh，使用「创建 NAT IX 中转线路」和「公网入口机导入接入码」。"
+}
+
+normalize_role_value() {
+    case "${1:-}" in
+        panel-landing) printf 'nat-transit\n' ;;
+        panel-ingress) printf 'nat-ingress\n' ;;
+        *) printf '%s\n' "${1:-}" ;;
+    esac
+}
+
+migrate_legacy_panel_role() {
+    case "${ROLE:-}" in
+        panel-landing)
+            ROLE=nat-transit
+            NAT_DIRECTION=nat-listener
+            [[ -n "${NAT_PUBLIC_HOST:-}" ]] || NAT_PUBLIC_HOST="${LANDING_PUBLIC_HOST:-}"
+            [[ -n "${NAT_LISTENER_PROTO:-}" ]] || NAT_LISTENER_PROTO="${ET_LISTENER_PROTO:-both}"
+            [[ -n "${NAT_LISTENER_PORT:-}" ]] || NAT_LISTENER_PORT="${LISTENER_PORT:-${ET_LISTENER_PORT:-}}"
+            [[ -n "${NAT_LISTENER_PROTOS:-}" ]] || NAT_LISTENER_PROTOS="${LISTENER_PROTOS:-$(normalize_listener_protos "${NAT_LISTENER_PROTO:-both}" "both" 2>/dev/null || printf both)}"
+            [[ -n "${NAT_PUBLIC_PORTS:-}" ]] || NAT_PUBLIC_PORTS="${NAT_LISTENER_PORT:-}"
+            NAT_PUBLIC_PORT_MODE="${NAT_PUBLIC_PORT_MODE:-single}"
+            [[ -n "${NAT_ET_CIDR:-}" ]] || NAT_ET_CIDR="${ET_IPV4:-}"
+            [[ -n "${NAT_ET_IP:-}" ]] || NAT_ET_IP="${NAT_ET_CIDR%%/*}"
+            [[ -n "${LANDING_PORT:-}" ]] || LANDING_PORT="${REMOTE_PORT:-${SERVICE_PORT:-}}"
+            [[ -n "${LANDING_HOST:-}" ]] || LANDING_HOST="${LANDING_PUBLIC_HOST:-landing}"
+            [[ -n "${TRANSIT_PORT:-}" ]] || TRANSIT_PORT="${LANDING_PORT:-443}"
+            FORWARD_ENABLED="${FORWARD_ENABLED:-false}"
+            ;;
+        panel-ingress)
+            ROLE=nat-ingress
+            NAT_DIRECTION=nat-listener
+            [[ -n "${NAT_PUBLIC_HOST:-}" ]] || NAT_PUBLIC_HOST="${CNIX_ENTRY_HOST:-}"
+            [[ -n "${NAT_LISTENER_PROTO:-}" ]] || NAT_LISTENER_PROTO="${CNIX_ENTRY_PROTO:-both}"
+            [[ -n "${NAT_LISTENER_PORT:-}" ]] || NAT_LISTENER_PORT="${CNIX_ENTRY_PORT:-}"
+            [[ -n "${NAT_LISTENER_PROTOS:-}" ]] || NAT_LISTENER_PROTOS="${CNIX_ENTRY_PROTOS:-$(normalize_peer_protos "${NAT_LISTENER_PROTO:-both}" "both" 2>/dev/null || printf both)}"
+            [[ -n "${NAT_PUBLIC_PORTS:-}" ]] || NAT_PUBLIC_PORTS="${NAT_LISTENER_PORT:-}"
+            NAT_PUBLIC_PORT_MODE="${NAT_PUBLIC_PORT_MODE:-single}"
+            [[ -n "${NAT_ET_IP:-}" ]] || NAT_ET_IP="${LANDING_ET_IP:-}"
+            [[ -n "${NAT_ET_CIDR:-}" ]] || NAT_ET_CIDR="${NAT_ET_IP:+$NAT_ET_IP/24}"
+            [[ -n "${TRANSIT_PORT:-}" ]] || TRANSIT_PORT="${REMOTE_PORT:-}"
+            [[ -n "${INGRESS_ET_CIDR:-}" ]] || INGRESS_ET_CIDR="${ET_IPV4:-}"
+            [[ -n "${INGRESS_ET_IP:-}" ]] || INGRESS_ET_IP="${INGRESS_ET_CIDR%%/*}"
+            [[ -n "${LANDING_HOST:-}" ]] || LANDING_HOST="${LANDING_ET_IP:-}"
+            [[ -n "${LANDING_PORT:-}" ]] || LANDING_PORT="${REMOTE_PORT:-}"
+            FORWARD_ENABLED="${FORWARD_ENABLED:-true}"
+            ;;
+    esac
 }
 
 debug_enabled() {
@@ -930,7 +954,7 @@ preflight_mode_label() {
     case "${1:-all}" in
         nat-ingress|ingress) printf '公网入口线路\n' ;;
         nat-transit) printf 'NAT IX 中转线路\n' ;;
-        landing|panel-landing) printf '落地线路\n' ;;
+        landing|nat-transit) printf 'NAT IX 中转线路\n' ;;
         all) printf '完整环境\n' ;;
         *) printf '%s\n' "${1:-完整环境}" ;;
     esac
@@ -1737,8 +1761,8 @@ profile_hint_line() {
     local id="$1" role role_label
     if load_profile "$id" >/dev/null 2>&1; then
         case "${ROLE:-}" in
-            panel-landing) role_label="panel-landing" ;;
-            panel-ingress) role_label="panel-ingress" ;;
+            nat-transit) role_label="nat-transit" ;;
+            nat-ingress) role_label="nat-ingress" ;;
             *) role_label="${ROLE:-unknown}" ;;
         esac
     else
@@ -3101,6 +3125,7 @@ profile_et_ip_addr_from_path() {
 }
 
 normalize_profile_compat_vars() {
+    migrate_legacy_panel_role
     case "${ROLE:-}" in
         nat-ingress)
             NAT_DIRECTION="$(normalize_nat_direction "${NAT_DIRECTION:-ingress-listener}" 2>/dev/null || printf 'ingress-listener\n')"
@@ -3511,39 +3536,6 @@ validate_easytier_args() {
     normalize_profile_compat_vars
 
     case "$ROLE" in
-        panel-landing)
-            require_config_var ET_LISTENER_PROTO
-            require_config_var ET_LISTENER_PORT
-            normalized="$(normalize_listener_proto "$ET_LISTENER_PROTO" "both")" || die_user "ET_LISTENER_PROTO 只能是 tcp、udp、tcp+udp、ws、wss、quic、wg 或 all。"
-            ET_LISTENER_PROTO="$normalized"
-            validate_port "$ET_LISTENER_PORT" || die_user "ET_LISTENER_PORT 必须是 1-65535 的端口。"
-            ET_LISTENERS="$(listener_urls_value "$ET_LISTENER_PROTO" "$ET_LISTENER_PORT")"
-            ;;
-        panel-ingress)
-            require_config_var CNIX_ENTRY_PROTO
-            require_config_var CNIX_ENTRY_HOST
-            require_config_var CNIX_ENTRY_PORT
-            normalized="$(normalize_entry_proto "$CNIX_ENTRY_PROTO" "both")" || die_user "CNIX_ENTRY_PROTO 只能是 tcp、udp、tcp+udp、ws、wss、quic、wg 或 all。"
-            CNIX_ENTRY_PROTO="$normalized"
-            validate_host "$CNIX_ENTRY_HOST" || die_user "CNIX_ENTRY_HOST 不能为空，且应为 IPv4 或域名。"
-            validate_port "$CNIX_ENTRY_PORT" || die_user "CNIX_ENTRY_PORT 必须是 1-65535 的端口。"
-            FORWARD_ENABLED="${FORWARD_ENABLED:-true}"
-            if [[ "$FORWARD_ENABLED" == "true" ]]; then
-                require_config_var LOCAL_PORT
-                require_config_var LANDING_ET_IP
-                require_config_var REMOTE_PORT
-                require_config_var FORWARD_PROTO
-                validate_port "$LOCAL_PORT" || die_user "LOCAL_PORT 必须是 1-65535 的端口。"
-                validate_ipv4 "$LANDING_ET_IP" || die_user "LANDING_ET_IP 必须是 IPv4，例如 10.144.144.2。"
-                validate_port "$REMOTE_PORT" || die_user "REMOTE_PORT 必须是 1-65535 的端口。"
-                normalized="$(normalize_forward_proto "$FORWARD_PROTO" "both")" || die_user "FORWARD_PROTO 只能是 tcp、udp 或 both。"
-                FORWARD_PROTO="$normalized"
-            else
-                FORWARD_ENABLED="false"
-            fi
-            ET_PEERS="$(peer_urls_value "$CNIX_ENTRY_PROTO" "$CNIX_ENTRY_HOST" "$CNIX_ENTRY_PORT")"
-            ET_NO_LISTENER="${ET_NO_LISTENER:-true}"
-            ;;
         nat-ingress)
             NAT_DIRECTION="$(normalize_nat_direction "${NAT_DIRECTION:-ingress-listener}")" || die_user "NAT_DIRECTION 只能是 ingress-listener 或 nat-listener。"
             require_config_var NAT_ET_IP
@@ -3640,7 +3632,7 @@ validate_easytier_args() {
             FORWARD_ENABLED="${FORWARD_ENABLED:-true}"
             ;;
         *)
-            die_user "ROLE 必须是 panel-landing、panel-ingress、nat-ingress 或 nat-transit。"
+            die_user "ROLE 必须是 nat-ingress 或 nat-transit。"
             ;;
     esac
 }
@@ -3679,8 +3671,6 @@ render_explicit_only_arg() {
 validate_easytier_args_static() {
     local rendered="$1"
     case "${ROLE:-}" in
-        panel-landing) [[ -n "${ET_LISTENERS:-}" ]] || return 1 ;;
-        panel-ingress) [[ -n "${ET_PEERS:-}" ]] || return 1 ;;
         nat-ingress)
             if [[ "${NAT_DIRECTION:-ingress-listener}" == "nat-listener" ]]; then
                 [[ -n "${ET_PEERS:-}" ]] || return 1
@@ -3897,14 +3887,6 @@ if [[ "\${ET_EXPLICIT_ONLY:-\${IXTF_EXPLICIT_ONLY:-true}}" == "true" ]]; then
 fi
 
 case "\$ROLE" in
-    panel-landing)
-        require_var ET_LISTENERS
-        read -r -a listener_items <<<"\$ET_LISTENERS"
-        for listener in "\${listener_items[@]}"; do
-            [[ -n "\$listener" ]] || continue
-            args+=(--listeners "\$listener")
-        done
-        ;;
     nat-ingress)
         if [[ "\${NAT_DIRECTION:-ingress-listener}" == "nat-listener" ]]; then
             require_var ET_PEERS
@@ -3923,17 +3905,6 @@ case "\$ROLE" in
                 [[ -n "\$listener" ]] || continue
                 args+=(--listeners "\$listener")
             done
-        fi
-        ;;
-    panel-ingress)
-        require_var ET_PEERS
-        read -r -a peer_items <<<"\$ET_PEERS"
-        for peer in "\${peer_items[@]}"; do
-            [[ -n "\$peer" ]] || continue
-            args+=(--peers "\$peer")
-        done
-        if [[ "\${ET_NO_LISTENER:-true}" == "true" ]]; then
-            args+=(--no-listener)
         fi
         ;;
     nat-transit)
@@ -3998,7 +3969,7 @@ render_systemd_service() {
         printf 'ExecStartPre=/usr/bin/test -r %s\n' "$ENV_FILE"
         printf 'ExecStartPre=/usr/bin/test -x %s\n' "$WRAPPER_FILE"
         printf "ExecStartPre=/bin/sh -c 'test -x %s || command -v easytier-core >/dev/null 2>&1'\n" "$EASYTIER_TARGET"
-        if [[ ( "${ROLE:-}" == "panel-ingress" || "${ROLE:-}" == "nat-ingress" || "${ROLE:-}" == "nat-transit" ) && "${FORWARD_ENABLED:-true}" == "true" ]]; then
+        if [[ ( "${ROLE:-}" == "nat-ingress" || "${ROLE:-}" == "nat-transit" ) && "${FORWARD_ENABLED:-true}" == "true" ]]; then
             nft_bin="$(command -v nft 2>/dev/null || true)"
             [[ -n "$nft_bin" ]] || nft_bin="/usr/sbin/nft"
             printf 'ExecStartPre=/usr/bin/test -f %s\n' "$NFT_FILE"
@@ -4154,7 +4125,7 @@ health_check_easytier() {
             [[ "$rc" -eq 0 || "$rc" -eq 2 ]] && role_ok="true"
     else
         case "${ROLE:-}" in
-            panel-ingress|nat-ingress|nat-transit)
+            nat-ingress|nat-transit)
             [[ -n "${ET_PEERS:-}" ]] && role_ok="true"
             ;;
             *)
@@ -4345,7 +4316,7 @@ enable_ip_forward() {
 
 profile_needs_nft_forward() {
     case "${ROLE:-}" in
-        panel-ingress|nat-ingress|nat-transit)
+        nat-ingress|nat-transit)
             [[ "${ENABLED:-true}" == "true" && "${FORWARD_ENABLED:-true}" == "true" ]]
             ;;
         *)
@@ -4379,10 +4350,6 @@ landing_ip_for_nft() {
 profile_nft_target() {
     local landing_ip
     case "${ROLE:-}" in
-        panel-ingress)
-            [[ -n "${LANDING_ET_IP:-}" && -n "${REMOTE_PORT:-}" ]] || return 1
-            printf '%s:%s\n' "$LANDING_ET_IP" "$REMOTE_PORT"
-            ;;
         nat-ingress)
             [[ -n "${NAT_ET_IP:-}" && -n "${TRANSIT_PORT:-}" ]] || return 1
             printf '%s:%s\n' "$NAT_ET_IP" "$TRANSIT_PORT"
@@ -4409,7 +4376,7 @@ profile_nft_daddr_match() {
 
 profile_nft_dport() {
     case "${ROLE:-}" in
-        panel-ingress|nat-ingress)
+        nat-ingress)
             [[ -n "${LOCAL_PORT:-}" ]] || return 1
             printf '%s\n' "$LOCAL_PORT"
             ;;
@@ -4628,8 +4595,8 @@ profile_role_label_zh() {
     case "${1:-${ROLE:-}}" in
         nat-ingress) printf '公网入口线路' ;;
         nat-transit) printf 'NAT IX 中转线路' ;;
-        panel-landing) printf '旧配置落地线路' ;;
-        panel-ingress) printf '旧配置入口线路' ;;
+        panel-landing) printf 'NAT IX listener 线路（旧 panel）\n' ;;
+        panel-ingress) printf '公网入口线路（旧 panel）\n' ;;
         *) printf '%s' "${1:-${ROLE:-未知}}" ;;
     esac
 }
@@ -4641,7 +4608,7 @@ enabled_label_zh() {
 forward_label_zh() {
     local role="${1:-}" enabled="${2:-true}" forward="${3:-true}"
     case "$role" in
-        panel-ingress|nat-ingress|nat-transit) ;;
+        nat-ingress|nat-transit) ;;
         *) printf '不适用'; return 0 ;;
     esac
     if [[ "$enabled" != "true" ]]; then
@@ -4992,15 +4959,15 @@ check_profile_conflicts() {
     current_ip="${ET_IPV4:-}"
     current_ip="${current_ip%%/*}"
 
-    if [[ ( "${ROLE:-}" == "panel-ingress" || "${ROLE:-}" == "nat-ingress" ) && "${FORWARD_ENABLED:-true}" == "true" ]]; then
+    if [[ ( "${ROLE:-}" == "nat-ingress" ) && "${FORWARD_ENABLED:-true}" == "true" ]]; then
         while IFS= read -r current_port; do
             [[ -n "$current_port" ]] || continue
             for other in $(profile_ids); do
                 [[ "$other" == "$profile_id" ]] && continue
                 path="$(profile_env_path "$other")"
                 profile_path_enabled "$path" || continue
-                other_role="$(profile_env_value_from_path "$path" ROLE 2>/dev/null || true)"
-                [[ "$other_role" == "panel-ingress" || "$other_role" == "nat-ingress" ]] || continue
+                other_role="$(normalize_role_value "$(profile_env_value_from_path "$path" ROLE 2>/dev/null || true)")"
+                [[ "$other_role" == "nat-ingress" ]] || continue
                 other_forward="$(profile_env_value_from_path "$path" FORWARD_ENABLED 2>/dev/null || true)"
                 [[ "${other_forward:-true}" == "true" ]] || continue
                 while IFS= read -r other_port; do
@@ -5015,7 +4982,7 @@ check_profile_conflicts() {
                 show_port_owner "$current_port" >&2
             fi
         done < <(current_profile_forward_client_ports "$profile_id")
-        if [[ "${ROLE:-}" == "panel-ingress" ]]; then
+        if [[ "${ROLE:-}" == "nat-ingress" ]]; then
             [[ -n "${REMOTE_PORT:-}" ]] || die_user "REMOTE_PORT 为空但业务转发已启用。"
         fi
     fi
@@ -5042,10 +5009,11 @@ check_profile_conflicts() {
             [[ "$other" == "$profile_id" ]] && continue
             path="$(profile_env_path "$other")"
             profile_path_enabled "$path" || continue
-            other_role="$(profile_env_value_from_path "$path" ROLE 2>/dev/null || true)"
+            other_role="$(normalize_role_value "$(profile_env_value_from_path "$path" ROLE 2>/dev/null || true)")"
             other_direction="$(profile_env_value_from_path "$path" NAT_DIRECTION 2>/dev/null || true)"
             other_direction="${other_direction:-ingress-listener}"
             case "$other_role:$other_direction" in
+                nat-transit:nat-listener) old_listener="$(profile_env_value_from_path "$path" NAT_LISTENER_PORT 2>/dev/null || true)" ;;
                 panel-landing:*) old_listener="$(profile_env_value_from_path "$path" LISTENER_PORT 2>/dev/null || true)" ;;
                 nat-ingress:ingress-listener) old_listener="$(profile_env_value_from_path "$path" INGRESS_LISTENER_PORT 2>/dev/null || true)" ;;
                 nat-transit:nat-listener) old_listener="$(profile_env_value_from_path "$path" NAT_LISTENER_PORT 2>/dev/null || true)" ;;
@@ -5082,7 +5050,7 @@ check_all_profiles_conflicts() {
         profile_path_enabled "$path" || continue
         role="$(profile_env_value_from_path "$path" ROLE 2>/dev/null || true)"
 
-        if [[ "$role" == "panel-ingress" || "$role" == "nat-ingress" ]]; then
+        if [[ "$role" == "nat-ingress" ]]; then
             forward_enabled="$(profile_env_value_from_path "$path" FORWARD_ENABLED 2>/dev/null || true)"
             if [[ "${forward_enabled:-true}" == "true" ]]; then
                 while IFS= read -r local_port; do
@@ -5350,7 +5318,7 @@ load_env_or_warn() {
     if load_env; then
         return 0
     fi
-    printf '[WARN] 未找到可读取的配置文件：%s。请先运行 install-panel-landing 或 install-panel-ingress。\n' "$ENV_FILE"
+    printf '[WARN] 未找到可读取的配置文件：%s。请先创建 NAT IX 中转线路或导入接入码。\n' "$ENV_FILE"
     return 1
 }
 
@@ -5361,7 +5329,7 @@ et_ip_addr() {
 render_landing_code_json() {
     local landing_et_ip remote_port created_at listener_proto listener_port listener_protos easytier_version et_path et_subnet suggested_ingress_et_ip suggested_ingress_et_cidr
     validate_easytier_args
-    [[ "$ROLE" == "panel-landing" ]] || die_user "只有落地机模式（panel-landing）可以生成接入码。"
+    [[ "$ROLE" == "nat-transit" && "${NAT_DIRECTION:-ingress-listener}" == "nat-listener" ]] || die_user "只有 NAT IX listener（nat-transit nat-listener）可以生成接入码。"
     normalize_profile_compat_vars
     landing_et_ip="$(et_ip_addr)"
     remote_port="${SERVICE_PORT:-}"
@@ -6016,87 +5984,11 @@ EOF
 }
 
 collect_landing_inputs() {
-    local default_network default_secret default_listener_port default_subnet default_landing_cidr
-    require_tty install-panel-landing
-    ROLE="panel-landing"
-    default_network="$(generate_network_name)"
-    default_secret="$(generate_secret)"
-    default_subnet="$(generate_et_subnet)"
-    default_landing_cidr="$(generate_landing_et_ip "$default_subnet")"
-    default_listener_port="$(pick_random_port_excluding_listeners both || true)"
-    print_four_port_reminder
-    cat >&2 <<EOF
-按 Enter 使用推荐默认值；本项目默认只使用 CNIX 指定线路，不依赖公共节点。
-默认网络名：${default_network}
-默认节点名：ix-landing
-默认 EasyTier 虚拟 IP：${default_landing_cidr}
-默认 listener 协议：TCP/UDP
-默认 listener 端口：随机未占用高端口
-业务端口可留空，入口机粘贴接入码时再填写。
-
-EOF
-    ET_NETWORK_NAME="$(prompt_validated "请输入 EasyTier 网络名" "$default_network" validate_network_name "请输入 1-64 个字符，仅允许字母、数字、点、下划线或短横线。")" || return 1
-    ET_NETWORK_SECRET="$(prompt_secret_default "$default_secret")" || return 1
-    ET_HOSTNAME="$(prompt_validated "请输入当前节点名称" "ix-landing" validate_hostname_value "请输入 1-64 个字符，仅允许字母、数字、点、下划线或短横线。")" || return 1
-    ET_IPV4="$(prompt_validated "请输入当前节点 EasyTier 虚拟 IP，例如 ${default_landing_cidr}" "$default_landing_cidr" validate_ipv4_cidr "请输入 IPv4/CIDR，例如 ${default_landing_cidr}。")" || return 1
-    ET_SUBNET="$(cidr_network24 "$ET_IPV4")"
-    if subnet_conflicts_local_routes "$ET_SUBNET"; then
-        log_warn "EasyTier 虚拟网段 ${ET_SUBNET} 可能和本机现有路由冲突；如已知冲突，请手动更换。"
-    fi
-    ET_LISTENER_PROTO="$(prompt_listener_proto "请选择 EasyTier 监听协议（tcp / udp / tcp+udp / ws / wss / quic / wg / all）" "both")" || return 1
-    ET_LISTENER_PORT="$(prompt_listener_port "请输入 EasyTier 监听端口" "$ET_LISTENER_PROTO" "$default_listener_port")" || return 1
-    if [[ -n "$default_listener_port" && "$ET_LISTENER_PORT" == "$default_listener_port" ]]; then
-        ET_LISTENER_PORT_WAS_DEFAULT="true"
-    else
-        ET_LISTENER_PORT_WAS_DEFAULT="false"
-    fi
-    ET_PRIVATE_MODE="true"
-    ET_EXPLICIT_ONLY="true"
-    IXTF_EXPLICIT_ONLY="true"
-    print_remote_port_short_hint
-    SERVICE_PORT="$(prompt_optional_port "可选：请输入落地机业务服务端口，例如 Remnawave / VLESS / Xray / sing-box 监听端口。这个端口不是 CNIX 面板出口端口。如果业务服务还没部署，可以直接回车，入口机稍后再填写")" || return 1
-
-    if [[ -n "${SERVICE_PORT:-}" && "$SERVICE_PORT" == "$ET_LISTENER_PORT" ]]; then
-        die_user "业务服务端口不能和 EasyTier 监听端口相同。"
-    fi
-
-    ET_LISTENERS="$(listener_urls_value "$ET_LISTENER_PROTO" "$ET_LISTENER_PORT")"
+    panel_mode_removed
 }
 
 collect_ingress_inputs() {
-    local default_local_port remote_rc default_subnet default_ingress_cidr default_landing_ip
-    require_tty install-panel-ingress
-    default_local_port="$(pick_random_port || true)"
-    default_subnet="$(generate_et_subnet)"
-    default_ingress_cidr="$(generate_ingress_et_ip "$default_subnet")"
-    default_landing_ip="$(ip_from_cidr_host "$default_subnet" 2)"
-    ROLE="panel-ingress"
-    print_four_port_reminder
-    ET_NETWORK_NAME="$(prompt_validated "请输入 EasyTier 网络名" "" validate_network_name "请输入 1-64 个字符，仅允许字母、数字、点、下划线或短横线。")" || return 1
-    ET_NETWORK_SECRET="$(prompt_secret)" || return 1
-    ET_HOSTNAME="$(prompt_validated "请输入当前节点名称" "ix-ingress" validate_hostname_value "请输入 1-64 个字符，仅允许字母、数字、点、下划线或短横线。")" || return 1
-    ET_IPV4="$(prompt_validated "请输入当前节点 EasyTier 虚拟 IP，例如 ${default_ingress_cidr}" "$default_ingress_cidr" validate_ipv4_cidr "请输入 IPv4/CIDR，例如 ${default_ingress_cidr}。")" || return 1
-    ET_SUBNET="$(cidr_network24 "$ET_IPV4")"
-    CNIX_ENTRY_HOST="$(prompt_validated "请输入 CNIX 面板入口 IP 或域名" "" validate_host "CNIX 面板入口 IP 或域名不能为空。")" || return 1
-    CNIX_ENTRY_PORT="$(prompt_port "请输入 CNIX 面板入口端口" "")" || return 1
-    CNIX_ENTRY_PROTO="${CODE_LISTENER_PROTO:-both}"
-    CNIX_ENTRY_PROTO="$(prompt_entry_proto "请输入 CNIX 面板入口协议（tcp / udp / tcp+udp / ws / wss / quic / wg / all）" "$CNIX_ENTRY_PROTO")" || return 1
-    LOCAL_PORT="$(prompt_random_port "请输入入口机公网业务端口 LOCAL_PORT" "$default_local_port")" || return 1
-    LANDING_ET_IP="$(prompt_validated "请输入落地机 EasyTier 虚拟 IP，例如 ${default_landing_ip}" "$default_landing_ip" validate_ipv4 "请输入 IPv4，例如 ${default_landing_ip}。")" || return 1
-    print_remote_port_short_hint
-    set +e
-    REMOTE_PORT="$(prompt_remote_port_with_context "请输入落地机业务端口 REMOTE_PORT，例如 8233" "8233" "" "$CNIX_ENTRY_PORT" "$LOCAL_PORT")"
-    remote_rc=$?
-    set -e
-    [[ "$remote_rc" -eq 0 ]] || return 1
-    FORWARD_PROTO="$(prompt_forward_proto "请选择业务转发协议（tcp / udp / both / tcp/udp）" "both")" || return 1
-    ET_PRIVATE_MODE="true"
-    ET_EXPLICIT_ONLY="true"
-    IXTF_EXPLICIT_ONLY="true"
-    FORWARD_ENABLED="true"
-
-    ET_PEERS="$(peer_urls_value "$CNIX_ENTRY_PROTO" "$CNIX_ENTRY_HOST" "$CNIX_ENTRY_PORT")"
-    ET_NO_LISTENER="true"
+    panel_mode_removed
 }
 
 collect_nat_ingress_inputs() {
@@ -6800,147 +6692,15 @@ show_config() {
 }
 
 panel_guide() {
-    local listener_proto_display listener_port
-    load_env_or_warn || return 0
-    normalize_profile_compat_vars
-
-    case "${ROLE:-}" in
-        panel-landing)
-            listener_proto_display="$(proto_display "${ET_LISTENER_PROTO:-${LISTENER_PROTOS:-}}")"
-            listener_port="${LISTENER_PORT:-${ET_LISTENER_PORT:-}}"
-            cat <<EOF
-当前角色：落地机模式（panel-landing）
-
-CNIX 面板出口应该填写：
-- 出口 IP：落地 VPS 公网 IP
-- 出口端口：${listener_port:-LISTENER_PORT}
-- 出口协议：${listener_proto_display}
-
-不要填写：
-- Remnawave / VLESS / Xray / sing-box 业务服务端口 ${SERVICE_PORT:-REMOTE_PORT}
-
-注意：
-这里的出口端口是 EasyTier listener，等价于 WG ListenPort。
-请把 show-code 输出的接入码复制到入口机。
-EOF
-            ;;
-        panel-ingress)
-            if [[ "${FORWARD_ENABLED:-true}" == "true" ]]; then
-                cat <<EOF
-当前角色：入口机模式（panel-ingress）
-
-客户端：
-- 入口 VPS 公网 IP:${LOCAL_PORT}
-
-CNIX 面板：
-- 入口：${CNIX_ENTRY_HOST}:${CNIX_ENTRY_PORT}
-- 出口：落地 VPS 公网 IP:${CODE_LISTENER_PORT:-LISTENER_PORT}
-
-入口机内部转发：
-- ${LANDING_ET_IP}:${REMOTE_PORT}
-
-注意：
-CNIX 面板出口必须填写落地机 EasyTier listener 端口，不要填写 REMOTE_PORT。
-EOF
-            else
-                cat <<EOF
-当前角色：入口机模式（panel-ingress）
-
-CNIX 面板：
-- 入口：${CNIX_ENTRY_HOST}:${CNIX_ENTRY_PORT}
-- 出口：落地 VPS 公网 IP:${CODE_LISTENER_PORT:-LISTENER_PORT}
-
-业务转发：未配置
-
-下一步：
-运行 bash install.sh configure-forward 配置 LOCAL_PORT / REMOTE_PORT 和 nftables 转发。
-EOF
-            fi
-            ;;
-        *)
-            printf '[WARN] 未知角色：%s\n' "${ROLE:-未设置}"
-            ;;
-    esac
+    panel_mode_removed
 }
 
 panel_guide_profile() {
-    local profile_id="${1:-}" listener_proto listener_port remote_port landing_public
-    if ! profile_id="$(resolve_profile_id_for_cmd "$profile_id" panel-guide)"; then
-        return_or_exit 2 || return $?
-    fi
-    if ! load_profile "$profile_id"; then
-        print_profile_selection_hint "$profile_id" panel-guide
-        return_or_exit 2 || return $?
-    fi
-    normalize_profile_compat_vars
-    listener_proto="${ET_LISTENER_PROTO:-${LISTENER_PROTOS:-}}"
-    listener_port="${LISTENER_PORT:-${ET_LISTENER_PORT:-}}"
-    remote_port="${REMOTE_PORT:-${SERVICE_PORT:-}}"
-    landing_public="${LANDING_PUBLIC_HOST:-${CODE_LANDING_PUBLIC_HINT:-落地 VPS 公网 IP}}"
-    case "${ROLE:-}" in
-        panel-landing)
-            cat <<EOF
-当前 Profile：${profile_id}（落地机）
-
-CNIX 面板出口应该填写：
-- 出口 IP：${landing_public}
-- 出口端口：${listener_port:-LISTENER_PORT}
-- 出口协议：$(proto_display "$listener_proto")
-
-不要填写：
-- 落地业务服务端口 ${remote_port:-REMOTE_PORT}
-
-注意：
-这里的出口端口是 EasyTier listener，等价于 WG ListenPort。
-请把 show-code 输出的接入码复制到入口机。
-EOF
-            [[ -n "$listener_port" ]] || printf '[WARN] Profile 缺少 LISTENER_PORT，请检查配置文件：%s\n' "$(profile_env_path "$profile_id")"
-            ;;
-        panel-ingress)
-            if [[ "${FORWARD_ENABLED:-true}" == "true" ]]; then
-                cat <<EOF
-当前 Profile：${profile_id}（入口机）
-
-客户端连接：
-- 公网入口 VPS:${LOCAL_PORT:-LOCAL_PORT}
-
-CNIX 面板：
-- 入口：${CNIX_ENTRY_HOST:-CNIX_ENTRY_HOST}:${CNIX_ENTRY_PORT:-CNIX_ENTRY_PORT}
-- 出口：${landing_public}:${CODE_LISTENER_PORT:-LISTENER_PORT}
-
-入口机内部转发：
-- ${LANDING_ET_IP:-LANDING_ET_IP}:${REMOTE_PORT:-REMOTE_PORT}
-
-注意：CNIX 面板出口必须填写落地机 EasyTier listener 端口，不要填写 REMOTE_PORT。
-EOF
-            else
-                cat <<EOF
-当前 Profile：${profile_id}（入口机）
-
-CNIX 面板：
-- 入口：${CNIX_ENTRY_HOST:-CNIX_ENTRY_HOST}:${CNIX_ENTRY_PORT:-CNIX_ENTRY_PORT}
-- 出口：${landing_public}:${CODE_LISTENER_PORT:-LISTENER_PORT}
-
-业务转发：未配置
-
-下一步：
-运行 bash install.sh configure-forward 配置 LOCAL_PORT / REMOTE_PORT 和 nftables 转发。
-EOF
-            fi
-            ;;
-        *)
-            printf '[WARN] 未知 Profile 角色：%s\n' "${ROLE:-未设置}"
-            ;;
-    esac
+    panel_mode_removed
 }
 
 panel_guide_all() {
-    require_root "$@"
-    local id
-    for id in $(profile_ids); do
-        printf '\n===== 线路 %s =====\n' "$id"
-        panel_guide_profile "$id"
-    done
+    panel_mode_removed
 }
 
 panel_guide_cmd() {
@@ -7193,110 +6953,11 @@ collect_profile_identity() {
 }
 
 add_landing_profile() {
-    require_root "$@"
-    run_profile_install_preflight landing
-    require_tty add-landing-profile
-    ensure_profile_dirs
-    collect_profile_identity "line" || return 1
-    collect_landing_inputs || return 1
-    PROFILE_ID="${PROFILE_ID}"
-    PROFILE_NAME="${PROFILE_NAME:-$PROFILE_ID}"
-    ENABLED="true"
-    ET_HOSTNAME="ix-landing-${PROFILE_ID}"
-    validate_profile_config "$PROFILE_ID"
-    check_profile_conflicts "$PROFILE_ID"
-    ensure_systemctl
-    save_profile_env "$PROFILE_ID"
-    save_profile_code_file "$PROFILE_ID" "$(generate_landing_code)"
-    render_profile_service_files
-    start_profile "$PROFILE_ID"
-    show_profile_summary "$PROFILE_ID"
-    printf '\n接入码：\n'
-    show_code "$PROFILE_ID" || true
-    print_access_code_security_hint
-    printf '\n端口映射：\n'
-    show_port_map "$PROFILE_ID" --compact || true
-    printf '\n状态摘要：\n'
-    run_line_health_check "$PROFILE_ID" false || true
-    print_profile_next_steps "$PROFILE_ID"
+    panel_mode_removed
 }
 
 add_ingress_profile_from_code() {
-    local profile_id code default_local_port remote_default remote_rc forward_later
-    require_root "$@"
-    run_profile_install_preflight ingress
-    require_tty add-ingress-profile-from-code
-    ensure_profile_dirs
-    collect_profile_identity "line" || return 1
-    profile_id="$PROFILE_ID"
-    code="$(read_code_from_args_or_prompt)" || die_user "未读取到接入码。"
-    parse_landing_code "$code"
-    ROLE="panel-ingress"
-    PROFILE_ID="$profile_id"
-    PROFILE_NAME="${PROFILE_NAME:-$profile_id}"
-    ENABLED="true"
-    ET_NETWORK_NAME="$CODE_NETWORK_NAME"
-    ET_NETWORK_SECRET="$CODE_NETWORK_SECRET"
-    ET_SUBNET="${ET_SUBNET:-$(cidr_network24 "$CODE_LANDING_ET_CIDR")}"
-    ET_HOSTNAME="ix-ingress-${PROFILE_ID}"
-    ET_IPV4="${CODE_SUGGESTED_INGRESS_ET_CIDR:-$(generate_ingress_et_ip "$ET_SUBNET")}"
-    CNIX_ENTRY_HOST="$(prompt_validated "请输入 CNIX 商家提供的入口 IP 或域名" "" validate_host "CNIX 面板入口 IP 或域名不能为空。")" || return 1
-    CNIX_ENTRY_PORT="$(prompt_port "请输入 CNIX 商家提供的入口端口" "")" || return 1
-    CNIX_ENTRY_PROTO="${CODE_LISTENER_PROTO:-both}"
-    CNIX_ENTRY_PROTO="$(prompt_entry_proto "请输入 CNIX 商家提供的入口协议（tcp / udp / tcp+udp / ws / wss / quic / wg / all）" "$CNIX_ENTRY_PROTO")" || return 1
-    default_local_port="$(pick_random_port || true)"
-    LOCAL_PORT="$(prompt_random_port "请输入入口机公网业务端口 LOCAL_PORT" "$default_local_port")" || return 1
-    LANDING_ET_IP="$CODE_LANDING_ET_IP"
-    remote_default="${CODE_REMOTE_PORT:-}"
-    while true; do
-        set +e
-        REMOTE_PORT="$(prompt_remote_port_with_context "请输入落地机业务端口 REMOTE_PORT" "$remote_default" "$CODE_LISTENER_PORT" "$CNIX_ENTRY_PORT" "$LOCAL_PORT")"
-        remote_rc=$?
-        set -e
-        if [[ "$remote_rc" -eq 0 ]]; then
-            FORWARD_ENABLED="true"
-            break
-        fi
-        if [[ "$remote_rc" -eq 3 && -z "$remote_default" ]]; then
-            set +e
-            ask_forward_later
-            forward_later=$?
-            set -e
-            if [[ "$forward_later" -eq 0 ]]; then
-                FORWARD_ENABLED="false"
-                LOCAL_PORT=""
-                REMOTE_PORT=""
-                FORWARD_PROTO=""
-                break
-            fi
-        else
-            return 1
-        fi
-    done
-    if [[ "${FORWARD_ENABLED:-true}" == "true" ]]; then
-        FORWARD_PROTO="$(prompt_forward_proto "请选择业务转发协议（tcp / udp / both / tcp/udp）" "both")" || return 1
-    fi
-    CODE_LISTENER_PORT="$CODE_LISTENER_PORT"
-    ET_PEERS="$(peer_urls_value "$CNIX_ENTRY_PROTO" "$CNIX_ENTRY_HOST" "$CNIX_ENTRY_PORT")"
-    ET_NO_LISTENER="true"
-    validate_profile_config "$PROFILE_ID"
-    check_profile_conflicts "$PROFILE_ID"
-    ensure_systemctl
-    if [[ "${FORWARD_ENABLED:-true}" == "true" ]]; then
-        enable_ip_forward
-    fi
-    save_profile_env "$PROFILE_ID"
-    render_profile_service_files
-    apply_nft_all
-    start_profile "$PROFILE_ID"
-    show_profile_summary "$PROFILE_ID"
-    printf '\n端口映射：\n'
-    show_port_map "$PROFILE_ID" --compact || true
-    printf '\n健康检查摘要：\n'
-    run_line_health_check "$PROFILE_ID" false || true
-    printf '\nnftables：\n'
-    print_normal_nft_forwarding_summary || true
-    print_profile_next_steps "$PROFILE_ID"
+    panel_mode_removed
 }
 
 add_nat_ingress_profile() {
@@ -7785,77 +7446,15 @@ install_panel_ingress_from_code() {
 }
 
 configure_forward() {
-    local default_local_port remote_rc listener_port_for_warn
-    require_root "$@"
-    require_tty configure-forward
-    load_env_or_warn || die_user "未找到入口机配置，无法配置业务转发。请先运行 install-panel-ingress-from-code。"
-    [[ "${ROLE:-}" == "panel-ingress" ]] || die_user "configure-forward 只适用于入口机模式。"
-
-    default_local_port="${LOCAL_PORT:-}"
-    [[ -n "$default_local_port" ]] || default_local_port="$(pick_random_port || true)"
-    LOCAL_PORT="$(prompt_random_port "请输入入口机公网业务端口 LOCAL_PORT" "$default_local_port")" || return 1
-    LANDING_ET_IP="$(prompt_validated "请输入落地机 EasyTier 虚拟 IP" "${LANDING_ET_IP:-10.144.144.2}" validate_ipv4 "请输入 IPv4，例如 10.144.144.2。")" || return 1
-    listener_port_for_warn="${CODE_LISTENER_PORT:-}"
-    while true; do
-        set +e
-        REMOTE_PORT="$(prompt_remote_port_with_context "请输入落地机业务端口 REMOTE_PORT，例如 8233" "${REMOTE_PORT:-}" "$listener_port_for_warn" "${CNIX_ENTRY_PORT:-}" "$LOCAL_PORT")"
-        remote_rc=$?
-        set -e
-        if [[ "$remote_rc" -eq 0 ]]; then
-            break
-        fi
-        [[ "$remote_rc" -eq 3 ]] && log_warn "REMOTE_PORT 不能为空。业务转发必须知道落地机业务服务端口。"
-    done
-    FORWARD_PROTO="$(prompt_forward_proto "请选择业务转发协议（tcp / udp / both / tcp/udp）" "${FORWARD_PROTO:-both}")" || return 1
-    FORWARD_ENABLED="true"
-
-    validate_easytier_args
-    enable_ip_forward
-    apply_nft
-    save_env
-    render_systemd_service
-    if command_exists systemctl; then
-        systemctl daemon-reload
-    fi
-    printf '\n业务转发已配置：入口 VPS 公网 IP:%s -> %s:%s（%s）\n' "$LOCAL_PORT" "$LANDING_ET_IP" "$REMOTE_PORT" "$(proto_display "$FORWARD_PROTO")"
+    panel_mode_removed
 }
 
 show_landing() {
-    require_root
-    local profile_id=""
-    if [[ -n "${1:-}" || -d "$PROFILES_DIR" ]]; then
-        profile_id="$(resolve_profile_id "${1:-}")"
-        load_profile_or_die "$profile_id"
-    else
-        load_env_or_warn || die_user "未找到配置。"
-    fi
-    [[ "${ROLE:-}" == "panel-landing" ]] || die_user "show-landing 只适用于落地机配置。"
-    print_config_summary loaded
-    printf '\n'
-    if [[ -n "$profile_id" ]]; then
-        panel_guide_profile "$profile_id"
-    else
-        panel_guide
-    fi
+    panel_mode_removed
 }
 
 show_ingress() {
-    require_root
-    local profile_id=""
-    if [[ -n "${1:-}" || -d "$PROFILES_DIR" ]]; then
-        profile_id="$(resolve_profile_id "${1:-}")"
-        load_profile_or_die "$profile_id"
-    else
-        load_env_or_warn || die_user "未找到配置。"
-    fi
-    [[ "${ROLE:-}" == "panel-ingress" ]] || die_user "show-ingress 只适用于入口机配置。"
-    print_config_summary loaded
-    printf '\n'
-    if [[ -n "$profile_id" ]]; then
-        show_port_map "$profile_id"
-    else
-        show_port_map
-    fi
+    panel_mode_removed
 }
 
 refresh_code() {
@@ -7865,34 +7464,24 @@ refresh_code() {
     else
         load_env_or_warn || die_user "未找到配置，无法刷新接入码。"
     fi
-    [[ "${ROLE:-}" == "panel-landing" || "${ROLE:-}" == "nat-ingress" || ( "${ROLE:-}" == "nat-transit" && "${NAT_DIRECTION:-ingress-listener}" == "nat-listener" ) ]] || die_user "refresh-code 只适用于 panel-landing、nat-ingress 或 nat-transit nat-listener。"
+    [[ "${ROLE:-}" == "nat-ingress" || ( "${ROLE:-}" == "nat-transit" && "${NAT_DIRECTION:-ingress-listener}" == "nat-listener" ) ]] || die_user "refresh-code 只适用于 nat-ingress 或 nat-transit nat-listener。"
     validate_easytier_args
-    if [[ "${ROLE:-}" == "nat-ingress" || ( "${ROLE:-}" == "nat-transit" && "${NAT_DIRECTION:-ingress-listener}" == "nat-listener" ) ]]; then
-        ET_NETWORK_SECRET="$(generate_secret)"
-        save_profile_env "$PROFILE_ID"
-        save_profile_code_file "$PROFILE_ID" "$(generate_nat_code)"
-        printf '已生成新的接入码。\n'
-        if [[ "${NAT_DIRECTION:-ingress-listener}" == "nat-listener" ]]; then
-            printf '旧接入码已失效。\n'
-            printf '公网入口机需要重新导入新的接入码。\n'
-        else
-            printf '旧接入码已失效。\n'
-            printf 'NAT IX 机器需要重新导入新的接入码。\n'
-        fi
-        if command_exists systemctl; then
-            render_profile_service_files
-            restart_profile "$PROFILE_ID" || log_warn "Profile 已保存新 secret，但服务重启未完成；请手动运行：bash install.sh restart-profile ${PROFILE_ID}"
-        fi
-        show_code "$PROFILE_ID"
-        return 0
-    fi
-    if [[ -n "${PROFILE_ID:-}" && "${PROFILE_ID:-default}" != "default" ]]; then
-        save_profile_code_file "$PROFILE_ID" "$(generate_landing_code)"
-        show_code "$PROFILE_ID"
+    ET_NETWORK_SECRET="$(generate_secret)"
+    save_profile_env "$PROFILE_ID"
+    save_profile_code_file "$PROFILE_ID" "$(generate_nat_code)"
+    printf '已生成新的接入码。\n'
+    if [[ "${NAT_DIRECTION:-ingress-listener}" == "nat-listener" ]]; then
+        printf '旧接入码已失效。\n'
+        printf '公网入口机需要重新导入新的接入码。\n'
     else
-        save_landing_code_file "$(generate_landing_code)"
-        show_code
+        printf '旧接入码已失效。\n'
+        printf 'NAT IX 机器需要重新导入新的接入码。\n'
     fi
+    if command_exists systemctl; then
+        render_profile_service_files
+        restart_profile "$PROFILE_ID" || log_warn "Profile 已保存新 secret，但服务重启未完成；请手动运行：bash install.sh restart-profile ${PROFILE_ID}"
+    fi
+    show_code "$PROFILE_ID"
 }
 
 regenerate_nat_profile_code() {
@@ -7919,240 +7508,15 @@ refresh_nat_code() {
 }
 
 change_landing() {
-    local keep_identity regen_ip regen_listener change_remote default_subnet default_landing_cidr default_listener_port profile_id use_profile="false"
-    require_root "$@"
-    run_profile_install_preflight landing
-    require_tty change-landing
-    if [[ -n "${1:-}" || -d "$PROFILES_DIR" ]]; then
-        profile_id="$(resolve_profile_id "${1:-}")"
-        load_profile_or_die "$profile_id"
-        use_profile="true"
-    else
-        load_env_or_warn || die_user "未找到落地机配置。请先运行 install-panel-landing。"
-    fi
-    [[ "${ROLE:-}" == "panel-landing" ]] || die_user "change-landing 只适用于落地机。"
-
-    keep_identity="$(prompt_yes_no "是否保留当前网络名和密钥" "true")" || return 1
-    if [[ "$keep_identity" != "true" ]]; then
-        ET_NETWORK_NAME="$(prompt_validated "请输入新的 EasyTier 网络名" "$(generate_network_name)" validate_network_name "请输入 1-64 个字符，仅允许字母、数字、点、下划线或短横线。")" || return 1
-        ET_NETWORK_SECRET="$(prompt_secret_default "$(generate_secret)")" || return 1
-    fi
-
-    regen_ip="$(prompt_yes_no "是否重新生成落地机 EasyTier 虚拟 IP" "false")" || return 1
-    if [[ "$regen_ip" == "true" ]]; then
-        default_subnet="$(generate_et_subnet)"
-        default_landing_cidr="$(generate_landing_et_ip "$default_subnet")"
-        ET_IPV4="$(prompt_validated "请输入新的落地机 EasyTier 虚拟 IP" "$default_landing_cidr" validate_ipv4_cidr "请输入 IPv4/CIDR，例如 ${default_landing_cidr}。")" || return 1
-        ET_SUBNET="$(cidr_network24 "$ET_IPV4")"
-    fi
-
-    ET_LISTENER_PROTO="$(prompt_listener_proto "请选择 EasyTier listener 协议（tcp / udp / tcp+udp / ws / wss / quic / wg / all）" "${ET_LISTENER_PROTO:-both}")" || return 1
-
-    regen_listener="$(prompt_yes_no "是否重新生成 EasyTier listener 端口" "true")" || return 1
-    if [[ "$regen_listener" == "true" ]]; then
-        default_listener_port="$(pick_random_port_excluding_listeners "${ET_LISTENER_PROTO:-both}" || true)"
-        ET_LISTENER_PORT="$(prompt_listener_port "请输入新的 EasyTier listener 端口" "${ET_LISTENER_PROTO:-both}" "$default_listener_port")" || return 1
-    fi
-
-    change_remote="$(prompt_yes_no "是否修改业务服务端口 REMOTE_PORT" "false")" || return 1
-    if [[ "$change_remote" == "true" ]]; then
-        SERVICE_PORT="$(prompt_optional_port "可选：请输入落地机业务服务端口，例如 Remnawave / VLESS / Xray / sing-box 监听端口。这个端口不是 CNIX 面板出口端口。如果业务服务还没部署，可以直接回车，入口机稍后再填写")" || return 1
-    fi
-
-    validate_easytier_args
-    ensure_systemctl
-    ensure_listener_port_available_before_start
-    if [[ "$use_profile" == "true" ]]; then
-        check_profile_conflicts "$profile_id"
-        save_profile_env "$profile_id"
-        save_profile_code_file "$profile_id" "$(generate_landing_code)"
-        render_profile_service_files
-        restart_profile "$profile_id"
-    else
-        save_env
-        save_landing_code_file "$(generate_landing_code)"
-        render_systemd_service
-        restart_easytier
-    fi
-    if [[ "$use_profile" == "true" ]]; then
-        show_profile_summary "$profile_id"
-        printf '\n重要：更换落地机后，入口机必须重新粘贴新的接入码，或运行 bash install.sh update-from-code %s。\n' "$profile_id"
-        printf '\n新的接入码：\n'
-        show_code "$profile_id" || true
-        printf '\n端口映射：\n'
-        show_port_map "$profile_id" || true
-        printf '\n状态：\n'
-        status_profile "$profile_id" || true
-    else
-        post_install_summary "panel-landing"
-        printf '\n重要：更换落地机后，入口机必须重新粘贴新的接入码，或运行 bash install.sh update-from-code。\n'
-        printf '\n新的接入码：\n'
-        show_code || true
-    fi
+    panel_mode_removed
 }
 
 update_from_code() {
-    local code modify_entry remote_default remote_rc profile_id use_profile="false"
-    require_root "$@"
-    run_profile_install_preflight ingress
-    require_tty update-from-code
-    if [[ -n "${1:-}" || -d "$PROFILES_DIR" ]]; then
-        profile_id="$(resolve_profile_id "${1:-}")"
-        load_profile_or_die "$profile_id"
-        use_profile="true"
-    else
-        load_env_or_warn || die_user "未找到入口机配置。请先运行 install-panel-ingress-from-code。"
-    fi
-    [[ "${ROLE:-}" == "panel-ingress" ]] || die_user "update-from-code 只适用于入口机。"
-
-    code="$(read_code_from_args_or_prompt)" || die_user "未读取到接入码。"
-    parse_landing_code "$code"
-
-    ET_NETWORK_NAME="$CODE_NETWORK_NAME"
-    ET_NETWORK_SECRET="$CODE_NETWORK_SECRET"
-    ET_SUBNET="$(cidr_network24 "$CODE_LANDING_ET_CIDR")"
-    LANDING_ET_IP="$CODE_LANDING_ET_IP"
-    CODE_LANDING_ET_CIDR="$CODE_LANDING_ET_CIDR"
-    CODE_SUGGESTED_INGRESS_ET_IP="$CODE_SUGGESTED_INGRESS_ET_IP"
-    CODE_SUGGESTED_INGRESS_ET_CIDR="$CODE_SUGGESTED_INGRESS_ET_CIDR"
-    LANDING_EASYTIER_VERSION="$CODE_EASYTIER_VERSION"
-
-    if [[ -n "${CODE_SUGGESTED_INGRESS_ET_CIDR:-}" ]]; then
-        if ! validate_et_cidr_pair "$CODE_LANDING_ET_CIDR" "${ET_IPV4:-$CODE_SUGGESTED_INGRESS_ET_CIDR}"; then
-            ET_IPV4="$CODE_SUGGESTED_INGRESS_ET_CIDR"
-        fi
-    fi
-
-    remote_default="${CODE_REMOTE_PORT:-${REMOTE_PORT:-}}"
-    if [[ -n "$remote_default" ]]; then
-        REMOTE_PORT="$remote_default"
-    fi
-
-    modify_entry="$(prompt_yes_no "是否修改 CNIX 商家入口 IP/端口/协议" "false")" || return 1
-    if [[ "$modify_entry" == "true" ]]; then
-        CNIX_ENTRY_HOST="$(prompt_validated "请输入 CNIX 商家入口 IP 或域名" "${CNIX_ENTRY_HOST:-}" validate_host "CNIX 面板入口 IP 或域名不能为空。")" || return 1
-        CNIX_ENTRY_PORT="$(prompt_port "请输入 CNIX 商家入口端口" "${CNIX_ENTRY_PORT:-}")" || return 1
-        CNIX_ENTRY_PROTO="$(prompt_entry_proto "请输入 CNIX 商家入口协议（tcp / udp / tcp+udp / ws / wss / quic / wg / all）" "${CNIX_ENTRY_PROTO:-$CODE_LISTENER_PROTO}")" || return 1
-    fi
-
-    if [[ "${FORWARD_ENABLED:-true}" == "true" ]]; then
-        if [[ -z "${LOCAL_PORT:-}" ]]; then
-            LOCAL_PORT="$(prompt_random_port "请输入入口机公网业务端口 LOCAL_PORT" "$(pick_random_port || true)")" || return 1
-        fi
-        while [[ -z "${REMOTE_PORT:-}" ]]; do
-            set +e
-            REMOTE_PORT="$(prompt_remote_port_with_context "请输入落地机业务端口 REMOTE_PORT" "$remote_default" "$CODE_LISTENER_PORT" "${CNIX_ENTRY_PORT:-}" "${LOCAL_PORT:-}")"
-            remote_rc=$?
-            set -e
-            [[ "$remote_rc" -eq 0 ]] || return 1
-        done
-        FORWARD_PROTO="${FORWARD_PROTO:-both}"
-    fi
-
-    ET_PEERS="$(peer_urls_value "${CNIX_ENTRY_PROTO:-$CODE_LISTENER_PROTO}" "$CNIX_ENTRY_HOST" "$CNIX_ENTRY_PORT")"
-    ET_NO_LISTENER="true"
-    validate_easytier_args
-    ensure_systemctl
-    if [[ "$use_profile" == "true" ]]; then
-        check_profile_conflicts "$profile_id"
-        save_profile_env "$profile_id"
-    fi
-    if [[ "${FORWARD_ENABLED:-true}" == "true" ]]; then
-        enable_ip_forward
-        if [[ "$use_profile" == "true" ]]; then
-            apply_nft_all
-        else
-            apply_nft
-        fi
-    fi
-    if [[ "$use_profile" == "true" ]]; then
-        render_profile_service_files
-        restart_profile "$profile_id"
-    else
-        save_env
-        render_systemd_service
-        restart_easytier
-    fi
-    if [[ "$use_profile" == "true" ]]; then
-        show_profile_summary "$profile_id"
-        printf '\n端口映射：\n'
-        show_port_map "$profile_id" || true
-        printf '\n状态：\n'
-        status_profile "$profile_id" || true
-        printf '\nnftables：\n'
-        print_normal_nft_forwarding_summary || true
-    else
-        post_install_summary "panel-ingress"
-    fi
+    panel_mode_removed
 }
 
 change_ingress() {
-    local change_host change_port change_proto regen_local regen_ip default_local_port default_ingress_cidr profile_id use_profile="false"
-    require_root "$@"
-    require_tty change-ingress
-    if [[ -n "${1:-}" || -d "$PROFILES_DIR" ]]; then
-        profile_id="$(resolve_profile_id "${1:-}")"
-        load_profile_or_die "$profile_id"
-        use_profile="true"
-    else
-        load_env_or_warn || die_user "未找到入口机配置。请先运行 install-panel-ingress-from-code。"
-    fi
-    [[ "${ROLE:-}" == "panel-ingress" ]] || die_user "change-ingress 只适用于入口机。"
-
-    change_host="$(prompt_yes_no "是否修改 CNIX 商家入口 IP/域名" "false")" || return 1
-    [[ "$change_host" == "true" ]] && CNIX_ENTRY_HOST="$(prompt_validated "请输入 CNIX 商家入口 IP 或域名" "${CNIX_ENTRY_HOST:-}" validate_host "CNIX 面板入口 IP 或域名不能为空。")"
-    change_port="$(prompt_yes_no "是否修改 CNIX 商家入口端口" "false")" || return 1
-    [[ "$change_port" == "true" ]] && CNIX_ENTRY_PORT="$(prompt_port "请输入 CNIX 商家入口端口" "${CNIX_ENTRY_PORT:-}")"
-    change_proto="$(prompt_yes_no "是否修改入口协议" "false")" || return 1
-    [[ "$change_proto" == "true" ]] && CNIX_ENTRY_PROTO="$(prompt_entry_proto "请输入 CNIX 商家入口协议（tcp / udp / tcp+udp / ws / wss / quic / wg / all）" "${CNIX_ENTRY_PROTO:-both}")"
-
-    regen_local="$(prompt_yes_no "是否重新随机 LOCAL_PORT" "true")" || return 1
-    if [[ "$regen_local" == "true" || -z "${LOCAL_PORT:-}" ]]; then
-        default_local_port="$(pick_random_port || true)"
-        LOCAL_PORT="$(prompt_random_port "请输入入口机公网业务端口 LOCAL_PORT" "$default_local_port")" || return 1
-    fi
-
-    regen_ip="$(prompt_yes_no "是否重新随机入口机 EasyTier 虚拟 IP" "false")" || return 1
-    if [[ "$regen_ip" == "true" ]]; then
-        default_ingress_cidr="$(generate_ingress_et_ip "${ET_SUBNET:-$(generate_et_subnet)}")"
-        ET_IPV4="$(prompt_validated "请输入新的入口机 EasyTier 虚拟 IP" "$default_ingress_cidr" validate_ipv4_cidr "请输入 IPv4/CIDR，例如 ${default_ingress_cidr}。")" || return 1
-    fi
-
-    ET_PEERS="$(peer_urls_value "${CNIX_ENTRY_PROTO:-both}" "$CNIX_ENTRY_HOST" "$CNIX_ENTRY_PORT")"
-    validate_easytier_args
-    ensure_systemctl
-    ensure_easytier
-    if [[ "$use_profile" == "true" ]]; then
-        check_profile_conflicts "$profile_id"
-        save_profile_env "$profile_id"
-    fi
-    if [[ "${FORWARD_ENABLED:-true}" == "true" ]]; then
-        enable_ip_forward
-        if [[ "$use_profile" == "true" ]]; then
-            apply_nft_all
-        else
-            apply_nft
-        fi
-    fi
-    if [[ "$use_profile" == "true" ]]; then
-        render_profile_service_files
-        restart_profile "$profile_id"
-    else
-        save_env
-        render_systemd_service
-        restart_easytier
-    fi
-    if [[ "$use_profile" == "true" ]]; then
-        show_profile_summary "$profile_id"
-        printf '\n端口映射：\n'
-        show_port_map "$profile_id" || true
-        printf '\n状态：\n'
-        status_profile "$profile_id" || true
-        printf '\nnftables：\n'
-        print_normal_nft_forwarding_summary || true
-    else
-        post_install_summary "panel-ingress"
-    fi
+    panel_mode_removed
 }
 
 change_cnix_entry() {
@@ -8166,7 +7530,7 @@ enabled_display() {
 forward_display() {
     local role="${1:-}" enabled="${2:-true}" forward="${3:-true}"
     case "$role" in
-        panel-ingress|nat-ingress|nat-transit) ;;
+        nat-ingress|nat-transit) ;;
         *) printf 'n/a\n'; return 0 ;;
     esac
     if [[ "$enabled" != "true" ]]; then
@@ -9372,7 +8736,7 @@ profile_role_counts() {
         case "${ROLE:-}" in
             panel-landing) landing=$((landing + 1)) ;;
             nat-transit) transit=$((transit + 1)) ;;
-            panel-ingress|nat-ingress) ingress=$((ingress + 1)) ;;
+            nat-ingress) ingress=$((ingress + 1)) ;;
             *) other=$((other + 1)) ;;
         esac
     done
@@ -9683,7 +9047,7 @@ verify_nft_profiles_core() {
     printf '\n已停用线路残留规则：\n'
     for id in $(profile_ids); do
         load_profile "$id" >/dev/null 2>&1 || continue
-        case "${ROLE:-}" in panel-ingress|nat-ingress|nat-transit) ;; *) continue ;; esac
+        case "${ROLE:-}" in nat-ingress|nat-transit) ;; *) continue ;; esac
         profile_nft_dport >/dev/null 2>&1 || continue
         profile_nft_target >/dev/null 2>&1 || continue
         if [[ "${ENABLED:-true}" != "true" ]] && nft_text_has_profile_rule "$text"; then
@@ -9697,7 +9061,7 @@ verify_nft_profiles_core() {
     printf '\n转发已关闭线路残留规则：\n'
     for id in $(profile_ids); do
         load_profile "$id" >/dev/null 2>&1 || continue
-        case "${ROLE:-}" in panel-ingress|nat-ingress|nat-transit) ;; *) continue ;; esac
+        case "${ROLE:-}" in nat-ingress|nat-transit) ;; *) continue ;; esac
         profile_nft_dport >/dev/null 2>&1 || continue
         profile_nft_target >/dev/null 2>&1 || continue
         if [[ "${ENABLED:-true}" == "true" && "${FORWARD_ENABLED:-true}" != "true" ]] && nft_text_has_profile_rule "$text"; then
@@ -10761,7 +10125,7 @@ run_line_health_check() {
     normalize_profile_compat_vars
     case "${ROLE:-}" in
         panel-landing) role_text="落地线路" ;;
-        panel-ingress|nat-ingress) role_text="公网入口线路" ;;
+        nat-ingress) role_text="公网入口线路" ;;
         nat-transit) role_text="NAT IX 中转线路" ;;
         *) role_text="${ROLE:-未知}" ;;
     esac
@@ -12432,7 +11796,7 @@ validate_switch_target() {
     [[ -n "$group" && -n "$target" ]] || die_user "用法：switch-line GROUP TARGET_PROFILE_ID"
     load_profile_or_die "$target"
     [[ "${LINE_GROUP:-}" == "$group" ]] || die_user "目标 Profile 不属于线路组 ${group}。"
-    [[ "${ROLE:-}" == "panel-ingress" ]] || die_user "switch-line 目标必须是 panel-ingress Profile。"
+    [[ "${ROLE:-}" == "nat-ingress" ]] || die_user "switch-line 目标必须是 panel-ingress Profile。"
     [[ "${ENABLED:-true}" == "true" ]] || die_user "目标 Profile 已禁用，请先 enable-profile ${target}。"
     saved_forward="${FORWARD_ENABLED:-true}"
     FORWARD_ENABLED="true"
@@ -12446,7 +11810,7 @@ validate_switch_dry_run_target() {
     group_exists "$group" || die_user "线路组 ${group} 不存在。已有 group：$(list_existing_groups_for_message)"
     load_profile_or_die "$target"
     [[ "${LINE_GROUP:-}" == "$group" ]] || die_user "目标 Profile 不属于线路组 ${group}。"
-    [[ "${ROLE:-}" == "panel-ingress" ]] || die_user "switch-dry-run 目标必须是 panel-ingress Profile。"
+    [[ "${ROLE:-}" == "nat-ingress" ]] || die_user "switch-dry-run 目标必须是 panel-ingress Profile。"
 }
 
 record_switch_event() {
@@ -13942,7 +13306,7 @@ traffic_report() {
     fi
     for id in $(sorted_profile_ids); do
         load_profile "$id" >/dev/null 2>&1 || continue
-        case "${ROLE:-}" in panel-ingress|nat-ingress|nat-transit) ;; *) continue ;; esac
+        case "${ROLE:-}" in nat-ingress|nat-transit) ;; *) continue ;; esac
         [[ -z "$group_filter" || "${LINE_GROUP:-}" == "$group_filter" ]] || continue
         if profile_supports_forward_rules; then
             saved_local="${LOCAL_PORT:-}"; saved_transit="${TRANSIT_PORT:-}"; saved_landing_host="${LANDING_HOST:-}"; saved_landing_port="${LANDING_PORT:-}"; saved_proto="${FORWARD_PROTO:-both}"
@@ -13985,7 +13349,7 @@ traffic_report() {
         printf '线路ID\t规则ID\t备注\t状态\t公网入口端口\t虚拟网中转端口\t落地目标\t增量数据包\t增量字节\t说明\n'
         for id in $(sorted_profile_ids); do
             load_profile "$id" >/dev/null 2>&1 || continue
-            case "${ROLE:-}" in panel-ingress|nat-ingress|nat-transit) ;; *) continue ;; esac
+            case "${ROLE:-}" in nat-ingress|nat-transit) ;; *) continue ;; esac
             [[ -z "$group_filter" || "${LINE_GROUP:-}" == "$group_filter" ]] || continue
             if profile_supports_forward_rules; then
                 saved_local="${LOCAL_PORT:-}"; saved_transit="${TRANSIT_PORT:-}"; saved_landing_host="${LANDING_HOST:-}"; saved_landing_port="${LANDING_PORT:-}"; saved_proto="${FORWARD_PROTO:-both}"
@@ -14143,7 +13507,7 @@ health_report() {
         health="${HEALTH_STATUS:-unknown}"
         case "${ROLE:-}" in
             panel-landing) role_label="落地" ;;
-            panel-ingress|nat-ingress) role_label="公网入口" ;;
+            nat-ingress) role_label="公网入口" ;;
             nat-transit) role_label="NAT IX 中转" ;;
             *) role_label="${ROLE:-unknown}" ;;
         esac
@@ -14637,7 +14001,7 @@ status_all() {
         forward_label="$(forward_label_zh "${ROLE:-}" "${ENABLED:-true}" "${FORWARD_ENABLED:-true}")"
         rule_count="$(profile_rule_count "$id")"
         [[ "${ENABLED:-true}" == "true" ]] && enabled_count=$((enabled_count + 1))
-        [[ "${FORWARD_ENABLED:-true}" == "true" && "${ENABLED:-true}" == "true" ]] && case "${ROLE:-}" in panel-ingress|nat-ingress|nat-transit) forwarding_count=$((forwarding_count + 1)) ;; esac
+        [[ "${FORWARD_ENABLED:-true}" == "true" && "${ENABLED:-true}" == "true" ]] && case "${ROLE:-}" in nat-ingress|nat-transit) forwarding_count=$((forwarding_count + 1)) ;; esac
         health="${HEALTH_STATUS:-unknown}"
         case "$health" in
             healthy) healthy=$((healthy + 1)) ;;
@@ -14788,6 +14152,34 @@ restart_all() {
     done
 }
 
+migrate_panel_profiles() {
+    require_root "$@"
+    ensure_profile_dirs
+    local id raw_role migrated=0
+    for id in $(profile_ids); do
+        raw_role="$(profile_env_value_from_path "$(profile_env_path "$id")" ROLE 2>/dev/null || true)"
+        case "$raw_role" in
+            panel-landing|panel-ingress)
+                load_profile "$id" || continue
+                validate_easytier_args
+                save_profile_env "$id"
+                if [[ "$ROLE" == "nat-transit" && "${NAT_DIRECTION:-ingress-listener}" == "nat-listener" ]]; then
+                    save_profile_code_file "$id" "$(generate_nat_code)"
+                fi
+                migrated=$((migrated + 1))
+                log_ok "已迁移 profile ${id}：${raw_role} -> ${ROLE}"
+                ;;
+        esac
+    done
+    if [[ "$migrated" -eq 0 ]]; then
+        log_ok "未发现 panel-landing / panel-ingress profile，无需迁移。"
+    else
+        log_ok "共迁移 ${migrated} 个 profile 至 NAT IX 格式。"
+        render_profile_service_files
+        apply_nft_all || true
+    fi
+}
+
 migrate_single_profile() {
     require_root "$@"
     ensure_profile_dirs
@@ -14814,7 +14206,7 @@ status() {
     print_config_summary || true
     printf '\n'
     status_easytier
-    if [[ "${ROLE:-}" == "panel-ingress" ]]; then
+    if [[ "${ROLE:-}" == "nat-ingress" ]]; then
         if [[ "${FORWARD_ENABLED:-true}" == "true" ]]; then
             status_nft
             if command_exists sysctl; then
@@ -16582,6 +15974,9 @@ main() {
             ;;
         verify-nft-profiles)
             verify_nft_profiles
+            ;;
+        migrate-panel-profiles)
+            migrate_panel_profiles
             ;;
         migrate-single-profile)
             migrate_single_profile

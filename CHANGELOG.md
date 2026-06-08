@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.2.0-alpha.19
+
+### Changed
+
+- 加载 profile 时通过 `migrate_legacy_panel_role()` 将磁盘上的 `panel-landing` / `panel-ingress` 自动映射为 `nat-transit` / `nat-ingress`（内存 + 保存时写入 NAT 格式）。
+- 新增 `bash install.sh migrate-panel-profiles`：批量将旧 panel env 文件持久化为 NAT IX 格式并刷新接入码。
+
+### Removed
+
+- 删除 panel 向导、collect/add/change/update 等 dead 命令实现（调用时统一 `panel_mode_removed`）。
+- 精简 EasyTier wrapper / nft / validate 中的 panel 专用分支（迁移后统一走 nat-* 路径）。
+
 ## 1.2.0-alpha.18
 
 ### Removed
