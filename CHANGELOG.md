@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.2.0-alpha.16
+
+### Changed
+
+- `primary-backup-runbook`、`show-group`、`primary-backup-summary`、`health-report` 汇总与线路组问题描述中文化。
+- README 标注 `panel-landing` / `panel-ingress` 为 deprecated，新部署仅推荐 NAT-IX 流程。
+
 ## 1.2.0-alpha.15
 
 ### Changed

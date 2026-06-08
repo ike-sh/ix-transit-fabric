@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-SCRIPT_VERSION="1.2.0-alpha.15"
+SCRIPT_VERSION="1.2.0-alpha.16"
 APP_NAME="ix-transit-fabric"
 
 CONFIG_DIR="/etc/ix-transit-fabric"
@@ -11927,6 +11927,32 @@ group_cold_standby_count() {
     return 0
 }
 
+group_ready_state_label_zh() {
+    case "${1:-}" in
+        ready) printf '就绪' ;;
+        warning) printf '有警告' ;;
+        not-ready) printf '未就绪' ;;
+        *) printf '%s' "${1:-未知}" ;;
+    esac
+}
+
+group_issue_label_zh() {
+    local issue="${1:-}"
+    issue="${issue%%:*}"
+    case "$issue" in
+        "primary down") printf '主线路故障' ;;
+        "no primary") printf '未配置主线路' ;;
+        "multiple primary") printf '存在多条主线路' ;;
+        "no forwarding") printf '没有处于转发的入口线路' ;;
+        "multiple forwarding") printf '多条线路同时转发' ;;
+        "no backup") printf '未配置备线路' ;;
+        "primary down but backup healthy") printf '主线路故障但备线路健康' ;;
+        "backup down") printf '备线路故障' ;;
+        "all lines down") printf '线路组内全部线路故障' ;;
+        *) printf '%s' "$issue" ;;
+    esac
+}
+
 group_ready_state() {
     local group="$1" primary_count backup_count forwarding_count ingress_count down_count=0 warning_count=0 id status
     group_exists "$group" || { printf 'not-ready\n'; return 0; }
@@ -12296,40 +12322,40 @@ primary_backup_runbook() {
     [[ -n "$recommended_backup" ]] || recommended_backup="BACKUP_PROFILE"
 
     cat <<EOF
-Primary/backup runbook: ${group}
+主备切换手册：${group}
 
-Current group members:
+线路组成员：
   ${members}
-Current business profile:
+当前转发线路：
   ${forwarding}
-Primary:
+主线路：
   ${primary}
-Backup:
+备线路：
   ${backups}
 
-Recommended checks:
+建议先运行：
   bash install.sh primary-backup-check ${group}
   bash install.sh health-report --group ${group}
   bash install.sh verify-nft-profiles
 
-Before switch:
+切换前检查：
   bash install.sh health-all
   bash install.sh health-report
   bash install.sh validate-primary-backup ${group}
   bash install.sh switch-dry-run ${group} ${recommended_backup}
 
-Formal switch:
+正式切换：
   bash install.sh switch-line ${group} ${recommended_backup}
 
-After switch verification:
+切换后验证：
   bash install.sh verify-nft-profiles
   bash install.sh show-group ${group}
   bash install.sh show-port-map --all
 
-Switch back:
-  bash install.sh switch-line ${group} $(primary_profile_in_group "$group" || printf 'PRIMARY_PROFILE')
+切回主线路：
+  bash install.sh switch-line ${group} $(primary_profile_in_group "$group" || printf '主线路ID')
 
-Rollback helper:
+回滚：
   bash install.sh switch-rollback-last
 EOF
 }
@@ -12337,7 +12363,7 @@ EOF
 primary_backup_summary() {
     require_root "$@"
     local group primary forwarding backup_count hot_count cold_count ready_state action recommended_backup
-    printf '%-16s %-18s %-18s %-7s %-5s %-5s %-10s %s\n' "GROUP" "PRIMARY" "ACTIVE" "BACKUP" "HOT" "COLD" "HEALTH" "RECOMMENDED ACTION"
+    printf '%-16s %-18s %-18s %-7s %-5s %-5s %-10s %s\n' "线路组" "主线路" "当前转发" "备线路" "热备" "冷备" "状态" "建议操作"
     while IFS= read -r group; do
         [[ -n "$group" ]] || continue
         primary="$(list_group_primary_profiles "$group" | join_profile_list)"
@@ -12348,17 +12374,17 @@ primary_backup_summary() {
         ready_state="$(group_ready_state "$group")"
         recommended_backup="$(first_healthy_backup_in_group "$group" || true)"
         case "$ready_state" in
-            ready) action="monitor / dry-run before switch" ;;
+            ready) action="监控 / 切换前先 dry-run" ;;
             warning)
                 if [[ -n "$recommended_backup" ]]; then
                     action="switch-dry-run ${group} ${recommended_backup}"
                 else
-                    action="review warnings"
+                    action="检查警告项"
                 fi
                 ;;
             *) action="primary-backup-check ${group}" ;;
         esac
-        printf '%-16s %-18s %-18s %-7s %-5s %-5s %-10s %s\n' "$group" "$primary" "$forwarding" "$backup_count" "$hot_count" "$cold_count" "$ready_state" "$action"
+        printf '%-16s %-18s %-18s %-7s %-5s %-5s %-10s %s\n' "$group" "$primary" "$forwarding" "$backup_count" "$hot_count" "$cold_count" "$(group_ready_state_label_zh "$ready_state")" "$action"
     done < <(profile_groups)
 }
 
@@ -12924,14 +12950,14 @@ health_report() {
         esac
     done < <(profile_groups)
 
-    printf '\nSummary:\n'
-    printf 'profiles total: %s\n' "$total"
-    printf 'groups total: %s\n' "$groups_total"
-    printf 'forwarding lines: %s\n' "$forwarding_lines"
-    printf 'healthy / warning / down / unknown: %s / %s / %s / %s\n' "$healthy" "$warning" "$down" "$unknown"
-    printf 'groups ready / warning / not-ready: %s / %s / %s\n' "$groups_ready" "$groups_warning" "$groups_not_ready"
+    printf '\n汇总：\n'
+    printf '线路总数：%s\n' "$total"
+    printf '线路组总数：%s\n' "$groups_total"
+    printf '转发中线路：%s\n' "$forwarding_lines"
+    printf '健康 / 警告 / 故障 / 未检查：%s / %s / %s / %s\n' "$healthy" "$warning" "$down" "$unknown"
+    printf '线路组 就绪 / 有警告 / 未就绪：%s / %s / %s\n' "$groups_ready" "$groups_warning" "$groups_not_ready"
 
-    printf '\nGroup issues:\n'
+    printf '\n线路组问题：\n'
     while IFS= read -r group; do
         [[ -n "$group" ]] || continue
         [[ -z "$group_filter" || "$group" == "$group_filter" ]] || continue
@@ -12939,19 +12965,19 @@ health_report() {
             groups_with_issues=$((groups_with_issues + 1))
             while IFS= read -r issue; do
                 [[ -n "$issue" ]] || continue
-                printf '  - %s: %s\n' "$group" "${issue%%:*}"
+                printf '  - %s：%s\n' "$group" "$(group_issue_label_zh "$issue")"
                 if [[ "$issue" == primary\ down\ but\ backup\ healthy:* ]]; then
                     backup_id="${issue#*:}"
                     printf '    bash install.sh switch-dry-run %s %s\n' "$group" "$backup_id"
                     printf '    bash install.sh switch-line %s %s\n' "$group" "$backup_id"
                 elif [[ "$issue" == backup\ down:* ]]; then
                     backup_id="${issue#*:}"
-                    printf '    backup %s is not a safe switch target now\n' "$backup_id"
+                    printf '    备线路 %s 当前不宜作为切换目标\n' "$backup_id"
                 fi
             done < <(group_issue_lines "$group")
         fi
     done < <(profile_groups)
-    [[ "$groups_with_issues" -gt 0 ]] || printf '  - none\n'
+    [[ "$groups_with_issues" -gt 0 ]] || printf '  - 无\n'
 }
 
 switch_history() {
@@ -13203,13 +13229,12 @@ show_group() {
     recommended_target="$(first_healthy_backup_in_group "$group" || true)"
     [[ -n "$recommended_target" ]] || recommended_target="$(first_available_backup_in_group "$group" || true)"
 
-    printf 'GROUP: %s\n' "$group"
-    printf 'GROUP READY: %s\n' "$ready_state"
-    printf 'CURRENT BUSINESS PROFILE: %s\n' "$forwarding"
-    printf 'CURRENT FORWARDING PROFILE: %s\n' "$forwarding"
-    printf 'PRIMARY PROFILE: %s\n' "$primary"
-    printf 'BACKUP PROFILES: %s\n' "$backups"
-    printf 'RECOMMENDED BACKUP: %s\n' "${recommended_target:--}"
+    printf '线路组：%s\n' "$group"
+    printf '线路组状态：%s\n' "$(group_ready_state_label_zh "$ready_state")"
+    printf '当前转发线路：%s\n' "$forwarding"
+    printf '主线路：%s\n' "$primary"
+    printf '备线路：%s\n' "$backups"
+    printf '推荐备线路：%s\n' "${recommended_target:--}"
     for id in $(list_group_backup_profiles "$group"); do
         load_profile "$id" >/dev/null 2>&1 || continue
         if [[ "${ENABLED:-true}" == "true" && "${FORWARD_ENABLED:-true}" == "false" ]]; then
@@ -13218,9 +13243,9 @@ show_group() {
             cold_count=$((cold_count + 1))
         fi
     done
-    printf 'HOT STANDBY COUNT: %s\n' "$hot_count"
-    printf 'COLD STANDBY COUNT: %s\n' "$cold_count"
-    printf '\nPROFILE_ID | LINE_ROLE | PRIORITY | ENABLED | FORWARD | HEALTH | LOCAL_PORT | CNIX_ENTRY | LISTENER_PORT | REMOTE_PORT\n'
+    printf '热备数量：%s\n' "$hot_count"
+    printf '冷备数量：%s\n' "$cold_count"
+    printf '\n线路ID | 主备角色 | 优先级 | 启用 | 转发 | 健康 | 客户端端口 | CNIX入口 | Listener | 业务端口\n'
     printf '%s\n' '--- | --- | --- | --- | --- | --- | --- | --- | --- | ---'
     for id in $(sorted_profile_ids); do
         load_profile "$id" || { printf '%s | - | - | off | off | down | - | - | - | -\n' "$id"; continue; }
@@ -13241,39 +13266,39 @@ show_group() {
     done
     [[ "$found" -eq 1 ]] || die_user "线路组 ${group} 不存在或没有 Profile。"
 
-    printf '\nCurrent group nftables rules:\n'
+    printf '\n当前线路组 nftables 规则：\n'
     nft_text="$(nft_table_text 2>/dev/null || true)"
     if [[ -n "$nft_text" ]]; then
         current_rules="$(group_actual_nft_rules "$group" "$nft_text")"
         print_rule_list "$current_rules"
     else
-        printf '  - unavailable (no runtime table and no readable %s)\n' "$NFT_FILE"
+        printf '  - 不可用（无运行时表且无法读取 %s）\n' "$NFT_FILE"
     fi
 
-    printf '\nExpected group nftables rules from current Profiles:\n'
+    printf '\n期望的 nftables 规则（按当前 Profile）：\n'
     expected_rules="$(group_expected_nft_rules "$group")"
     print_rule_list "$expected_rules"
 
-    printf '\nLatest switch history:\n'
+    printf '\n最近切换记录：\n'
     history_line="$(last_switch_history_for_group "$group" || true)"
     if [[ -n "$history_line" ]]; then
         printf '  %s\n' "$history_line"
     else
-        printf '  none\n'
+        printf '  无\n'
     fi
 
-    printf '\nGroup advice:\n'
+    printf '\n线路组建议：\n'
     print_group_advice "$group"
-    printf '\nRecommended operations:\n'
-    printf '  health: bash install.sh health-report --group %s\n' "$group"
-    printf '  health: bash install.sh primary-backup-check %s\n' "$group"
+    printf '\n推荐操作：\n'
+    printf '  健康：bash install.sh health-report --group %s\n' "$group"
+    printf '  检查：bash install.sh primary-backup-check %s\n' "$group"
     if [[ -n "$recommended_target" ]]; then
-        printf '  dry-run: bash install.sh switch-dry-run %s %s\n' "$group" "$recommended_target"
-        printf '  switch: bash install.sh switch-line %s %s\n' "$group" "$recommended_target"
+        printf '  预演：bash install.sh switch-dry-run %s %s\n' "$group" "$recommended_target"
+        printf '  切换：bash install.sh switch-line %s %s\n' "$group" "$recommended_target"
     else
-        printf '  switch: add a backup Profile before switch-dry-run / switch-line\n'
+        printf '  切换：请先添加备线路后再 switch-dry-run / switch-line\n'
     fi
-    printf '  rollback: bash install.sh switch-rollback-last\n'
+    printf '  回滚：bash install.sh switch-rollback-last\n'
 }
 
 history_sanitize_field() {
@@ -14899,7 +14924,7 @@ doctor_all() {
             while IFS= read -r issue; do
                 [[ -n "$issue" ]] || continue
                 group_issue_total=$((group_issue_total + 1))
-                printf '[WARN] %s\n' "${issue%%:*}"
+                printf '[WARN] %s\n' "$(group_issue_label_zh "$issue")"
                 if [[ "$issue" == primary\ down\ but\ backup\ healthy:* ]]; then
                     backup_id="${issue#*:}"
                     printf '建议：bash install.sh switch-dry-run %s %s\n' "$group" "$backup_id"
@@ -16125,6 +16150,7 @@ NAT-IX 高级说明
   适合商家给了 NAT/IX 入口 IP:端口。
 
 历史配置：
+  panel-landing / panel-ingress 为旧 CNIX 面板流程（已 deprecated）。
   已存在配置仍尽量兼容；新部署只推荐 NAT IX listener 流程。
 
 端口命名：
