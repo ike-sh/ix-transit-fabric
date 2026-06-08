@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.2.0-alpha.28
+
+### Fixed
+
+- 菜单输入：统一剥离 `\r` 与首尾空白；空回车静默重显菜单，不再误报「未知选项」。
+- 清理 `wait_for_peer_or_route` / `show-easytier-status` 中重复的 `nat-ingress` case；按 `NAT_DIRECTION` 选择 peer 路由目标。
+
 ## 1.2.0-alpha.27
 
 ### Fixed

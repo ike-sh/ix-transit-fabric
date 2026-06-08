@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-SCRIPT_VERSION="1.2.0-alpha.27"
+SCRIPT_VERSION="1.2.0-alpha.28"
 APP_NAME="ix-transit-fabric"
 
 CONFIG_DIR="/etc/ix-transit-fabric"
@@ -592,6 +592,10 @@ trim_space() {
     value="${value#"${value%%[![:space:]]*}"}"
     value="${value%"${value##*[![:space:]]}"}"
     printf '%s\n' "$value"
+}
+
+normalize_menu_choice() {
+    trim_space "${1%$'\r'}"
 }
 
 split_mirrors() {
@@ -7882,7 +7886,10 @@ select_rule_from_menu() {
         print_rule_choice_list "$profile_id"
         printf '请输入序号 [0 返回 / 1-%s]：' "$count" >&2
         IFS= read -r choice || return 1
-        choice="$(trim_space "${choice%$'\r'}")"
+        choice="$(normalize_menu_choice "$choice")"
+        if [[ -z "$choice" ]]; then
+            continue
+        fi
         if [[ "$choice" == "0" ]]; then
             return 1
         fi
@@ -7930,7 +7937,10 @@ select_profile_for_rule_menu() {
     while true; do
         printf '请选择线路 [0 返回 / 1-%s]：' "$index" >&2
         IFS= read -r choice || return 1
-        choice="$(trim_space "${choice%$'\r'}")"
+        choice="$(normalize_menu_choice "$choice")"
+        if [[ -z "$choice" ]]; then
+            continue
+        fi
         if [[ "$choice" == "0" ]]; then
             return 1
         fi
@@ -7970,7 +7980,8 @@ EOF
     while true; do
         printf '请选择 [1-3]，默认 %s：' "$(proto_display_user "$default_proto")" >&2
         IFS= read -r choice || return 1
-        choice="${choice:-$default_choice}"
+        choice="$(normalize_menu_choice "$choice")"
+        [[ -z "$choice" ]] && choice="$default_choice"
         case "$choice" in
             1) printf 'both\n'; return 0 ;;
             2) printf 'tcp\n'; return 0 ;;
@@ -8080,6 +8091,8 @@ menu_edit_rule() {
 EOF
         printf '请选择：' >&2
         IFS= read -r choice || return 1
+        choice="$(normalize_menu_choice "$choice")"
+        [[ -z "$choice" ]] && continue
         case "$choice" in
             1)
                 RULE_NOTE="$(prompt_optional_text "请输入规则备注" "${RULE_NOTE:-}")" || return 1
@@ -8549,16 +8562,47 @@ wait_for_et_ip() {
     return 1
 }
 
+profile_peer_route_target() {
+    case "${ROLE:-}" in
+        nat-ingress)
+            if [[ "${NAT_DIRECTION:-ingress-listener}" == "nat-listener" ]]; then
+                printf '%s\n' "${NAT_ET_IP:-}"
+            else
+                printf '%s\n' "${LANDING_ET_IP:-}"
+            fi
+            ;;
+        nat-transit)
+            printf '%s\n' "${INGRESS_ET_IP:-}"
+            ;;
+        *)
+            printf '%s\n' "${NAT_ET_IP:-${INGRESS_ET_IP:-${LANDING_ET_IP:-}}}"
+            ;;
+    esac
+}
+
+profile_peer_route_label_zh() {
+    case "${ROLE:-}" in
+        nat-ingress)
+            if [[ "${NAT_DIRECTION:-ingress-listener}" == "nat-listener" ]]; then
+                printf '到 NAT IX 虚拟 IP 的路由/peer\n'
+            else
+                printf '到落地虚拟 IP 的路由/peer\n'
+            fi
+            ;;
+        nat-transit)
+            printf '到公网入口虚拟 IP 的路由/peer\n'
+            ;;
+        *)
+            printf '路由/peer\n'
+            ;;
+    esac
+}
+
 wait_for_peer_or_route() {
     local profile_id="${1:-}" max_wait="${2:-30}" interval="${3:-2}" elapsed=0 target_ip
     profile_id="$(resolve_profile_id "$profile_id")"
     load_profile_or_die "$profile_id"
-    case "${ROLE:-}" in
-        nat-ingress) target_ip="${LANDING_ET_IP:-}" ;;
-        nat-ingress) target_ip="${NAT_ET_IP:-}" ;;
-        nat-transit) target_ip="${INGRESS_ET_IP:-}" ;;
-        *) target_ip="${NAT_ET_IP:-${INGRESS_ET_IP:-${LANDING_ET_IP:-}}}" ;;
-    esac
+    target_ip="$(profile_peer_route_target)"
     [[ -n "$target_ip" ]] || return 0
     log_debug "等待 peer 路由 ${target_ip} 就绪（最多 ${max_wait}s）..."
     while [[ "$elapsed" -lt "$max_wait" ]]; do
@@ -9492,12 +9536,8 @@ show_easytier_status() {
     printf '\n'
     print_easytier_endpoint_summary
     printf '\n'
-    case "${ROLE:-}" in
-        nat-ingress) target_ip="${NAT_ET_IP:-}"; route_label="到 NAT IX 虚拟 IP 的路由/peer" ;;
-        nat-transit) target_ip="${INGRESS_ET_IP:-}"; route_label="到公网入口虚拟 IP 的路由/peer" ;;
-        nat-ingress) target_ip="${LANDING_ET_IP:-}"; route_label="到落地虚拟 IP 的路由/peer" ;;
-        *) target_ip=""; route_label="路由/peer" ;;
-    esac
+    target_ip="$(profile_peer_route_target)"
+    route_label="$(profile_peer_route_label_zh)"
     if [[ -n "$target_ip" ]] && command_exists ip; then
         if ip route get "$target_ip" >/dev/null 2>&1; then
             printf '%s：已确认（%s）\n' "$route_label" "$target_ip"
@@ -15290,7 +15330,9 @@ EOF
 }
 
 run_advanced_menu_action() {
-    local choice="$1"
+    local choice
+    choice="$(normalize_menu_choice "$1")"
+    [[ -z "$choice" ]] && return 0
     case "$choice" in
         1) list_profiles ;;
         2) show_profile_from_menu ;;
@@ -15334,6 +15376,8 @@ ix-transit-fabric 高级维护
 MENU
         printf '请选择：' >&2
         IFS= read -r choice || { printf '\n' >&2; return 0; }
+        choice="$(normalize_menu_choice "$choice")"
+        [[ -z "$choice" ]] && continue
 
         set +e
         trap - ERR
@@ -15364,9 +15408,12 @@ manage_profiles_menu() {
 MENU
     printf '请选择：' >&2
     IFS= read -r choice || return 0
+    choice="$(normalize_menu_choice "$choice")"
+    [[ -z "$choice" ]] && return 0
     [[ "$choice" == "0" ]] && return 0
     printf '请输入线路 ID：' >&2
     IFS= read -r profile_id || return 1
+    profile_id="$(normalize_menu_choice "$profile_id")"
     case "$choice" in
         1) enable_profile "$profile_id" ;;
         2) disable_profile "$profile_id" ;;
@@ -15387,10 +15434,12 @@ run_nat_mode_b_menu() {
 MENU
     printf '请选择：' >&2
     IFS= read -r choice || return 1
+    choice="$(normalize_menu_choice "$choice")"
+    [[ -z "$choice" ]] && return 0
     case "$choice" in
         1) add_nat_listener_profile ;;
         2) add_nat_ingress_from_listener_code ;;
-        3|0|"") return 0 ;;
+        3|0) return 0 ;;
         *) log_warn "未知选项，请重新选择。"; return 0 ;;
     esac
 }
@@ -15414,7 +15463,9 @@ EOF
 }
 
 run_nat_menu_action() {
-    local choice="$1" profile_id
+    local choice profile_id
+    choice="$(normalize_menu_choice "$1")"
+    [[ -z "$choice" ]] && return 0
     case "$choice" in
         1) add_nat_listener_profile ;;
         2) add_nat_ingress_from_listener_code ;;
@@ -15447,6 +15498,8 @@ NAT-IX 中转模式
 MENU
         printf '请选择：' >&2
         IFS= read -r choice || { printf '\n' >&2; return 0; }
+        choice="$(normalize_menu_choice "$choice")"
+        [[ -z "$choice" ]] && continue
 
         set +e
         trap - ERR
@@ -15465,7 +15518,9 @@ MENU
 }
 
 run_health_menu_action() {
-    local choice="$1" profile_id group target
+    local choice profile_id group target
+    choice="$(normalize_menu_choice "$1")"
+    [[ -z "$choice" ]] && return 0
     case "$choice" in
         1) health_report ;;
         2)
@@ -15513,7 +15568,9 @@ run_health_menu_action() {
 }
 
 run_monitor_menu_action() {
-    local choice="$1" profile_id group minutes
+    local choice profile_id group minutes
+    choice="$(normalize_menu_choice "$1")"
+    [[ -z "$choice" ]] && return 0
     case "$choice" in
         1) monitor_run_once ;;
         2) monitor_enable ;;
@@ -15572,6 +15629,8 @@ show_monitor_menu() {
 MENU
         printf '请选择：' >&2
         IFS= read -r choice || { printf '\n' >&2; return 0; }
+        choice="$(normalize_menu_choice "$choice")"
+        [[ -z "$choice" ]] && continue
 
         set +e
         trap - ERR
@@ -15612,6 +15671,8 @@ show_health_menu() {
 MENU
         printf '请选择：' >&2
         IFS= read -r choice || { printf '\n' >&2; return 0; }
+        choice="$(normalize_menu_choice "$choice")"
+        [[ -z "$choice" ]] && continue
 
         set +e
         trap - ERR
@@ -15630,7 +15691,9 @@ MENU
 }
 
 run_rule_menu_action() {
-    local choice="$1" profile_id="$2"
+    local choice profile_id="$2"
+    choice="$(normalize_menu_choice "$1")"
+    [[ -z "$choice" ]] && return 0
     case "$choice" in
         1) menu_add_rule "$profile_id" ;;
         2) menu_edit_rule "$profile_id" ;;
@@ -15669,6 +15732,8 @@ show_rule_menu() {
 MENU
         printf '请选择：' >&2
         IFS= read -r choice || { printf '\n' >&2; return 0; }
+        choice="$(normalize_menu_choice "$choice")"
+        [[ -z "$choice" ]] && continue
 
         if [[ "$choice" == "8" ]]; then
             if profile_id="$(select_profile_for_rule_menu)"; then
@@ -15694,7 +15759,9 @@ MENU
 }
 
 run_menu_action() {
-    local choice="$1" profile_id
+    local choice profile_id
+    choice="$(normalize_menu_choice "$1")"
+    [[ -z "$choice" ]] && return 0
     case "$choice" in
         1) add_nat_listener_profile ;;
         2) add_nat_ingress_from_listener_code ;;
@@ -15735,6 +15802,8 @@ ix-transit-fabric 管理菜单
 MENU
         printf '请选择：' >&2
         IFS= read -r choice || { printf '\n' >&2; return 0; }
+        choice="$(normalize_menu_choice "$choice")"
+        [[ -z "$choice" ]] && continue
 
         set +e
         trap - ERR
