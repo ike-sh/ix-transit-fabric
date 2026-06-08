@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.2.0-alpha.25
+
+### Added
+
+- 增加快捷命令 `ix` / `IX`（等价于 `bash install.sh --menu`）。
+- `--help` / README 补充作者 `ike` 与项目地址。
+
 ## 1.2.0-alpha.24
 
 ### Fixed

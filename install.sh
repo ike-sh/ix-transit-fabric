@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-SCRIPT_VERSION="1.2.0-alpha.24"
+SCRIPT_VERSION="1.2.0-alpha.25"
 APP_NAME="ix-transit-fabric"
 
 CONFIG_DIR="/etc/ix-transit-fabric"
@@ -262,11 +262,15 @@ return_or_exit() {
 usage() {
     cat <<'USAGE'
 ix-transit-fabric - NAT-IX + EasyTier + nftables 中转线路管理脚本
+作者：ike
+项目地址：https://github.com/ike-sh/ix-transit-fabric
 
 基础：
   bash install.sh --help
   bash install.sh --version
   bash install.sh --menu
+  bash install.sh ix
+  bash install.sh IX
   bash install.sh --debug install-easytier
 
 安装 / 更新：
@@ -15666,7 +15670,7 @@ main() {
         --version|version)
             printf '%s %s\n' "$APP_NAME" "$SCRIPT_VERSION"
             ;;
-        --menu|menu)
+        --menu|menu|ix|IX)
             show_menu
             ;;
         install-easytier)

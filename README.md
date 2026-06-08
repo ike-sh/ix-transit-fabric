@@ -1,6 +1,8 @@
 # ix-transit-fabric
 
-当前版本：`1.2.0-alpha.24`
+当前版本：`1.2.0-alpha.25`
+作者：`ike`  
+项目地址：[https://github.com/ike-sh/ix-transit-fabric](https://github.com/ike-sh/ix-transit-fabric)
 
 `ix-transit-fabric` 用于管理 NAT-IX 中转线路：公网入口机接收客户端连接，通过 EasyTier 连接 NAT IX 机器，NAT IX 机器再用 nftables 转发到落地机业务端口。
 
@@ -193,6 +195,7 @@ NAT IX 接入码 v4 使用 `code_schema=4`，每条 `rules` 规则包含独立 `
 
 ## alpha 注意事项
 
+- `1.2.0-alpha.25` 增加快捷命令 `ix` / `IX`（等价于 `--menu`）；补充作者与项目地址信息。
 - `1.2.0-alpha.24` 菜单优化：单线路自动选择；规则/线路选择 `0` 返回；Ctrl+C 友好取消。
 - `1.2.0-alpha.22` DDNS 增加 `ddns-enable` / `ddns-disable` 开关；菜单「高级维护 → 监控 / 通知 / DDNS」。
 - `1.2.0-alpha.21` 新增 DDNS：商家域名默认定时解析，IP 变化自动刷新 nftables / EasyTier。
