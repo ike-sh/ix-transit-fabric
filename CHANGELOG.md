@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.2.0-alpha.21
+
+### Added
+
+- **DDNS 默认定时刷新**：解析 `LANDING_HOST` / `NAT_PUBLIC_HOST` / `INGRESS_PUBLIC_HOST`，IP 变化时自动更新 profile、rules 与 nftables；商家/公网入口域名变化时重启 EasyTier。
+- 新增 `bash install.sh ddns-refresh`、`bash install.sh ddns-status`；`apply-nft-all` / `start-profile` 后自动启用 `ix-transit-ddns.timer`（默认 3 分钟）。
+- profile / rule env 缓存 `LANDING_IP`、`NAT_PUBLIC_IP`、`INGRESS_PUBLIC_IP`。
+
 ## 1.2.0-alpha.20
 
 ### Removed (breaking)

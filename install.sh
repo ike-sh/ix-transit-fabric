@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-SCRIPT_VERSION="1.2.0-alpha.20"
+SCRIPT_VERSION="1.2.0-alpha.21"
 APP_NAME="ix-transit-fabric"
 
 CONFIG_DIR="/etc/ix-transit-fabric"
@@ -21,6 +21,13 @@ MONITOR_SERVICE_FILE="/etc/systemd/system/${MONITOR_SERVICE_NAME}"
 MONITOR_TIMER_FILE="/etc/systemd/system/${MONITOR_TIMER_NAME}"
 MONITOR_INTERVAL_FILE="${STATE_DIR}/monitor-interval"
 MONITOR_LAST_RUN_FILE="${STATE_DIR}/monitor-last-run"
+DDNS_SERVICE_NAME="ix-transit-ddns.service"
+DDNS_TIMER_NAME="ix-transit-ddns.timer"
+DDNS_SERVICE_FILE="/etc/systemd/system/${DDNS_SERVICE_NAME}"
+DDNS_TIMER_FILE="/etc/systemd/system/${DDNS_TIMER_NAME}"
+DDNS_INTERVAL_FILE="${STATE_DIR}/ddns-interval"
+DDNS_LAST_RUN_FILE="${STATE_DIR}/ddns-last-run"
+DDNS_DEFAULT_INTERVAL_MINUTES=3
 BACKUP_DIR="/var/backups/ix-transit-fabric"
 SERVICE_NAME="ix-transit-easytier.service"
 SYSTEMD_SERVICE="/etc/systemd/system/${SERVICE_NAME}"
@@ -324,6 +331,8 @@ ix-transit-fabric - NAT-IX + EasyTier + nftables 中转线路管理脚本
   bash install.sh monitor-enable
   bash install.sh monitor-disable
   bash install.sh monitor-status
+  bash install.sh ddns-refresh
+  bash install.sh ddns-status
   bash install.sh notify-config
   bash install.sh notify-test
   bash install.sh notify-status
@@ -346,6 +355,7 @@ ix-transit-fabric - NAT-IX + EasyTier + nftables 中转线路管理脚本
 说明：
   - 无参数且当前是交互式 TTY 时进入菜单。
   - monitor / notify 只做检查和提醒，不会自动切换。
+  - DDNS 默认启用：商家域名 IP 变化时自动刷新 nftables / EasyTier（每 3 分钟）。
 	  - 普通菜单只展示 NAT IX listener 正式流程。
 	  - 历史配置仍尽量兼容，但新部署只推荐 NAT IX listener 流程。
 	  - show-port-map / verify-nft-profiles / traffic-report 支持 NAT-IX 线路。
@@ -1516,6 +1526,7 @@ save_rule_env() {
         printf 'TRANSIT_PORT=%s\n' "$TRANSIT_PORT"
         printf 'LANDING_HOST=%s\n' "$(quote_env_value "${LANDING_HOST:-}")"
         [[ -n "${LANDING_PORT:-}" ]] && printf 'LANDING_PORT=%s\n' "$LANDING_PORT"
+        [[ -n "${LANDING_IP:-}" ]] && printf 'LANDING_IP=%s\n' "$LANDING_IP"
         printf 'FORWARD_PROTO=%s\n' "${FORWARD_PROTO:-both}"
         printf 'CREATED_AT=%s\n' "$CREATED_AT"
         printf 'UPDATED_AT=%s\n' "$UPDATED_AT"
@@ -2978,7 +2989,7 @@ clear_config_vars() {
         INGRESS_LISTENER_PROTO INGRESS_LISTENER_PROTOS INGRESS_LISTENER_PORT TRANSIT_PORT \
         NAT_PUBLIC_HOST NAT_PUBLIC_PORTS NAT_PUBLIC_PORT_SPEC NAT_PUBLIC_PORT_MODE NAT_LISTENER_PROTO NAT_LISTENER_PROTOS NAT_LISTENER_PORT \
         REMOTE_NAT_PROFILE_ID REMOTE_NAT_PUBLIC_HOST \
-        LANDING_HOST LANDING_PORT LANDING_IP \
+        LANDING_HOST LANDING_PORT LANDING_IP NAT_PUBLIC_IP INGRESS_PUBLIC_IP \
         FORWARD_ENABLED LANDING_EASYTIER_VERSION CODE_EASYTIER_VERSION CODE_TUNNEL_PROTOS \
         CODE_LANDING_ET_CIDR CODE_SUGGESTED_INGRESS_ET_IP CODE_SUGGESTED_INGRESS_ET_CIDR \
         CODE_PROFILE_ID CODE_PROFILE_NAME CODE_SUGGESTED_INGRESS_PROFILE_ID CODE_LANDING_PUBLIC_HINT CODE_REMARK \
@@ -3021,7 +3032,7 @@ load_env_from_path() {
             INGRESS_LISTENER_PROTO|INGRESS_LISTENER_PROTOS|INGRESS_LISTENER_PORT|TRANSIT_PORT|\
             NAT_PUBLIC_HOST|NAT_PUBLIC_PORTS|NAT_PUBLIC_PORT_SPEC|NAT_PUBLIC_PORT_MODE|NAT_LISTENER_PROTO|NAT_LISTENER_PROTOS|NAT_LISTENER_PORT|\
             REMOTE_NAT_PROFILE_ID|REMOTE_NAT_PUBLIC_HOST|\
-            LANDING_HOST|LANDING_PORT|LANDING_IP|\
+            LANDING_HOST|LANDING_PORT|LANDING_IP|NAT_PUBLIC_IP|INGRESS_PUBLIC_IP|\
             SERVICE_PORT|CODE_LISTENER_PORT|FORWARD_ENABLED|LANDING_EASYTIER_VERSION|CODE_EASYTIER_VERSION|\
             CODE_TUNNEL_PROTOS|CODE_LANDING_ET_CIDR|CODE_SUGGESTED_INGRESS_ET_IP|CODE_SUGGESTED_INGRESS_ET_CIDR)
                 printf -v "$key" '%s' "$value"
@@ -3222,6 +3233,7 @@ save_profile_env() {
     PROFILE_ID="$profile_id"
     normalize_profile_compat_vars
     refresh_nat_public_endpoints_for_profile "$profile_id"
+    ddns_seed_profile_resolved_ips "$profile_id"
     nat_direction="${NAT_DIRECTION:-}"
     listener_proto="${ET_LISTENER_PROTO:-${LISTENER_PROTOS:-both}}"
     listener_port="${LISTENER_PORT:-${ET_LISTENER_PORT:-}}"
@@ -3267,9 +3279,11 @@ save_profile_env() {
                 printf 'NAT_ET_IP=%s\n' "$NAT_ET_IP"
                 [[ -n "${NAT_ET_CIDR:-}" ]] && printf 'NAT_ET_CIDR=%s\n' "$NAT_ET_CIDR"
                 [[ -n "${INGRESS_PUBLIC_HOST:-}" ]] && printf 'INGRESS_PUBLIC_HOST=%s\n' "$(quote_env_value "$INGRESS_PUBLIC_HOST")"
+                [[ -n "${INGRESS_PUBLIC_IP:-}" ]] && printf 'INGRESS_PUBLIC_IP=%s\n' "$INGRESS_PUBLIC_IP"
                 printf 'INGRESS_HOSTNAME=%s\n' "$(quote_env_value "${INGRESS_HOSTNAME:-$ET_HOSTNAME}")"
                 if [[ "$nat_direction" == "nat-listener" ]]; then
                     printf 'NAT_PUBLIC_HOST=%s\n' "$(quote_env_value "$NAT_PUBLIC_HOST")"
+                    [[ -n "${NAT_PUBLIC_IP:-}" ]] && printf 'NAT_PUBLIC_IP=%s\n' "$NAT_PUBLIC_IP"
                     printf 'NAT_PUBLIC_PORTS=%s\n' "$(quote_env_value "${NAT_PUBLIC_PORTS:-${NAT_LISTENER_PORT:-}}")"
                     [[ -n "${NAT_PUBLIC_PORT_SPEC:-}" ]] && printf 'NAT_PUBLIC_PORT_SPEC=%s\n' "$(quote_env_value "$NAT_PUBLIC_PORT_SPEC")"
                     printf 'NAT_PUBLIC_PORT_MODE=%s\n' "${NAT_PUBLIC_PORT_MODE:-single}"
@@ -3305,7 +3319,9 @@ save_profile_env() {
                 [[ -n "${INGRESS_HOSTNAME:-}" ]] && printf 'INGRESS_HOSTNAME=%s\n' "$(quote_env_value "$INGRESS_HOSTNAME")"
                 if [[ "$nat_direction" == "nat-listener" ]]; then
                     [[ -n "${INGRESS_PUBLIC_HOST:-}" ]] && printf 'INGRESS_PUBLIC_HOST=%s\n' "$(quote_env_value "$INGRESS_PUBLIC_HOST")"
+                    [[ -n "${INGRESS_PUBLIC_IP:-}" ]] && printf 'INGRESS_PUBLIC_IP=%s\n' "$INGRESS_PUBLIC_IP"
                     printf 'NAT_PUBLIC_HOST=%s\n' "$(quote_env_value "$NAT_PUBLIC_HOST")"
+                    [[ -n "${NAT_PUBLIC_IP:-}" ]] && printf 'NAT_PUBLIC_IP=%s\n' "$NAT_PUBLIC_IP"
                     printf 'NAT_PUBLIC_PORTS=%s\n' "$(quote_env_value "${NAT_PUBLIC_PORTS:-${NAT_LISTENER_PORT:-}}")"
                     [[ -n "${NAT_PUBLIC_PORT_SPEC:-}" ]] && printf 'NAT_PUBLIC_PORT_SPEC=%s\n' "$(quote_env_value "$NAT_PUBLIC_PORT_SPEC")"
                     printf 'NAT_PUBLIC_PORT_MODE=%s\n' "${NAT_PUBLIC_PORT_MODE:-single}"
@@ -3319,6 +3335,7 @@ save_profile_env() {
                     printf 'ET_NO_LISTENER=%s\n' "${ET_NO_LISTENER:-false}"
                 else
                     printf 'INGRESS_PUBLIC_HOST=%s\n' "$(quote_env_value "$INGRESS_PUBLIC_HOST")"
+                    [[ -n "${INGRESS_PUBLIC_IP:-}" ]] && printf 'INGRESS_PUBLIC_IP=%s\n' "$INGRESS_PUBLIC_IP"
                     printf 'INGRESS_LISTENER_PROTO=%s\n' "$INGRESS_LISTENER_PROTO"
                     printf 'INGRESS_LISTENER_PROTOS=%s\n' "$(quote_env_value "${INGRESS_LISTENER_PROTOS:-$(normalize_listener_protos "$INGRESS_LISTENER_PROTO" "both")}")"
                     printf 'INGRESS_LISTENER_PORT=%s\n' "$INGRESS_LISTENER_PORT"
@@ -4260,8 +4277,25 @@ landing_ip_for_nft() {
         printf '%s\n' "$host"
         return 0
     fi
+    resolved="$(resolve_host_ipv4 "$host" 2>/dev/null || true)"
+    if [[ -n "$resolved" ]]; then
+        printf '%s\n' "$resolved"
+        return 0
+    fi
     if [[ -n "${LANDING_IP:-}" ]] && validate_ipv4 "$LANDING_IP"; then
         printf '%s\n' "$LANDING_IP"
+        return 0
+    fi
+    log_warn "LANDING_HOST 域名解析失败：${host}，已中止应用 nftables。"
+    return 1
+}
+
+resolve_host_ipv4() {
+    local host="$1" resolved
+    host="$(trim_space "$host")"
+    [[ -n "$host" ]] || return 1
+    if validate_ipv4 "$host"; then
+        printf '%s\n' "$host"
         return 0
     fi
     if command_exists getent; then
@@ -4271,8 +4305,162 @@ landing_ip_for_nft() {
             return 0
         fi
     fi
-    log_warn "LANDING_HOST 域名解析失败：${host}，已中止应用 nftables。"
     return 1
+}
+
+host_is_domain() {
+    local host="$1"
+    [[ -n "$host" ]] || return 1
+    validate_ipv4 "$host" && return 1
+    validate_host "$host"
+}
+
+ddns_try_update_host_ip() {
+    local host_var="$1" ip_var="$2" host old_ip new_ip
+    host="${!host_var:-}"
+    host_is_domain "$host" || return 1
+    old_ip="${!ip_var:-}"
+    new_ip="$(resolve_host_ipv4 "$host")" || return 1
+    [[ "$new_ip" != "$old_ip" ]] || return 1
+    printf -v "$ip_var" '%s' "$new_ip"
+    return 0
+}
+
+ddns_seed_profile_resolved_ips() {
+    local profile_id="${1:-${PROFILE_ID:-}}" rule_id
+    ddns_try_update_host_ip LANDING_HOST LANDING_IP || true
+    ddns_try_update_host_ip NAT_PUBLIC_HOST NAT_PUBLIC_IP || true
+    ddns_try_update_host_ip INGRESS_PUBLIC_HOST INGRESS_PUBLIC_IP || true
+    if profile_supports_forward_rules; then
+        for rule_id in $(profile_rule_ids "$profile_id"); do
+            load_rule "$profile_id" "$rule_id" || continue
+            if ddns_try_update_host_ip LANDING_HOST LANDING_IP; then
+                save_rule_env "$profile_id" "$rule_id" || true
+            fi
+        done
+    fi
+}
+
+ddns_refresh_profile() {
+    local profile_id="$1" changed=0 need_restart=0 rule_id
+    profile_id="$(resolve_profile_id "$profile_id")"
+    load_profile "$profile_id" || return 1
+    [[ "${ENABLED:-true}" == "true" ]] || return 0
+    normalize_profile_compat_vars
+
+    if ddns_try_update_host_ip LANDING_HOST LANDING_IP; then changed=1; fi
+    if ddns_try_update_host_ip NAT_PUBLIC_HOST NAT_PUBLIC_IP; then changed=1; need_restart=1; fi
+    if ddns_try_update_host_ip INGRESS_PUBLIC_HOST INGRESS_PUBLIC_IP; then changed=1; need_restart=1; fi
+
+    if profile_supports_forward_rules; then
+        for rule_id in $(profile_rule_ids "$profile_id"); do
+            load_rule "$profile_id" "$rule_id" || continue
+            [[ "${RULE_ENABLED:-true}" == "true" ]] || continue
+            if ddns_try_update_host_ip LANDING_HOST LANDING_IP; then
+                save_rule_env "$profile_id" "$rule_id" || return 1
+                changed=1
+            fi
+        done
+    fi
+
+    [[ "$changed" -eq 1 ]] || return 1
+    save_profile_env "$profile_id"
+    if [[ "${FORWARD_ENABLED:-true}" == "true" ]]; then
+        apply_nft_all || log_warn "DDNS：nftables 重载失败，请运行 bash install.sh apply-nft-all"
+    fi
+    if [[ "$need_restart" -eq 1 ]] && command_exists systemctl; then
+        restart_profile "$profile_id" || log_warn "DDNS：EasyTier 重启失败，请运行 bash install.sh restart-profile ${profile_id}"
+    fi
+    log_ok "DDNS 已更新线路 ${profile_id} 的域名解析。"
+    return 0
+}
+
+ddns_refresh_all() {
+    require_root "$@"
+    local id updated=0
+    ensure_profile_dirs
+    for id in $(profile_ids); do
+        if ddns_refresh_profile "$id"; then
+            updated=$((updated + 1))
+        fi
+    done
+    date -u +%Y-%m-%dT%H:%M:%SZ >"$DDNS_LAST_RUN_FILE" 2>/dev/null || true
+    chmod 600 "$DDNS_LAST_RUN_FILE" 2>/dev/null || true
+    if [[ "$updated" -eq 0 ]]; then
+        log_debug "DDNS：所有域名解析未变化。"
+    fi
+}
+
+ddns_interval_minutes() {
+    if [[ -r "$DDNS_INTERVAL_FILE" ]]; then
+        awk 'NR==1 && $1 ~ /^[0-9]+$/ {print $1; found=1} END{if (!found) print '"$DDNS_DEFAULT_INTERVAL_MINUTES"'}' "$DDNS_INTERVAL_FILE"
+    else
+        printf '%s\n' "$DDNS_DEFAULT_INTERVAL_MINUTES"
+    fi
+}
+
+render_ddns_systemd_files() {
+    local interval script_path tmp_service tmp_timer
+    ensure_profile_dirs
+    install -d -m 700 "$STATE_DIR"
+    interval="$(ddns_interval_minutes)"
+    script_path="$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || printf '%s' "${BASH_SOURCE[0]}")"
+    tmp_service="$(make_tmp_file "ix-transit-ddns.service")"
+    tmp_timer="$(make_tmp_file "ix-transit-ddns.timer")"
+    {
+        printf '[Unit]\n'
+        printf 'Description=ix-transit-fabric DDNS refresh\n\n'
+        printf '[Service]\n'
+        printf 'Type=oneshot\n'
+        printf 'ExecStart=/bin/bash %s ddns-refresh\n' "$script_path"
+    } >"$tmp_service"
+    {
+        printf '[Unit]\n'
+        printf 'Description=ix-transit-fabric DDNS timer\n\n'
+        printf '[Timer]\n'
+        printf 'OnBootSec=90s\n'
+        printf 'OnUnitActiveSec=%smin\n' "$interval"
+        printf 'AccuracySec=30s\n'
+        printf 'Persistent=true\n\n'
+        printf '[Install]\n'
+        printf 'WantedBy=timers.target\n'
+    } >"$tmp_timer"
+    install -m 0644 "$tmp_service" "$DDNS_SERVICE_FILE"
+    install -m 0644 "$tmp_timer" "$DDNS_TIMER_FILE"
+    rm -f -- "$tmp_service" "$tmp_timer"
+}
+
+ensure_ddns_timer_enabled() {
+    command_exists systemctl || return 0
+    [[ -d "$PROFILES_DIR" && "$(profile_count)" != "0" ]] || return 0
+    render_ddns_systemd_files
+    systemctl daemon-reload >/dev/null 2>&1 || true
+    systemctl enable --now "$DDNS_TIMER_NAME" >/dev/null 2>&1 || true
+}
+
+ddns_status() {
+    require_root "$@"
+    local enabled active next_run last_run interval
+    interval="$(ddns_interval_minutes)"
+    if command_exists systemctl; then
+        enabled="$(systemctl is-enabled "$DDNS_TIMER_NAME" 2>/dev/null || printf disabled)"
+        active="$(systemctl is-active "$DDNS_TIMER_NAME" 2>/dev/null || printf inactive)"
+        next_run="$(systemctl list-timers "$DDNS_TIMER_NAME" --no-pager --no-legend 2>/dev/null | awk '{print $1" "$2" "$3" "$4; exit}')"
+    else
+        enabled="systemctl-unavailable"
+        active="systemctl-unavailable"
+        next_run="-"
+    fi
+    last_run="$(cat "$DDNS_LAST_RUN_FILE" 2>/dev/null || printf '从未运行')"
+    printf 'DDNS 定时刷新：默认启用（商家域名解析）\n'
+    printf '刷新间隔：%s 分钟\n' "$interval"
+    printf 'timer 状态：%s / %s\n' "$enabled" "$active"
+    printf '下次运行：%s\n' "${next_run:-未知}"
+    printf '上次运行：%s\n' "$last_run"
+}
+
+ddns_run_once() {
+    ddns_refresh_all "$@"
 }
 
 profile_nft_target() {
@@ -4664,6 +4852,20 @@ self_check_monitor_timer_status() {
         return 0
     fi
     enabled="$(normalize_systemctl_word "$(systemctl is-enabled "$MONITOR_TIMER_NAME" 2>/dev/null || true)")"
+    case "$enabled" in
+        enabled) printf '已启用' ;;
+        disabled) printf '未启用' ;;
+        *) printf '未安装' ;;
+    esac
+}
+
+self_check_ddns_timer_status() {
+    local enabled
+    if ! command_exists systemctl; then
+        printf '未安装'
+        return 0
+    fi
+    enabled="$(normalize_systemctl_word "$(systemctl is-enabled "$DDNS_TIMER_NAME" 2>/dev/null || true)")"
     case "$enabled" in
         enabled) printf '已启用' ;;
         disabled) printf '未启用' ;;
@@ -5114,6 +5316,7 @@ apply_nft_all() {
     nft delete table ip "$NFT_TABLE" >/dev/null 2>&1 || true
     if nft -f "$NFT_FILE"; then
         log_debug "已应用全部线路的 nftables 项目表。"
+        ensure_ddns_timer_enabled
         return 0
     fi
     log_error "应用全部 nftables 规则失败，正在回滚。"
@@ -8208,6 +8411,7 @@ start_profile() {
     systemctl daemon-reload >/dev/null 2>&1
     systemctl enable --now "$service" >/dev/null 2>&1
     wait_for_easytier_ready "$profile_id" 30 || true
+    ensure_ddns_timer_enabled
     log_debug "已启动 Profile 服务：${service}"
 }
 
@@ -13379,6 +13583,7 @@ self_check() {
     fi
     self_check_line INFO "危险命令扫描" "请在仓库中运行：bash tests/smoke.sh"
     self_check_line INFO "监控定时器" "$(self_check_monitor_timer_status)"
+    self_check_line INFO "DDNS 定时器" "$(self_check_ddns_timer_status)"
     load_notify_config
     self_check_line INFO "通知" "启用=${NOTIFY_ENABLED:-false} 提供方=${NOTIFY_PROVIDER:-telegram}"
     [[ -e "$SWITCH_HISTORY_FILE" ]] && switch_size="$(wc -c <"$SWITCH_HISTORY_FILE" 2>/dev/null || printf 0)"
@@ -14573,7 +14778,7 @@ $(format_rules_for_port_map "${PROFILE_ID:-default}")
 注意：
   NAT IX 机器不需要安装代理服务，只做 nftables 中转。
   虚拟网中转端口只在 EasyTier 虚拟网内部使用，不是公网端口，不是商家入口端口。
-  落地机地址如果是域名，应用 nftables 时会解析为 LANDING_IP；域名 IP 变化后请重新运行 apply-nft-all 或更新 Profile。
+  落地机地址如果是域名，应用 nftables 时会解析为 LANDING_IP；DDNS 默认定时刷新域名解析（bash install.sh ddns-status 查看状态）。
 EOF
         return 0
     fi
@@ -14741,8 +14946,8 @@ uninstall() {
     local remove_et answer
 
     if command_exists systemctl; then
-        systemctl stop "$MONITOR_TIMER_NAME" "$MONITOR_SERVICE_NAME" >/dev/null 2>&1 || true
-        systemctl disable "$MONITOR_TIMER_NAME" >/dev/null 2>&1 || true
+        systemctl stop "$DDNS_TIMER_NAME" "$DDNS_SERVICE_NAME" "$MONITOR_TIMER_NAME" "$MONITOR_SERVICE_NAME" >/dev/null 2>&1 || true
+        systemctl disable "$DDNS_TIMER_NAME" "$MONITOR_TIMER_NAME" >/dev/null 2>&1 || true
         stop_disable_profile_services
         systemctl stop "$SERVICE_NAME" >/dev/null 2>&1 || true
         cleanup_own_service_processes
@@ -14753,7 +14958,7 @@ uninstall() {
     fi
 
     delete_nft_runtime_and_file
-    rm -f -- "$SYSTEMD_SERVICE" "$PROFILE_SERVICE_TEMPLATE" "$MONITOR_SERVICE_FILE" "$MONITOR_TIMER_FILE" "$ENV_FILE" "$LANDING_CODE_FILE" "$WRAPPER_FILE"
+    rm -f -- "$SYSTEMD_SERVICE" "$PROFILE_SERVICE_TEMPLATE" "$DDNS_SERVICE_FILE" "$DDNS_TIMER_FILE" "$MONITOR_SERVICE_FILE" "$MONITOR_TIMER_FILE" "$ENV_FILE" "$LANDING_CODE_FILE" "$WRAPPER_FILE"
     rm -f -- "$SYSCTL_FILE"
     log_ok "已删除项目 service、wrapper、配置、接入码和 sysctl 文件（如果存在）。"
 
@@ -15540,6 +15745,12 @@ main() {
             ;;
         monitor-status)
             monitor_status
+            ;;
+        ddns-refresh)
+            ddns_run_once
+            ;;
+        ddns-status)
+            ddns_status
             ;;
         monitor-logs)
             monitor_logs

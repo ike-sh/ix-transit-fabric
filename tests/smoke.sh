@@ -13,8 +13,8 @@ bash -n install.sh
 bash -n tests/smoke.sh
 
 version_output="$(bash install.sh --version)"
-[[ "$version_output" == "ix-transit-fabric 1.2.0-alpha.20" ]]
-[[ "$(tr -d '\r\n' < VERSION)" == "1.2.0-alpha.20" ]]
+[[ "$version_output" == "ix-transit-fabric 1.2.0-alpha.21" ]]
+[[ "$(tr -d '\r\n' < VERSION)" == "1.2.0-alpha.21" ]]
 bash install.sh --help >/dev/null
 help_no_color="$(IXTF_COLOR=never bash install.sh --help)"
 ! grep -q $'\033' <<<"$help_no_color"
@@ -116,7 +116,12 @@ for token in \
     "新增规则 ID" \
     "更新规则 ID" \
     "NAT IX 侧 listener 已更新" \
-    "prompt_refresh_access_code_after_rule_change"; do
+    "prompt_refresh_access_code_after_rule_change" \
+    "ddns-refresh" \
+    "ddns-status" \
+    "DDNS 定时刷新" \
+    "ensure_ddns_timer_enabled" \
+    "ix-transit-ddns.timer"; do
     grep -q -- "$token" install.sh
 done
 
@@ -130,7 +135,9 @@ for token in \
     "转发规则管理" \
     "alpha 注意事项" \
     "公网入口机侧指定" \
-    "1.2.0-alpha.20" \
+    "1.2.0-alpha.21" \
+    "DDNS" \
+    "ddns-status" \
     "IXTF_COLOR=never"; do
     grep -q -- "$token" README.md
 done
@@ -673,6 +680,24 @@ trap cleanup_unit_tmp EXIT
     set -e
     [[ "$transit_conflict_rc" -ne 0 ]]
     grep -q '端口 41000 已被线路 nat-a 的规则 rule-main' <<<"$transit_conflict_output"
+
+    resolve_host_ipv4() {
+        case "$1" in
+            landing-ddns.example) printf '%s\n' '203.0.113.10' ;;
+            landing-ddns-new.example) printf '%s\n' '203.0.113.20' ;;
+            *) return 1 ;;
+        esac
+    }
+    LANDING_HOST=landing-ddns.example
+    LANDING_IP=
+    ddns_try_update_host_ip LANDING_HOST LANDING_IP
+    [[ "$LANDING_IP" == '203.0.113.10' ]]
+    LANDING_HOST=landing-ddns-new.example
+    ddns_try_update_host_ip LANDING_HOST LANDING_IP
+    [[ "$LANDING_IP" == '203.0.113.20' ]]
+    LANDING_HOST=landing-ddns-new.example
+    ddns_try_update_host_ip LANDING_HOST LANDING_IP
+    [[ "$LANDING_IP" == '203.0.113.20' ]]
 )
 
 echo "smoke ok"

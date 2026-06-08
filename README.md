@@ -1,6 +1,6 @@
 # ix-transit-fabric
 
-当前版本：`1.2.0-alpha.20`
+当前版本：`1.2.0-alpha.21`
 
 `ix-transit-fabric` 用于管理 NAT-IX 中转线路：公网入口机接收客户端连接，通过 EasyTier 连接 NAT IX 机器，NAT IX 机器再用 nftables 转发到落地机业务端口。
 
@@ -130,6 +130,20 @@ bash install.sh apply-rules 线路ID
 
 如果导入后出现规则数不一致或转发未生效，可运行 `bash install.sh export-diagnostic` 导出脱敏诊断。
 
+## DDNS（商家域名自动解析）
+
+商家有时只提供域名、不提供固定 IP。脚本**默认启用 DDNS**：定时解析 `LANDING_HOST`、`NAT_PUBLIC_HOST`、`INGRESS_PUBLIC_HOST`，IP 变化时自动更新 nftables 规则；商家入口或公网入口域名变化时还会重启对应 EasyTier 服务。
+
+- 默认刷新间隔：3 分钟（首次应用 nftables 或启动线路后自动启用 systemd timer）
+- 无需额外配置；安装线路并 `apply-nft-all` 后即生效
+
+```bash
+bash install.sh ddns-status    # 查看 timer 状态与上次刷新时间
+bash install.sh ddns-refresh   # 立即刷新一次（root）
+```
+
+解析结果会缓存到 profile / rule env 的 `LANDING_IP`、`NAT_PUBLIC_IP`、`INGRESS_PUBLIC_IP`，解析失败时 nftables 可回退到上次成功 IP。
+
 ## EasyTier 组网协议
 
 创建 NAT IX 中转线路时可以选择 EasyTier 组网协议：
@@ -175,6 +189,7 @@ NAT IX 接入码 v4 使用 `code_schema=4`，每条 `rules` 规则包含独立 `
 
 ## alpha 注意事项
 
+- `1.2.0-alpha.21` 新增 DDNS：商家域名默认定时解析，IP 变化自动刷新 nftables / EasyTier。
 - `1.2.0-alpha.20` 彻底移除 panel 兼容：加载 panel profile 直接报错；删除 panel 接入码/CLI/legacy 示例；仅保留 NAT IX。
 - `1.2.0-alpha.19` 运行时 panel→nat 映射（已被 alpha.20 取代）。
 - `1.2.0-alpha.18` 移除 panel-landing / panel-ingress 新建入口与 README 兼容说明；仅保留 NAT IX 正式流程。
