@@ -13833,7 +13833,7 @@ self_check() {
     else
         self_check_line INFO "nftables 项目表" "未找到或 nft 不可用"
     fi
-    self_check_line INFO "危险命令扫描" "请在仓库中运行：bash tests/smoke.sh"
+    self_check_line INFO "危险命令扫描" "生产环境请使用 export-diagnostic 导出脱敏报告"
     self_check_line INFO "监控定时器" "$(self_check_monitor_timer_status)"
     self_check_line INFO "DDNS 定时器" "$(self_check_ddns_timer_status)"
     load_notify_config
