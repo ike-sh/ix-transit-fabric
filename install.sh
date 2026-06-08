@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-SCRIPT_VERSION="1.2.0-alpha.16"
+SCRIPT_VERSION="1.2.0-alpha.17"
 APP_NAME="ix-transit-fabric"
 
 CONFIG_DIR="/etc/ix-transit-fabric"
@@ -12455,7 +12455,7 @@ print_group_advice() {
 list_groups() {
     require_root "$@"
     local group id count primary_count forwarding_count
-    printf 'GROUP\tPROFILES\tPRIMARY\tFORWARDING\n'
+    printf 'GROUP\t线路数\t主线路\t转发中\n'
     while IFS= read -r group; do
         [[ -n "$group" ]] || continue
         count=0
@@ -12470,84 +12470,6 @@ list_groups() {
         done
         printf '%s\t%s\t%s\t%s\n' "$group" "$count" "$primary_count" "$forwarding_count"
     done < <(profile_groups)
-}
-
-show_group() {
-    require_root "$@"
-    local group="${1:-}" id forwarding primary backups enabled_label forward_label cnix listener remote_port found=0
-    local hot_count=0 cold_count=0 history_line history_display recommended_target=""
-    [[ -n "$group" ]] || die_user "用法：show-group GROUP"
-    if ! group_exists "$group"; then
-        printf '[ERROR] 线路组 %s 不存在。\n' "$group"
-        printf '已有 group：%s\n' "$(list_existing_groups_for_message)"
-        return 1
-    fi
-    forwarding="$(list_group_forwarding_profiles "$group" | join_profile_list)"
-    primary="$(list_group_primary_profiles "$group" | join_profile_list)"
-    backups="$(list_group_backup_profiles "$group" | join_profile_list)"
-    printf 'GROUP: %s\n' "$group"
-    printf 'CURRENT FORWARDING PROFILE: %s\n' "$forwarding"
-    printf 'PRIMARY PROFILE: %s\n' "$primary"
-    printf 'BACKUP PROFILES: %s\n' "$backups"
-    for id in $(list_group_backup_profiles "$group"); do
-        load_profile "$id" >/dev/null 2>&1 || continue
-        if [[ "${ENABLED:-true}" == "true" && "${FORWARD_ENABLED:-true}" == "false" ]]; then
-            hot_count=$((hot_count + 1))
-        elif [[ "${ENABLED:-true}" == "false" ]]; then
-            cold_count=$((cold_count + 1))
-        fi
-    done
-    printf 'HOT STANDBY COUNT: %s\n' "$hot_count"
-    printf 'COLD STANDBY COUNT: %s\n' "$cold_count"
-    printf '\nPROFILE_ID | LINE_ROLE | PRIORITY | ENABLED | FORWARD | HEALTH | LOCAL_PORT | CNIX_ENTRY | LISTENER_PORT | REMOTE_PORT\n'
-    printf '%s\n' '--- | --- | --- | --- | --- | --- | --- | --- | --- | ---'
-    for id in $(sorted_profile_ids); do
-        load_profile "$id" || { printf '%s | - | - | off | off | down | - | - | - | -\n' "$id"; continue; }
-        [[ "${LINE_GROUP:-}" == "$group" ]] || continue
-        found=1
-        enabled_label="$(enabled_display "${ENABLED:-true}")"
-        forward_label="$(forward_display "${ROLE:-}" "${ENABLED:-true}" "${FORWARD_ENABLED:-true}")"
-        if [[ -n "${CNIX_ENTRY_HOST:-}" && -n "${CNIX_ENTRY_PORT:-}" ]]; then
-            cnix="${CNIX_ENTRY_HOST}:${CNIX_ENTRY_PORT}"
-        else
-            cnix="-"
-        fi
-        listener="${ET_LISTENER_PORT:-${LISTENER_PORT:-}}"
-        remote_port="${REMOTE_PORT:-${SERVICE_PORT:-}}"
-        printf '%s | %s | %s | %s | %s | %s | %s | %s | %s | %s\n' \
-            "$id" "${LINE_ROLE:-standalone}" "${LINE_PRIORITY:-100}" "$enabled_label" "$forward_label" \
-            "${HEALTH_STATUS:-unknown}" "${LOCAL_PORT:-}" "$cnix" "${listener:-}" "${remote_port:-}"
-    done
-    [[ "$found" -eq 1 ]] || die_user "线路组 ${group} 不存在或没有 Profile。"
-
-    printf '\nPort mapping summary:\n'
-    for id in $(list_group_ingress_profiles "$group"); do
-        load_profile "$id" >/dev/null 2>&1 || continue
-        printf '  %s: %s\n' "$id" "$(profile_four_port_summary)"
-    done
-
-    printf '\nLatest switch history:\n'
-    history_line="$(last_switch_history_for_group "$group" || true)"
-    if [[ -n "$history_line" ]]; then
-        printf '  %s\n' "$history_line"
-    else
-        printf '  none\n'
-    fi
-
-    printf '\n组状态建议：\n'
-    print_group_advice "$group"
-    recommended_target="$(first_healthy_backup_in_group "$group" || true)"
-    [[ -n "$recommended_target" ]] || recommended_target="$(list_group_backup_profiles "$group" | awk 'NF{print; exit}')"
-    printf '\nRecommended commands:\n'
-    printf '  bash install.sh health-all\n'
-    printf '  bash install.sh health-report --group %s\n' "$group"
-    printf '  bash install.sh validate-primary-backup %s\n' "$group"
-    if [[ -n "$recommended_target" ]]; then
-        printf '  bash install.sh switch-dry-run %s %s\n' "$group" "$recommended_target"
-        printf '  bash install.sh switch-line %s %s\n' "$group" "$recommended_target"
-    else
-        printf '  # add a backup Profile before switch-dry-run / switch-line\n'
-    fi
 }
 
 set_line_group() {
@@ -12896,7 +12818,7 @@ health_report() {
     fi
 
     printf '%-18s %-14s %-8s %-10s %-5s %-3s %-7s %-8s %-15s %-8s %-8s %s\n' \
-        "PROFILE" "GROUP" "ROLE" "LINE" "PRI" "EN" "FWD" "SVC" "IP" "NFT" "HEALTH" "REASON"
+        "线路ID" "线路组" "角色" "主备" "优先级" "启用" "转发" "服务" "IP" "NFT" "健康" "原因"
     printf '%-18s %-14s %-8s %-10s %-5s %-3s %-7s %-8s %-15s %-8s %-8s %s\n' \
         "------------------" "--------------" "--------" "----------" "-----" "---" "-------" "--------" "---------------" "--------" "--------" "------"
 
@@ -12904,7 +12826,7 @@ health_report() {
         if ! load_profile "$id"; then
             [[ -z "$group_filter" ]] || continue
             printf '%-18s %-14s %-8s %-10s %-5s %-3s %-7s %-8s %-15s %-8s %-8s %s\n' \
-                "$id" "-" "-" "-" "-" "off" "off" "unknown" "-" "unknown" "down" "cannot read Profile"
+                "$id" "-" "-" "-" "-" "off" "off" "unknown" "-" "unknown" "down" "无法读取线路"
             total=$((total + 1))
             down=$((down + 1))
             continue
@@ -13202,8 +13124,8 @@ switch_dry_run() {
     if [[ "$enabled_state" != "true" ]]; then
         printf '[WARN] 目标线路为冷备（ENABLED=false），正式 switch-line 前请先 enable-profile。\n'
     fi
-    printf '\nDry-run guarantee: 本命令不修改配置、不重启服务、不应用 nftables。\n'
-    printf 'Dry-run guarantee: no Profile files were written, apply-nft-all was not executed, LAST_SWITCH_AT and SWITCH_NOTE were not changed.\n'
+    printf '\n预演说明：本命令不修改配置、不重启服务、不应用 nftables。\n'
+    printf '预演说明：不会写入 Profile 文件、不会执行 apply-nft-all、不会更新 LAST_SWITCH_AT / SWITCH_NOTE。\n'
 }
 
 show_group() {

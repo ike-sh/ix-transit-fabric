@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.2.0-alpha.17
+
+### Fixed
+
+- 删除重复定义的 `show_group()`（旧英文版），仅保留完整中文版实现。
+
+### Changed
+
+- `health-report` 明细表头改为中文。
+- `list-groups` 表头改为中文。
+- `switch-dry-run` 预演保证说明改为中文。
+
 ## 1.2.0-alpha.16
 
 ### Changed
