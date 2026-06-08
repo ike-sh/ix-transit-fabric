@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-SCRIPT_VERSION="1.2.0-alpha.8"
+SCRIPT_VERSION="1.2.0-alpha.9"
 APP_NAME="ix-transit-fabric"
 
 CONFIG_DIR="/etc/ix-transit-fabric"
@@ -2178,6 +2178,84 @@ nat_public_port_mode_for_input() {
     fi
 }
 
+code_rules_nat_public_ports_csv() {
+    local line rule_id note enabled nat_public_port transit_port landing_host landing_port forward_proto seen=" " out=()
+    while IFS=$'\t' read -r rule_id note enabled nat_public_port transit_port landing_host landing_port forward_proto || [[ -n "${rule_id:-}" ]]; do
+        [[ -n "${rule_id:-}" ]] || continue
+        [[ "${enabled:-true}" == "true" ]] || continue
+        [[ -n "${nat_public_port:-}" ]] || continue
+        if [[ "$seen" != *" ${nat_public_port} "* ]]; then
+            seen="${seen}${nat_public_port} "
+            out+=("$nat_public_port")
+        fi
+    done <<<"${CODE_RULES_TSV:-}"
+    [[ "${#out[@]}" -gt 0 ]] || return 1
+    (IFS=','; printf '%s\n' "${out[*]}")
+}
+
+nat_public_port_spec_for_code() {
+    if [[ -n "${NAT_PUBLIC_PORT_SPEC:-}" ]]; then
+        printf '%s\n' "$NAT_PUBLIC_PORT_SPEC"
+        return 0
+    fi
+    case "${NAT_PUBLIC_PORT_MODE:-single}" in
+        range)
+            local first last
+            first="$(first_nat_public_port "${NAT_PUBLIC_PORTS:-${NAT_LISTENER_PORT:-}}" 2>/dev/null || true)"
+            last="$(nat_public_ports_to_words "${NAT_PUBLIC_PORTS:-}" | tail -n 1)"
+            if [[ -n "$first" && -n "$last" && "$first" != "$last" ]]; then
+                printf '%s-%s\n' "$first" "$last"
+                return 0
+            fi
+            ;;
+    esac
+    [[ -n "${NAT_LISTENER_PORT:-}" ]] && printf '%s\n' "$NAT_LISTENER_PORT" && return 0
+    first_nat_public_port "${NAT_PUBLIC_PORTS:-}" 2>/dev/null
+}
+
+nat_public_ports_for_code_json() {
+    case "${NAT_PUBLIC_PORT_MODE:-single}" in
+        range) return 1 ;;
+        single)
+            [[ -n "${NAT_LISTENER_PORT:-}" ]] || NAT_LISTENER_PORT="$(first_nat_public_port "${NAT_PUBLIC_PORTS:-}" 2>/dev/null || true)"
+            [[ -n "${NAT_LISTENER_PORT:-}" ]] || return 1
+            printf '%s\n' "$NAT_LISTENER_PORT"
+            ;;
+        list)
+            local count
+            count="$(nat_public_ports_to_words "${NAT_PUBLIC_PORTS:-}" | awk 'NF{c++} END{print c+0}')"
+            [[ "$count" -le 5 ]] || return 1
+            printf '%s\n' "${NAT_PUBLIC_PORTS:-}"
+            ;;
+        *) return 1 ;;
+    esac
+}
+
+et_peer_ports_csv() {
+    local peers="${1:-${ET_PEERS:-}}" url port seen=" " out=()
+    for url in $peers; do
+        [[ -n "$url" ]] || continue
+        port="${url##*:}"
+        port="${port%%/*}"
+        [[ -n "$port" ]] || continue
+        validate_port "$port" 2>/dev/null || continue
+        if [[ "$seen" != *" ${port} "* ]]; then
+            seen="${seen}${port} "
+            out+=("$port")
+        fi
+    done
+    [[ "${#out[@]}" -gt 0 ]] || return 1
+    (IFS=','; printf '%s\n' "${out[*]}")
+}
+
+et_peer_contains_port() {
+    local want="$1" port
+    while IFS= read -r port; do
+        [[ "$port" == "$want" ]] && return 0
+    done < <(nat_public_ports_to_words "$(et_peer_ports_csv 2>/dev/null || true)")
+    return 1
+}
+
 first_nat_public_port() {
     local ports="${1:-${NAT_PUBLIC_PORTS:-${NAT_LISTENER_PORT:-}}}" first
     ports="${ports//[[:space:]]/}"
@@ -2242,6 +2320,7 @@ prompt_nat_public_ports() {
         value="$(trim_space "${value%$'\r'}")"
         value="${value:-$default}"
         if normalized="$(normalize_nat_public_ports_input "$value")"; then
+            PROMPT_NAT_PUBLIC_PORT_RAW="$value"
             PROMPT_NAT_PUBLIC_PORT_MODE="$(nat_public_port_mode_for_input "$value")"
             printf '%s\n' "$normalized"
             return 0
@@ -2740,6 +2819,7 @@ prompt_yes_no() {
     while true; do
         printf '%s [%s]：' "$label" "$suffix" >&2
         IFS= read -r answer || return 1
+        answer="${answer%$'\r'}"
         if [[ -z "$answer" ]]; then
             printf '%s\n' "$default_bool"
             return 0
@@ -2886,7 +2966,7 @@ clear_config_vars() {
         LOCAL_PORT LANDING_ET_IP REMOTE_PORT FORWARD_PROTO SERVICE_PORT CODE_LISTENER_PORT \
         INGRESS_ET_IP INGRESS_ET_CIDR NAT_ET_IP NAT_ET_CIDR INGRESS_PUBLIC_HOST INGRESS_HOSTNAME \
         INGRESS_LISTENER_PROTO INGRESS_LISTENER_PROTOS INGRESS_LISTENER_PORT TRANSIT_PORT \
-        NAT_PUBLIC_HOST NAT_PUBLIC_PORTS NAT_PUBLIC_PORT_MODE NAT_LISTENER_PROTO NAT_LISTENER_PROTOS NAT_LISTENER_PORT \
+        NAT_PUBLIC_HOST NAT_PUBLIC_PORTS NAT_PUBLIC_PORT_SPEC NAT_PUBLIC_PORT_MODE NAT_LISTENER_PROTO NAT_LISTENER_PROTOS NAT_LISTENER_PORT \
         REMOTE_NAT_PROFILE_ID REMOTE_NAT_PUBLIC_HOST \
         LANDING_HOST LANDING_PORT LANDING_IP \
         FORWARD_ENABLED LANDING_EASYTIER_VERSION CODE_EASYTIER_VERSION CODE_TUNNEL_PROTOS \
@@ -2894,7 +2974,7 @@ clear_config_vars() {
         CODE_PROFILE_ID CODE_PROFILE_NAME CODE_SUGGESTED_INGRESS_PROFILE_ID CODE_LANDING_PUBLIC_HINT CODE_REMARK \
         CODE_INGRESS_HOSTNAME CODE_INGRESS_PUBLIC_HOST CODE_INGRESS_ET_IP CODE_INGRESS_ET_CIDR \
         CODE_INGRESS_LISTENER_PROTO CODE_INGRESS_LISTENER_PROTOS CODE_INGRESS_LISTENER_PORT \
-        CODE_NAT_DIRECTION CODE_NAT_PUBLIC_HOST CODE_NAT_PUBLIC_PORTS CODE_NAT_PUBLIC_PORT_MODE CODE_NAT_LISTENER_PROTO CODE_NAT_LISTENER_PROTOS CODE_NAT_LISTENER_PORT \
+        CODE_NAT_DIRECTION CODE_NAT_PUBLIC_HOST CODE_NAT_PUBLIC_PORTS CODE_NAT_PUBLIC_PORT_SPEC CODE_NAT_PUBLIC_PORT_MODE CODE_NAT_LISTENER_PROTO CODE_NAT_LISTENER_PROTOS CODE_NAT_LISTENER_PORT \
         CODE_NAT_ET_IP CODE_NAT_ET_CIDR CODE_TRANSIT_PORT CODE_LOCAL_PORT CODE_FORWARD_PROTO \
         CODE_LANDING_HOST CODE_LANDING_PORT CODE_RULES_TSV CODE_RULE_COUNT CODE_RULES_B64 CODE_RULES_COMPAT_NAT_PORT CODE_CODE_SCHEMA; do
         unset "$key" 2>/dev/null || true
@@ -2929,7 +3009,7 @@ load_env_from_path() {
             CNIX_ENTRY_PORT|LOCAL_PORT|LANDING_ET_IP|REMOTE_PORT|FORWARD_PROTO|\
             INGRESS_ET_IP|INGRESS_ET_CIDR|NAT_ET_IP|NAT_ET_CIDR|INGRESS_PUBLIC_HOST|INGRESS_HOSTNAME|\
             INGRESS_LISTENER_PROTO|INGRESS_LISTENER_PROTOS|INGRESS_LISTENER_PORT|TRANSIT_PORT|\
-            NAT_PUBLIC_HOST|NAT_PUBLIC_PORTS|NAT_PUBLIC_PORT_MODE|NAT_LISTENER_PROTO|NAT_LISTENER_PROTOS|NAT_LISTENER_PORT|\
+            NAT_PUBLIC_HOST|NAT_PUBLIC_PORTS|NAT_PUBLIC_PORT_SPEC|NAT_PUBLIC_PORT_MODE|NAT_LISTENER_PROTO|NAT_LISTENER_PROTOS|NAT_LISTENER_PORT|\
             REMOTE_NAT_PROFILE_ID|REMOTE_NAT_PUBLIC_HOST|\
             LANDING_HOST|LANDING_PORT|LANDING_IP|\
             SERVICE_PORT|CODE_LISTENER_PORT|FORWARD_ENABLED|LANDING_EASYTIER_VERSION|CODE_EASYTIER_VERSION|\
@@ -3203,6 +3283,7 @@ save_profile_env() {
                 if [[ "$nat_direction" == "nat-listener" ]]; then
                     printf 'NAT_PUBLIC_HOST=%s\n' "$(quote_env_value "$NAT_PUBLIC_HOST")"
                     printf 'NAT_PUBLIC_PORTS=%s\n' "$(quote_env_value "${NAT_PUBLIC_PORTS:-${NAT_LISTENER_PORT:-}}")"
+                    [[ -n "${NAT_PUBLIC_PORT_SPEC:-}" ]] && printf 'NAT_PUBLIC_PORT_SPEC=%s\n' "$(quote_env_value "$NAT_PUBLIC_PORT_SPEC")"
                     printf 'NAT_PUBLIC_PORT_MODE=%s\n' "${NAT_PUBLIC_PORT_MODE:-single}"
                     printf 'NAT_LISTENER_PROTO=%s\n' "$NAT_LISTENER_PROTO"
                     printf 'NAT_LISTENER_PROTOS=%s\n' "$(quote_env_value "$nat_listener_protos")"
@@ -3238,6 +3319,7 @@ save_profile_env() {
                     [[ -n "${INGRESS_PUBLIC_HOST:-}" ]] && printf 'INGRESS_PUBLIC_HOST=%s\n' "$(quote_env_value "$INGRESS_PUBLIC_HOST")"
                     printf 'NAT_PUBLIC_HOST=%s\n' "$(quote_env_value "$NAT_PUBLIC_HOST")"
                     printf 'NAT_PUBLIC_PORTS=%s\n' "$(quote_env_value "${NAT_PUBLIC_PORTS:-${NAT_LISTENER_PORT:-}}")"
+                    [[ -n "${NAT_PUBLIC_PORT_SPEC:-}" ]] && printf 'NAT_PUBLIC_PORT_SPEC=%s\n' "$(quote_env_value "$NAT_PUBLIC_PORT_SPEC")"
                     printf 'NAT_PUBLIC_PORT_MODE=%s\n' "${NAT_PUBLIC_PORT_MODE:-single}"
                     printf 'NAT_LISTENER_PROTO=%s\n' "$NAT_LISTENER_PROTO"
                     printf 'NAT_LISTENER_PROTOS=%s\n' "$(quote_env_value "$nat_listener_protos")"
@@ -3877,7 +3959,7 @@ restart_easytier() {
     systemctl daemon-reload
     systemctl enable "$SERVICE_NAME" >/dev/null
     set +e
-    systemctl restart "$SERVICE_NAME"
+    systemctl restart "$SERVICE_NAME" >/dev/null 2>&1
     rc=$?
     set -e
     if [[ "$rc" -ne 0 ]]; then
@@ -4159,7 +4241,7 @@ enable_ip_forward() {
     install -m 0644 "$tmp" "$SYSCTL_FILE"
     rm -f -- "$tmp"
     sysctl -w net.ipv4.ip_forward=1 >/dev/null
-    log_ok "已开启 IPv4 转发：net.ipv4.ip_forward=1"
+    log_debug "已开启 IPv4 转发：net.ipv4.ip_forward=1"
 }
 
 profile_needs_nft_forward() {
@@ -5302,8 +5384,11 @@ render_nat_code_json() {
         printf '"network_secret":"%s",' "$(json_escape "$ET_NETWORK_SECRET")"
         printf '"nat_hostname":"%s",' "$(json_escape "$ET_HOSTNAME")"
         printf '"nat_public_host":"%s",' "$(json_escape "$NAT_PUBLIC_HOST")"
-        printf '"nat_public_ports":"%s",' "$(json_escape "${NAT_PUBLIC_PORTS:-$NAT_LISTENER_PORT}")"
+        printf '"nat_public_port_spec":"%s",' "$(json_escape "$(nat_public_port_spec_for_code 2>/dev/null || printf '%s' "${NAT_LISTENER_PORT:-}")")"
         printf '"nat_public_port_mode":"%s",' "$(json_escape "${NAT_PUBLIC_PORT_MODE:-single}")"
+        if code_ports="$(nat_public_ports_for_code_json 2>/dev/null)"; then
+            printf '"nat_public_ports":"%s",' "$(json_escape "$code_ports")"
+        fi
         printf '"nat_listener_port":%s,' "$NAT_LISTENER_PORT"
         printf '"nat_listener_proto":"%s",' "$nat_listener_proto"
         printf '"nat_listener_protos":%s,' "$(listener_protos_json "$nat_listener_proto")"
@@ -5737,6 +5822,7 @@ parse_nat_code() {
     CODE_INGRESS_LISTENER_PORT="$(json_get_number "$json" "ingress_listener_port")"
     CODE_NAT_PUBLIC_HOST="$(json_get_string "$json" "nat_public_host")"
     CODE_NAT_PUBLIC_PORTS="$(json_get_string "$json" "nat_public_ports")"
+    CODE_NAT_PUBLIC_PORT_SPEC="$(json_get_string "$json" "nat_public_port_spec")"
     CODE_NAT_PUBLIC_PORT_MODE="$(json_get_string "$json" "nat_public_port_mode")"
     CODE_NAT_LISTENER_PROTO="$(json_get_string "$json" "nat_listener_proto")"
     nat_listener_protos="$(json_get_string_array_as_words "$json" "nat_listener_protos" 2>/dev/null || true)"
@@ -5766,7 +5852,6 @@ parse_nat_code() {
         CODE_NAT_LISTENER_PROTO="$normalized"
         CODE_NAT_LISTENER_PROTOS="$(normalize_peer_protos "$normalized" "both")"
         validate_port "$CODE_NAT_LISTENER_PORT" || die_user "接入码中的 nat_listener_port 不正确。"
-        CODE_NAT_PUBLIC_PORTS="$(normalize_nat_public_ports_input "${CODE_NAT_PUBLIC_PORTS:-$CODE_NAT_LISTENER_PORT}")" || die_user "接入码中的 nat_public_ports 不正确。"
         CODE_NAT_PUBLIC_PORT_MODE="${CODE_NAT_PUBLIC_PORT_MODE:-single}"
         validate_ipv4 "$CODE_INGRESS_ET_IP" || die_user "接入码中的 ingress_et_ip 不正确。"
         validate_ipv4_cidr "$CODE_INGRESS_ET_CIDR" || die_user "接入码中的 ingress_et_cidr 不正确。"
@@ -5795,6 +5880,16 @@ parse_nat_code() {
         CODE_RULES_TSV="$(printf 'rule-main\t默认转发\ttrue\t%s\t%s\t%s\t%s\t%s\n' "${CODE_NAT_LISTENER_PORT:-}" "$CODE_TRANSIT_PORT" "${CODE_LANDING_HOST:-landing.example}" "${CODE_LANDING_PORT:-50000}" "$CODE_FORWARD_PROTO")"
     fi
     validate_code_rules_tsv
+    if [[ "$CODE_NAT_DIRECTION" == "nat-listener" ]]; then
+        if [[ -n "${CODE_NAT_PUBLIC_PORTS:-}" ]]; then
+            CODE_NAT_PUBLIC_PORTS="$(normalize_nat_public_ports_input "${CODE_NAT_PUBLIC_PORTS:-$CODE_NAT_LISTENER_PORT}")" || die_user "接入码中的 nat_public_ports 不正确。"
+        elif ports_from_rules="$(code_rules_nat_public_ports_csv 2>/dev/null || true)"; [[ -n "$ports_from_rules" ]]; then
+            CODE_NAT_PUBLIC_PORTS="$(normalize_nat_public_ports_input "$ports_from_rules")" || die_user "接入码 rules 中的 nat_public_port 不正确。"
+        else
+            CODE_NAT_PUBLIC_PORTS="$(normalize_nat_public_ports_input "${CODE_NAT_LISTENER_PORT}")" || die_user "接入码缺少 nat_public_ports 且无法从 rules 推导。"
+        fi
+        CODE_NAT_PUBLIC_PORT_SPEC="${CODE_NAT_PUBLIC_PORT_SPEC:-${CODE_NAT_PUBLIC_PORTS:-}}"
+    fi
 }
 
 import_code() {
@@ -5981,6 +6076,7 @@ collect_nat_listener_inputs() {
 
     NAT_PUBLIC_HOST="$(prompt_validated "请输入商家分配给你的 NAT/IX 入口地址" "" validate_host "请输入商家分配给你的入口 IP 或域名。")" || return 1
     nat_public_ports_input="$(prompt_nat_public_ports "请输入商家分配给你的 NAT/IX 入口端口或端口段" "")" || return 1
+    NAT_PUBLIC_PORT_SPEC="${PROMPT_NAT_PUBLIC_PORT_RAW:-$nat_public_ports_input}"
     NAT_PUBLIC_PORTS="$nat_public_ports_input"
     NAT_PUBLIC_PORT_MODE="${PROMPT_NAT_PUBLIC_PORT_MODE:-$(nat_public_port_mode_for_input "$nat_public_ports_input")}"
     NAT_LISTENER_PORT="$(first_nat_public_port "$NAT_PUBLIC_PORTS")" || return 1
@@ -6310,9 +6406,76 @@ bash install.sh verify-nft-profiles
 EOF
 }
 
+verify_nat_ingress_import_consistency() {
+    local profile_id="$1" expected_count="${2:-0}" rule_id issues=() saved_count=0 enabled_count=0
+    local saved_rule_id="${RULE_ID:-}" saved_note="${RULE_NOTE:-}" saved_enabled="${RULE_ENABLED:-}" saved_client="${CLIENT_PORT:-}" saved_nat_public="${NAT_PUBLIC_PORT:-}"
+    local saved_transit="${TRANSIT_PORT:-}" saved_landing_host="${LANDING_HOST:-}" saved_landing_port="${LANDING_PORT:-}" saved_proto="${FORWARD_PROTO:-both}" saved_created="${CREATED_AT:-}" saved_updated="${UPDATED_AT:-}"
+    local nft_text expected_rules actual_rules missing_rules nat_port dport
+
+    load_profile_or_die "$profile_id"
+    normalize_profile_compat_vars
+    for rule_id in $(profile_rule_ids "$profile_id"); do
+        load_rule "$profile_id" "$rule_id" || continue
+        saved_count=$((saved_count + 1))
+        [[ "${RULE_ENABLED:-true}" == "true" ]] || continue
+        enabled_count=$((enabled_count + 1))
+        [[ -n "${CLIENT_PORT:-}" ]] || issues+=("规则 ${rule_id} 已保存，但缺少 CLIENT_PORT")
+        nat_port="$(rule_nat_public_port_value 2>/dev/null || true)"
+        [[ -n "$nat_port" ]] || issues+=("规则 ${rule_id} 已保存，但缺少 NAT_PUBLIC_PORT")
+        [[ -n "${TRANSIT_PORT:-}" ]] || issues+=("规则 ${rule_id} 已保存，但缺少 TRANSIT_PORT")
+        [[ -n "${LANDING_HOST:-}" ]] || issues+=("规则 ${rule_id} 已保存，但缺少 LANDING_HOST")
+        [[ -n "${LANDING_PORT:-}" ]] || issues+=("规则 ${rule_id} 已保存，但缺少 LANDING_PORT")
+        if [[ -n "${CLIENT_PORT:-}" ]]; then
+            if command_exists nft && nft list table ip "$NFT_TABLE" >/dev/null 2>&1; then
+                nft_text="$(nft list table ip "$NFT_TABLE" 2>/dev/null || true)"
+            elif [[ -r "$NFT_FILE" ]]; then
+                nft_text="$(cat "$NFT_FILE" 2>/dev/null || true)"
+            else
+                nft_text=""
+            fi
+            if [[ -n "$nft_text" ]] && ! grep -qE "(tcp|udp) dport ${CLIENT_PORT} " <<<"$nft_text"; then
+                issues+=("规则 ${rule_id} 已保存，但 nftables 未找到客户端入口端口 ${CLIENT_PORT}")
+            fi
+        fi
+        if [[ -n "$nat_port" ]] && ! et_peer_contains_port "$nat_port"; then
+            issues+=("EasyTier peer 未包含商家入口端口 ${nat_port}")
+        fi
+    done
+    if [[ "$expected_count" -gt 0 && "$saved_count" -ne "$expected_count" ]]; then
+        issues+=("实际保存规则数 ${saved_count} 与同步结果 ${expected_count} 不一致")
+    fi
+    expected_rules="$(expected_forwarding_nft_rules 2>/dev/null || true)"
+    if command_exists nft && nft list table ip "$NFT_TABLE" >/dev/null 2>&1; then
+        actual_rules="$(nft_dnat_rules_from_text "$(nft list table ip "$NFT_TABLE" 2>/dev/null || true)")"
+    elif [[ -r "$NFT_FILE" ]]; then
+        actual_rules="$(nft_dnat_rules_from_text "$(cat "$NFT_FILE" 2>/dev/null || true)")"
+    else
+        actual_rules=""
+    fi
+    missing_rules="$(comm -23 <(printf '%s\n' "$expected_rules" | awk 'NF' | sort -u) <(printf '%s\n' "$actual_rules" | awk 'NF' | sort -u) 2>/dev/null || true)"
+    if [[ -n "$missing_rules" ]]; then
+        while IFS= read -r dport; do
+            [[ -n "$dport" ]] || continue
+            issues+=("nftables 缺少转发规则：${dport}")
+        done <<<"$missing_rules"
+    fi
+    RULE_ID="$saved_rule_id"; RULE_NOTE="$saved_note"; RULE_ENABLED="$saved_enabled"; CLIENT_PORT="$saved_client"; NAT_PUBLIC_PORT="$saved_nat_public"
+    TRANSIT_PORT="$saved_transit"; LANDING_HOST="$saved_landing_host"; LANDING_PORT="$saved_landing_port"; FORWARD_PROTO="$saved_proto"; CREATED_AT="$saved_created"; UPDATED_AT="$saved_updated"
+    if [[ "${#issues[@]}" -gt 0 ]]; then
+        printf '\n%s\n\n' "$(c_red "导入未完全成功：")"
+        local item
+        for item in "${issues[@]}"; do
+            printf '* %s\n' "$item"
+        done
+        printf '\n请运行：%s\n' "$(c_cyan "bash install.sh export-diagnostic")"
+        return 1
+    fi
+    return 0
+}
+
 print_nat_ingress_import_complete_summary() {
     local profile_id="$1" ingress_host service active_label nft_label rule_count rule_id index=0
-    local saved_rule_id="${RULE_ID:-}" saved_note="${RULE_NOTE:-}" saved_enabled="${RULE_ENABLED:-}" saved_client="${CLIENT_PORT:-}"
+    local saved_rule_id="${RULE_ID:-}" saved_note="${RULE_NOTE:-}" saved_enabled="${RULE_ENABLED:-}" saved_client="${CLIENT_PORT:-}" saved_nat_public="${NAT_PUBLIC_PORT:-}"
     local saved_transit="${TRANSIT_PORT:-}" saved_landing_host="${LANDING_HOST:-}" saved_landing_port="${LANDING_PORT:-}" saved_proto="${FORWARD_PROTO:-both}" saved_created="${CREATED_AT:-}" saved_updated="${UPDATED_AT:-}"
     load_profile_or_die "$profile_id"
     normalize_profile_compat_vars
@@ -6331,6 +6494,16 @@ print_nat_ingress_import_complete_summary() {
         *) nft_label="未知" ;;
     esac
     rule_count="$(profile_rule_files_count "$profile_id")"
+
+    if ! debug_enabled; then
+        printf '\n%s：%s\n' "$(c_green "公网入口线路已完成")" "$profile_id"
+        printf '规则数：%s\n' "$rule_count"
+        printf 'nftables：%s\n' "$nft_label"
+        printf 'EasyTier：%s\n' "$active_label"
+        RULE_ID="$saved_rule_id"; RULE_NOTE="$saved_note"; RULE_ENABLED="$saved_enabled"; CLIENT_PORT="$saved_client"; NAT_PUBLIC_PORT="$saved_nat_public"
+        TRANSIT_PORT="$saved_transit"; LANDING_HOST="$saved_landing_host"; LANDING_PORT="$saved_landing_port"; FORWARD_PROTO="$saved_proto"; CREATED_AT="$saved_created"; UPDATED_AT="$saved_updated"
+        return 0
+    fi
 
     printf '\n%s：%s\n\n' "$(c_green "公网入口线路已完成")" "$profile_id"
     printf '%s\n\n' "$(c_bold "客户端连接：")"
@@ -6368,8 +6541,9 @@ $(c_bold "下一步：")
 2. 查看流量：bash install.sh traffic-report
 3. 查看详情：bash install.sh show-port-map --compact ${profile_id}
 EOF
-    RULE_ID="$saved_rule_id"; RULE_NOTE="$saved_note"; RULE_ENABLED="$saved_enabled"; CLIENT_PORT="$saved_client"; NAT_PUBLIC_PORT="$saved_nat_public"
+    RULE_ID="$saved_rule_id"; RULE_NOTE="$saved_note"; RULE_ENABLED="$saved_enabled"; CLIENT_PORT="$saved_client"; NAT_PUBLIC_PORT="${saved_nat_public:-}"
     TRANSIT_PORT="$saved_transit"; LANDING_HOST="$saved_landing_host"; LANDING_PORT="$saved_landing_port"; FORWARD_PROTO="$saved_proto"; CREATED_AT="$saved_created"; UPDATED_AT="$saved_updated"
+    return 0
 }
 
 show_profile_summary_legacy_tail() {
@@ -7279,6 +7453,7 @@ sync_nat_listener_code_rules_to_ingress_profile() {
     printf '* 失败规则：%s\n' "$failed"
     printf '* 实际保存规则：%s\n' "$saved_code_count"
     printf '* 启用规则数：%s\n' "$saved_enabled_count"
+    IXTF_LAST_SYNC_SAVED_RULE_COUNT="$saved_code_count"
 }
 
 find_existing_nat_ingress_profile_for_code() (
@@ -7448,7 +7623,11 @@ add_nat_ingress_from_listener_code() {
     printf '正在启动 EasyTier...\n' >&2
     start_profile "$PROFILE_ID"
     printf '完成\n' >&2
+    if ! verify_nat_ingress_import_consistency "$PROFILE_ID" "${IXTF_LAST_SYNC_SAVED_RULE_COUNT:-0}"; then
+        return 1
+    fi
     print_nat_ingress_import_complete_summary "$PROFILE_ID"
+    return 0
 }
 
 install_panel_ingress() {
@@ -8336,14 +8515,30 @@ EOF
     printf '* 虚拟网中转：%s:%s -> %s:%s\n' "${NAT_ET_IP:-NAT IX 虚拟 IP}" "$TRANSIT_PORT" "$LANDING_HOST" "$LANDING_PORT"
     printf '* 协议：%s\n' "$(proto_display_user "${FORWARD_PROTO:-both}")"
     printf '* 状态：%s\n\n' "$(profile_rule_status_display)"
-    printf '下一步：\n'
-    printf '请刷新接入码，并在公网入口机重新导入。\n'
+    prompt_refresh_access_code_after_rule_change "$profile_id"
     return 0
 }
 
 print_rule_sync_required_notice() {
     printf '规则已修改，但公网入口机尚未同步。\n'
     printf '请刷新接入码，并在公网入口机重新导入。\n'
+}
+
+prompt_refresh_access_code_after_rule_change() {
+    local profile_id="$1"
+    [[ -n "${IXTF_TEST_SOURCE:-}" ]] && return 0
+    load_profile_or_die "$profile_id"
+    [[ "${ROLE:-}" == "nat-transit" && "${NAT_DIRECTION:-ingress-listener}" == "nat-listener" ]] || return 0
+    printf '\n公网入口机需要重新导入接入码才能同步该规则。\n'
+    if [[ "$(prompt_yes_no "是否现在生成新的接入码" "true")" == "true" ]]; then
+        refresh_profile_after_rule_change "$profile_id"
+        render_profile_service_files
+        restart_profile "$profile_id" || log_warn "规则已保存，但 EasyTier 服务重启未完成。"
+        refresh_code "$profile_id"
+    else
+        printf '稍后可在"转发规则管理 -> 刷新接入码"中生成。\n'
+    fi
+    return 0
 }
 
 refresh_profile_after_rule_change() {
@@ -8458,7 +8653,7 @@ EOF
             apply_nft_all
             log_ok "已修改转发规则：${rule_id}"
             if [[ "${ROLE:-}" == "nat-transit" ]]; then
-                print_rule_sync_required_notice
+                prompt_refresh_access_code_after_rule_change "$profile_id"
             fi
             return 0
         fi
@@ -8479,6 +8674,7 @@ menu_enable_rule() {
     refresh_profile_after_rule_change "$profile_id"
     apply_nft_all
     printf '转发规则已启用：%s\n' "$rule_id"
+    prompt_refresh_access_code_after_rule_change "$profile_id"
     return 0
 }
 
@@ -8502,7 +8698,7 @@ menu_disable_rule() {
     apply_nft_all
     printf '转发规则已停止：%s\n' "$rule_id"
     if [[ "${ROLE:-}" == "nat-transit" ]]; then
-        printf '下一步：请刷新接入码，并在公网入口机重新导入。\n'
+        prompt_refresh_access_code_after_rule_change "$profile_id"
     fi
     return 0
 }
@@ -8523,7 +8719,7 @@ menu_delete_rule() {
     refresh_profile_after_rule_change "$profile_id"
     apply_nft_all
     printf '已删除转发规则：%s\n' "$rule_id"
-    printf '请刷新接入码，并在公网入口机重新导入。\n'
+    prompt_refresh_access_code_after_rule_change "$profile_id"
     return 0
 }
 
@@ -8626,7 +8822,7 @@ add_rule() {
     printf '虚拟网中转：%s:%s -> %s:%s\n' "${NAT_ET_IP:-NAT IX 虚拟 IP}" "$TRANSIT_PORT" "${LANDING_HOST:-NAT IX 接入码中的落地目标}" "${LANDING_PORT:-}"
     printf '协议：%s\n' "$(proto_display_user "${FORWARD_PROTO:-both}")"
     printf '状态：%s\n' "$(profile_rule_status_display)"
-    printf '下一步：刷新接入码，并在公网入口机重新导入\n'
+    prompt_refresh_access_code_after_rule_change "$profile_id"
     return 0
 }
 
@@ -8683,7 +8879,7 @@ edit_rule() {
     apply_nft_all || true
     log_ok "已修改转发规则：${rule_id}"
     if [[ "${ROLE:-}" == "nat-transit" ]]; then
-        print_rule_sync_required_notice
+        prompt_refresh_access_code_after_rule_change "$profile_id"
     fi
     return 0
 }
@@ -8707,6 +8903,10 @@ enable_rule() {
     [[ -n "$rule_id" ]] || die_user "用法：enable-rule 线路ID 规则ID"
     set_rule_enabled "$profile_id" "$rule_id" true
     printf '转发规则已启用：%s\n' "$rule_id"
+    load_profile_or_die "$profile_id"
+    if [[ "${ROLE:-}" == "nat-transit" ]]; then
+        prompt_refresh_access_code_after_rule_change "$profile_id"
+    fi
     return 0
 }
 
@@ -8721,7 +8921,7 @@ disable_rule() {
     set_rule_enabled "$profile_id" "$rule_id" false
     printf '转发规则已停止：%s\n' "$rule_id"
     if [[ "$role" == "nat-transit" ]]; then
-        printf '下一步：刷新接入码，并在公网入口机重新导入\n'
+        prompt_refresh_access_code_after_rule_change "$profile_id"
     fi
     return 0
 }
@@ -8739,9 +8939,15 @@ delete_rule() {
     answer="$(prompt_yes_no "确认删除转发规则 ${rule_id}" "false")" || return 1
     [[ "$answer" == "true" ]] || die_user "已取消删除。"
     rm -f -- "$path"
+    refresh_profile_after_rule_change "$profile_id"
     apply_nft_all || true
     printf '已删除转发规则：%s\n' "$rule_id"
-    printf '如果公网入口机仍有对应规则，请重新导入接入码或停用本地规则。\n'
+    load_profile_or_die "$profile_id"
+    if [[ "${ROLE:-}" == "nat-transit" ]]; then
+        prompt_refresh_access_code_after_rule_change "$profile_id"
+    else
+        printf '如果公网入口机仍有对应规则，请重新导入接入码或停用本地规则。\n'
+    fi
     return 0
 }
 
@@ -8898,8 +9104,8 @@ start_profile() {
         render_profile_service_files
     fi
     service="$(profile_service_name "$profile_id")"
-    systemctl daemon-reload
-    systemctl enable --now "$service" >/dev/null
+    systemctl daemon-reload >/dev/null 2>&1
+    systemctl enable --now "$service" >/dev/null 2>&1
     wait_for_easytier_ready "$profile_id" 30 || true
     log_debug "已启动 Profile 服务：${service}"
 }
@@ -8922,9 +9128,12 @@ restart_profile() {
         render_profile_service_files
     fi
     service="$(profile_service_name "$profile_id")"
-    systemctl daemon-reload
-    systemctl restart "$service"
-    log_ok "已重启 Profile 服务：${service}"
+    systemctl daemon-reload >/dev/null 2>&1
+    if ! systemctl restart "$service" >/dev/null 2>&1; then
+        log_warn "Profile 服务重启失败：${service}，请运行 bash install.sh export-diagnostic"
+        return 1
+    fi
+    log_debug "已重启 Profile 服务：${service}"
 }
 
 set_easytier_protocol() {

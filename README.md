@@ -1,6 +1,6 @@
 # ix-transit-fabric
 
-当前版本：`1.2.0-alpha.8`
+当前版本：`1.2.0-alpha.9`
 
 `ix-transit-fabric` 用于管理 NAT-IX 中转线路：公网入口机接收客户端连接，通过 EasyTier 连接 NAT IX 机器，NAT IX 机器再用 nftables 转发到落地机业务端口。
 
@@ -122,7 +122,13 @@ bash install.sh apply-rules 线路ID
 
 修改、启用、停止和删除规则都通过数字选择规则，也支持输入规则 ID 作为高级方式。NAT IX 机器负责新增或修改落地目标；公网入口机负责导入接入码并为远端规则指定客户端入口端口。
 
-新增、删除、停用或修改影响公网入口机的规则后，需要在 NAT IX 机器刷新接入码，并让公网入口机重新导入。
+新增、删除、停用或修改影响公网入口机的规则后，脚本会询问是否立即刷新接入码；也可稍后在「转发规则管理 -> 刷新接入码」中生成，并让公网入口机重新导入。
+
+接入码不再携带完整展开的 `NAT_PUBLIC_PORTS` 端口池，只包含每条规则实际使用的 `nat_public_port`；端口段以 `nat_public_port_spec` 保留规格说明。
+
+普通创建/导入输出已进一步精简，sysctl / systemd symlink 等详细输出仅在 `IXTF_DEBUG=true` 或 `--debug` 时显示。
+
+如果导入后出现规则数不一致或转发未生效，可运行 `bash install.sh export-diagnostic` 导出脱敏诊断。
 
 ## EasyTier 组网协议
 
@@ -169,6 +175,7 @@ NAT IX 接入码 v4 使用 `code_schema=4`，每条 `rules` 规则包含独立 `
 
 ## alpha 注意事项
 
+- `1.2.0-alpha.9` 修复公网入口机导入后 `saved_nat_public` 未定义报错；新增/修改/启用/停止/删除规则后可立即生成接入码；接入码不再携带完整展开的端口池；普通输出进一步精简；导入后增加规则数、nftables 和 EasyTier peer 一致性检查。
 - `1.2.0-alpha.8` 为每条规则增加独立商家入口端口，接入码升级到 `code_schema=4`，并修复重复导入同一 NAT IX 接入码造成新建冲突线路的问题。
 - `1.2.0-alpha.7` 修复接入码空白输入、多规则导入保存、同 `rule_id` 端口冲突误判、普通摘要过长和关键提示颜色。
 - `1.2.0-alpha.6` 修复多规则独立端口映射、接入码逐条同步和新增规则摘要。

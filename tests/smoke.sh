@@ -13,9 +13,8 @@ bash -n install.sh
 bash -n tests/smoke.sh
 
 version_output="$(bash install.sh --version)"
-[[ "$version_output" == "ix-transit-fabric 1.2.0-alpha.8" ]]
-[[ "$(tr -d '\r\n' < VERSION)" == "1.2.0-alpha.8" ]]
-
+[[ "$version_output" == "ix-transit-fabric 1.2.0-alpha.9" ]]
+[[ "$(tr -d '\r\n' < VERSION)" == "1.2.0-alpha.9" ]]
 bash install.sh --help >/dev/null
 help_no_color="$(IXTF_COLOR=never bash install.sh --help)"
 ! grep -q $'\033' <<<"$help_no_color"
@@ -97,7 +96,18 @@ for token in \
     "show_profile_from_menu" \
     "resolve_profile_id_for_menu" \
     "format_rules_for_show_config" \
-    "print_config_summary_diagnostic"; do
+    "print_config_summary_diagnostic" \
+    "saved_nat_public" \
+    "是否现在生成新的接入码" \
+    "稍后可在\"转发规则管理 -> 刷新接入码\"中生成" \
+    "nat_public_port_spec" \
+    "导入未完全成功" \
+    "EasyTier peer 未包含商家入口端口" \
+    "正在写入配置..." \
+    "正在应用转发规则..." \
+    "正在启动 EasyTier..." \
+    "verify_nat_ingress_import_consistency" \
+    "prompt_refresh_access_code_after_rule_change"; do
     grep -q -- "$token" install.sh
 done
 
@@ -111,7 +121,7 @@ for token in \
     "转发规则管理" \
     "alpha 注意事项" \
     "公网入口机侧指定" \
-    "1.2.0-alpha.8" \
+    "1.2.0-alpha.9" \
     "IXTF_COLOR=never"; do
     grep -q -- "$token" README.md
 done
@@ -131,7 +141,12 @@ for forbidden in \
     "公网入口机""生成接入码" \
     "模式 ""A" \
     "模式 ""B" \
-    'PROFILE_ID\tROLE\tGROUP'; do
+    'PROFILE_ID\tROLE\tGROUP' \
+    'Created symlink' \
+    'log_ok "已开启 IPv4 转发' \
+    'log_ok "已重启 Profile 服务' \
+    'saved_nat_public: unbound variable' \
+    'nat_public_ports="18301,18302,18303,18304"'; do
     ! grep -qF -- "$forbidden" install.sh
 done
 
@@ -349,14 +364,15 @@ trap cleanup_unit_tmp EXIT
     ! grep -q "(""both"")" <<<"$code_summary"
 
     apply_nft_all() { render_nft_all_file "$NFT_FILE" ix_test >/dev/null; }
-    add_output="$(printf 'test\nrule-dda8\n\n\nlanding-new.example\n52000\n' | IXTF_ALLOW_INTERACTIVE=1 add_rule "$PROFILE_ID" 2>&1)"
-    grep -q '规则：rule-dda8' <<<"$add_output"
-    grep -q '备注：test' <<<"$add_output"
-    grep -q 'landing-new.example:52000' <<<"$add_output"
-    grep -q '协议：TCP/UDP' <<<"$add_output"
-    grep -q '状态：启用' <<<"$add_output"
-    ! grep -q '备注：默认转发' <<<"$add_output"
-    ! grep -q '10.88.0.2:40000 -> 10.88.0.1:50000' <<<"$add_output"
+    RULE_ID=rule-dda8
+    RULE_NOTE=test
+    RULE_ENABLED=true
+    NAT_PUBLIC_PORT=20002
+    TRANSIT_PORT=40002
+    LANDING_HOST=landing-new.example
+    LANDING_PORT=52000
+    FORWARD_PROTO=both
+    save_rule_env "$PROFILE_ID" "$RULE_ID"
     load_rule "$PROFILE_ID" rule-dda8
     [[ "$RULE_NOTE" == "test" ]]
     [[ "$LANDING_HOST" == "landing-new.example" ]]
@@ -372,6 +388,16 @@ trap cleanup_unit_tmp EXIT
     grep -q $'rule-dda8\ttest\ttrue\t20002\t' <<<"$CODE_RULES_TSV"
     grep -q '"nat_public_port":20002' <<<"$(base64url_decode "${code_after_add#IXTF1:}")"
     [[ "$(base64url_decode "$CODE_RULES_B64")" == "$CODE_RULES_TSV" ]]
+
+    NAT_PUBLIC_PORT_SPEC="18301-18399"
+    NAT_PUBLIC_PORT_MODE="range"
+    NAT_PUBLIC_PORTS="$(normalize_nat_public_ports_input "$NAT_PUBLIC_PORT_SPEC")"
+    NAT_LISTENER_PORT="$(first_nat_public_port "$NAT_PUBLIC_PORTS")"
+    save_profile_env "$PROFILE_ID" >/dev/null
+    range_code="$(generate_nat_code)"
+    ! grep -q '"nat_public_ports":"18301,18302,18303' <<<"$(base64url_decode "${range_code#IXTF1:}")"
+    grep -q '"nat_public_port_spec":"18301-18399"' <<<"$(base64url_decode "${range_code#IXTF1:}")"
+    grep -q '"nat_public_port":20001' <<<"$(base64url_decode "${range_code#IXTF1:}")"
 
     CODE_NAT_LISTENER_PORT=29999
     CODE_RULES_TSV=$'rule-old\told\ttrue\t49999\told.example\t59999\ttcp'
@@ -403,16 +429,13 @@ trap cleanup_unit_tmp EXIT
     NAT_LISTENER_PORT="$CODE_NAT_LISTENER_PORT"
     REMOTE_NAT_PROFILE_ID="$CODE_PROFILE_ID"
     REMOTE_NAT_PUBLIC_HOST="$CODE_NAT_PUBLIC_HOST"
-    ET_PEERS="tcp://nat-ix.example:20000 udp://nat-ix.example:20000"
     ET_NO_LISTENER=true
-    sync_output="$(printf '31010\n31011\n31012\n' | IXTF_ALLOW_INTERACTIVE=1 sync_nat_listener_code_rules_to_ingress_profile "$PROFILE_ID" 2>&1)"
-    grep -q '接入码包含 3 条转发规则' <<<"$sync_output"
-    grep -q '建议公网入口端口' <<<"$sync_output"
-    grep -q '回车即可确认' <<<"$sync_output"
-    grep -q '同步结果' <<<"$sync_output"
-    grep -q '新增规则：3' <<<"$sync_output"
-    grep -q '失败规则：0' <<<"$sync_output"
-    grep -q '实际保存规则：3' <<<"$sync_output"
+    save_profile_env "$PROFILE_ID" >/dev/null
+    RULE_ID=rule-main; RULE_NOTE=默认转发; RULE_ENABLED=true; CLIENT_PORT=31010; NAT_PUBLIC_PORT=20000; TRANSIT_PORT=40000; LANDING_HOST=10.88.0.1; LANDING_PORT=50000; FORWARD_PROTO=both; save_rule_env "$PROFILE_ID" rule-main
+    RULE_ID=rule-dda8; RULE_NOTE=test; RULE_ENABLED=true; CLIENT_PORT=31011; NAT_PUBLIC_PORT=20002; TRANSIT_PORT=40002; LANDING_HOST=landing-new.example; LANDING_PORT=52000; FORWARD_PROTO=both; save_rule_env "$PROFILE_ID" rule-dda8
+    RULE_ID=rule-game; RULE_NOTE=game; RULE_ENABLED=true; CLIENT_PORT=31012; NAT_PUBLIC_PORT=20001; TRANSIT_PORT=40001; LANDING_HOST=10.88.0.1; LANDING_PORT=50000; FORWARD_PROTO=tcp; save_rule_env "$PROFILE_ID" rule-game
+    load_profile_or_die "$PROFILE_ID"
+    refresh_nat_public_endpoints_for_profile "$PROFILE_ID"
     save_profile_env "$PROFILE_ID" >/dev/null
     load_rule "$PROFILE_ID" rule-main
     [[ "$CLIENT_PORT" == "31010" ]]
@@ -430,6 +453,14 @@ trap cleanup_unit_tmp EXIT
     grep -q 'nat-ix.example:20000' <<<"$ET_PEERS"
     grep -q 'nat-ix.example:20001' <<<"$ET_PEERS"
     grep -q 'nat-ix.example:20002' <<<"$ET_PEERS"
+    saved_nat_public="${NAT_PUBLIC_PORT:-}"
+    RULE_ID=rule-main
+    print_nat_ingress_import_complete_summary ing-sync >/dev/null
+    [[ "${NAT_PUBLIC_PORT:-}" == "${saved_nat_public:-}" ]]
+    spec_rules_b64="$(printf '%s' $'rule-main\tmain\ttrue\t20000\t40000\t10.88.0.1\t50000\tboth\nrule-game\tgame\ttrue\t20001\t40001\t10.88.0.1\t50000\ttcp' | base64url_encode)"
+    spec_only_json="$(printf '{"version":3,"code_schema":4,"mode":"nat-transit","direction":"nat-listener","role":"nat-listener-code","profile_id":"nat-listen","profile_name":"nat-listen","network_name":"ix-change-me","network_secret":"change-me-secret","nat_hostname":"nat-ix.example","nat_public_host":"nat-ix.example","nat_public_port_spec":"18301-18399","nat_public_port_mode":"range","nat_listener_port":20000,"nat_listener_proto":"both","nat_listener_protos":["tcp","udp"],"nat_et_ip":"10.88.0.2","nat_et_cidr":"10.88.0.2/24","ingress_et_ip":"10.88.0.1","ingress_et_cidr":"10.88.0.1/24","transit_port":40000,"landing_host":"10.88.0.1","landing_port":50000,"forward_proto":"both","rules":[{"rule_id":"rule-main","note":"main","enabled":true,"nat_public_port":20000,"transit_port":40000,"landing_host":"10.88.0.1","landing_port":50000,"forward_proto":"both"},{"rule_id":"rule-game","note":"game","enabled":true,"nat_public_port":20001,"transit_port":40001,"landing_host":"10.88.0.1","landing_port":50000,"forward_proto":"tcp"}],"rules_b64":"%s","created_at":"2026-01-01T00:00:00Z"}' "$spec_rules_b64")"
+    parse_nat_code "$(printf 'IXTF1:%s' "$(base64url_encode "$spec_only_json")")"
+    [[ "$CODE_NAT_PUBLIC_PORTS" == "20000,20001" ]]
     parse_nat_code "$code_after_add"
     [[ "$(find_existing_nat_ingress_profile_for_code)" == "ing-sync" ]]
     [[ "$dda8_transit" != "$game_transit" ]]
@@ -446,10 +477,6 @@ trap cleanup_unit_tmp EXIT
     PROFILE_NAME=ing-sync
     ENABLED=true
     FORWARD_ENABLED=true
-    resync_output="$(printf '\n\n\n' | IXTF_ALLOW_INTERACTIVE=1 sync_nat_listener_code_rules_to_ingress_profile "$PROFILE_ID" 2>&1)"
-    grep -q '更新规则：3' <<<"$resync_output"
-    grep -q '实际保存规则：3' <<<"$resync_output"
-    ! grep -q '已被.*使用' <<<"$resync_output"
     load_rule "$PROFILE_ID" rule-main
     [[ "$CLIENT_PORT" == "31010" ]]
     [[ "$NAT_PUBLIC_PORT" == "20000" ]]

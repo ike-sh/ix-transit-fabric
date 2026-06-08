@@ -1,5 +1,23 @@
 # Changelog
 
+## 1.2.0-alpha.9
+
+### Fixed
+
+- 修复公网入口机导入完成后 `saved_nat_public: unbound variable`。
+- 修复普通流程仍显示 systemd symlink / sysctl 原始输出。
+- 修复接入码包含完整展开端口池导致接入码过长的问题。
+
+### Changed
+
+- 新增/修改/启用/停止/删除转发规则后，可立即生成新的接入码。
+- 普通创建/导入输出进一步精简。
+- 接入码只携带每条规则实际使用的商家入口端口。
+
+### Added
+
+- 公网入口导入完成后执行规则数、nftables 和 EasyTier peer 一致性检查。
+
 ## 1.2.0-alpha.8
 
 ### Fixed
