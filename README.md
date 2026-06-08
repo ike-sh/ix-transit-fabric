@@ -1,6 +1,6 @@
 # ix-transit-fabric
 
-当前版本：`1.2.0-alpha.25`
+当前版本：`1.2.0-alpha.26`
 作者：`ike`  
 项目地址：[https://github.com/ike-sh/ix-transit-fabric](https://github.com/ike-sh/ix-transit-fabric)
 
@@ -48,6 +48,15 @@ IXTF_EASYTIER_DOWNLOAD_URL=https://example.com/easytier.tar.gz bash install.sh i
 ```
 
 ## 快速开始
+
+安装快捷命令后，可直接输入 `ix` 或 `IX` 进入管理菜单（全局安装到 `/usr/local/bin`）：
+
+```bash
+bash install.sh install-ix-cli
+ix
+```
+
+首次运行 `bash install.sh ix` 也会自动全局安装；已有线路时执行 `apply-nft-all` 同样会自动安装。
 
 1. 在 NAT IX 机器创建中转线路：
 
@@ -195,7 +204,8 @@ NAT IX 接入码 v4 使用 `code_schema=4`，每条 `rules` 规则包含独立 `
 
 ## alpha 注意事项
 
-- `1.2.0-alpha.25` 增加快捷命令 `ix` / `IX`（等价于 `--menu`）；补充作者与项目地址信息。
+- `1.2.0-alpha.26` 全局安装 `ix` / `IX` 到 PATH，直接输入进菜单；`install-ix-cli` 手动安装。
+- `1.2.0-alpha.25` 增加脚本子命令 `ix` / `IX`（等价于 `--menu`）；补充作者与项目地址信息。
 - `1.2.0-alpha.24` 菜单优化：单线路自动选择；规则/线路选择 `0` 返回；Ctrl+C 友好取消。
 - `1.2.0-alpha.22` DDNS 增加 `ddns-enable` / `ddns-disable` 开关；菜单「高级维护 → 监控 / 通知 / DDNS」。
 - `1.2.0-alpha.21` 新增 DDNS：商家域名默认定时解析，IP 变化自动刷新 nftables / EasyTier。

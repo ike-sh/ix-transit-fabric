@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-SCRIPT_VERSION="1.2.0-alpha.25"
+SCRIPT_VERSION="1.2.0-alpha.26"
 APP_NAME="ix-transit-fabric"
 
 CONFIG_DIR="/etc/ix-transit-fabric"
@@ -39,6 +39,9 @@ NFT_FILE="${NFT_DIR}/ix-transit-fabric.nft"
 NFT_TABLE="ix_transit_fabric"
 LIBEXEC_DIR="/usr/local/libexec/ix-transit-fabric"
 WRAPPER_FILE="${LIBEXEC_DIR}/easytier-start"
+IX_CLI_INSTALL_SH="${LIBEXEC_DIR}/install.sh"
+IX_CLI_BIN="/usr/local/bin/ix"
+IX_CLI_BIN_UPPER="/usr/local/bin/IX"
 EASYTIER_TARGET="/usr/local/bin/easytier-core"
 LANDING_CODE_FILE="${CONFIG_DIR}/landing-code.txt"
 
@@ -271,6 +274,8 @@ ix-transit-fabric - NAT-IX + EasyTier + nftables 中转线路管理脚本
   bash install.sh --menu
   bash install.sh ix
   bash install.sh IX
+  ix / IX                 # 安装快捷命令后，直接输入即可进菜单
+  bash install.sh install-ix-cli
   bash install.sh --debug install-easytier
 
 安装 / 更新：
@@ -361,6 +366,7 @@ ix-transit-fabric - NAT-IX + EasyTier + nftables 中转线路管理脚本
 
 说明：
   - 无参数且当前是交互式 TTY 时进入菜单。
+  - 运行 install-ix-cli 后，可直接输入 ix 或 IX 进入管理菜单（首次 bash install.sh ix 也会自动安装）。
   - monitor / notify 只做检查和提醒，不会自动切换。
   - DDNS 默认启用：商家域名 IP 变化时自动刷新 nftables / EasyTier（每 3 分钟）；`ddns-disable` 可关闭定时刷新。
 	  - 普通菜单只展示 NAT IX listener 正式流程。
@@ -3900,6 +3906,73 @@ EOF
     install_if_changed "$tmp" "$WRAPPER_FILE" 0755 "EasyTier 启动包装器"
 }
 
+ix_cli_source_path() {
+    local path="${BASH_SOURCE[0]:-$0}"
+    if [[ "$path" != /* ]]; then
+        path="$(cd -P "$(dirname "$path")" && pwd)/$(basename "$path")"
+    fi
+    if command_exists readlink; then
+        readlink -f "$path" 2>/dev/null && return 0
+    fi
+    printf '%s\n' "$path"
+}
+
+sync_ix_cli_install_sh() {
+    local src dest tmp
+    src="$(ix_cli_source_path)"
+    dest="$IX_CLI_INSTALL_SH"
+    install -d -m 0755 "$LIBEXEC_DIR"
+    if [[ -f "$dest" ]] && cmp -s "$src" "$dest"; then
+        log_debug "ix CLI 安装脚本已是最新：${dest}"
+        return 0
+    fi
+    tmp="$(make_tmp_file "ix-transit-fabric.install")"
+    cp -a -- "$src" "$tmp"
+    chmod 0755 "$tmp"
+    backup_file "$dest"
+    install -m 0755 "$tmp" "$dest"
+    rm -f -- "$tmp"
+    log_debug "已同步 ix CLI 安装脚本：${dest}"
+}
+
+render_ix_cli_wrapper_file() {
+    cat <<EOF
+#!/usr/bin/env bash
+exec bash "${IX_CLI_INSTALL_SH}" ix "\$@"
+EOF
+}
+
+render_ix_cli_wrappers() {
+    local tmp_ix tmp_IX
+    tmp_ix="$(make_tmp_file "ix-transit-fabric.ix-cli")"
+    tmp_IX="$(make_tmp_file "ix-transit-fabric.IX-cli")"
+    render_ix_cli_wrapper_file >"$tmp_ix"
+    cp -a -- "$tmp_ix" "$tmp_IX"
+    install_if_changed "$tmp_ix" "$IX_CLI_BIN" 0755 "ix 快捷命令"
+    install_if_changed "$tmp_IX" "$IX_CLI_BIN_UPPER" 0755 "IX 快捷命令"
+}
+
+ensure_ix_cli_shortcut() {
+    require_root
+    sync_ix_cli_install_sh
+    render_ix_cli_wrappers
+}
+
+install_ix_cli() {
+    require_root "$@"
+    ensure_ix_cli_shortcut
+    log_ok "已安装快捷命令：ix / IX（直接输入即可进入管理菜单）"
+    log_info "安装脚本副本：${IX_CLI_INSTALL_SH}"
+    if [[ -x "$IX_CLI_BIN" && -x "$IX_CLI_BIN_UPPER" ]]; then
+        log_ok "验证通过：$(command -v ix) 与 $(command -v IX)"
+    fi
+}
+
+remove_ix_cli_shortcut() {
+    rm -f -- "$IX_CLI_BIN" "$IX_CLI_BIN_UPPER" "$IX_CLI_INSTALL_SH"
+    log_debug "已删除 ix / IX 快捷命令与安装脚本副本（若存在）。"
+}
+
 render_systemd_service() {
     validate_easytier_args
     local rendered_args
@@ -5395,6 +5468,9 @@ apply_nft_all() {
     if nft -f "$NFT_FILE"; then
         log_debug "已应用全部线路的 nftables 项目表。"
         ensure_ddns_timer_enabled
+        if profile_ids | awk 'NF{found=1; exit} END{exit !found}'; then
+            ensure_ix_cli_shortcut || true
+        fi
         return 0
     fi
     log_error "应用全部 nftables 规则失败，正在回滚。"
@@ -13619,6 +13695,13 @@ self_check() {
         self_check_line INFO "nc/ncat" "缺失；TCP 探测将跳过；可运行：bash install.sh install-netcat"
     fi
 
+    printf '\n快捷命令：\n'
+    if [[ -x "$IX_CLI_BIN" && -x "$IX_CLI_BIN_UPPER" && -f "$IX_CLI_INSTALL_SH" ]]; then
+        self_check_line OK "ix / IX" "已安装（${IX_CLI_BIN}）"
+    else
+        self_check_line INFO "ix / IX" "未安装；运行：bash install.sh install-ix-cli"
+    fi
+
     printf '\n运行状态：\n'
     et_path="$(detect_easytier_binary 2>/dev/null || true)"
     [[ -n "$et_path" ]] && self_check_line OK "EasyTier" "$et_path" || self_check_line WARN "EasyTier" "未安装；请运行：bash install.sh install-easytier"
@@ -15042,6 +15125,7 @@ uninstall() {
     delete_nft_runtime_and_file
     rm -f -- "$SYSTEMD_SERVICE" "$PROFILE_SERVICE_TEMPLATE" "$DDNS_SERVICE_FILE" "$DDNS_TIMER_FILE" "$MONITOR_SERVICE_FILE" "$MONITOR_TIMER_FILE" "$ENV_FILE" "$LANDING_CODE_FILE" "$WRAPPER_FILE"
     rm -f -- "$SYSCTL_FILE"
+    remove_ix_cli_shortcut
     log_ok "已删除项目 service、wrapper、配置、接入码和 sysctl 文件（如果存在）。"
 
     rmdir "$CONFIG_DIR" >/dev/null 2>&1 || true
@@ -15583,6 +15667,9 @@ run_menu_action() {
 
 show_menu() {
     require_tty --menu
+    if [[ "${EUID:-$(id -u)}" -eq 0 ]]; then
+        ensure_ix_cli_shortcut || true
+    fi
     local choice rc
     while true; do
         cat >&2 <<'MENU'
@@ -15672,6 +15759,9 @@ main() {
             ;;
         --menu|menu|ix|IX)
             show_menu
+            ;;
+        install-ix-cli)
+            install_ix_cli
             ;;
         install-easytier)
             install_easytier

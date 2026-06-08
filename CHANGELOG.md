@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.2.0-alpha.26
+
+### Added
+
+- 安装全局快捷命令 `ix` / `IX` 到 `/usr/local/bin`：直接输入即可进入管理菜单。
+- 新增 `bash install.sh install-ix-cli`；首次 `bash install.sh ix` 或存在线路时 `apply-nft-all` 也会自动安装。
+- 安装脚本副本同步到 `/usr/local/libexec/ix-transit-fabric/install.sh`；`uninstall` / `purge` 会清理快捷命令。
+
 ## 1.2.0-alpha.25
 
 ### Added

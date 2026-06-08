@@ -13,8 +13,8 @@ bash -n install.sh
 bash -n tests/smoke.sh
 
 version_output="$(bash install.sh --version)"
-[[ "$version_output" == "ix-transit-fabric 1.2.0-alpha.25" ]]
-[[ "$(tr -d '\r\n' < VERSION)" == "1.2.0-alpha.25" ]]
+[[ "$version_output" == "ix-transit-fabric 1.2.0-alpha.26" ]]
+[[ "$(tr -d '\r\n' < VERSION)" == "1.2.0-alpha.26" ]]
 bash install.sh --help >/dev/null
 help_no_color="$(IXTF_COLOR=never bash install.sh --help)"
 ! grep -q $'\033' <<<"$help_no_color"
@@ -135,6 +135,11 @@ for token in \
     "项目地址：https://github.com/ike-sh/ix-transit-fabric" \
     "bash install.sh ix" \
     "bash install.sh IX" \
+    "install-ix-cli" \
+    "ensure_ix_cli_shortcut" \
+    "IX_CLI_BIN" \
+    "/usr/local/bin/ix" \
+    "/usr/local/bin/IX" \
     "--menu|menu|ix|IX" \
     "NAT-IX 公网入口缺少 TRANSIT_PORT" \
     "ensure_ddns_timer_enabled" \
@@ -152,7 +157,9 @@ for token in \
     "转发规则管理" \
     "alpha 注意事项" \
     "公网入口机侧指定" \
-    "1.2.0-alpha.25" \
+    "1.2.0-alpha.26" \
+    "install-ix-cli" \
+    "全局安装" \
     "DDNS" \
     "ddns-status" \
     "ddns-disable" \
