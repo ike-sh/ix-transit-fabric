@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-SCRIPT_VERSION="1.2.0-alpha.13"
+SCRIPT_VERSION="1.2.0-alpha.14"
 APP_NAME="ix-transit-fabric"
 
 CONFIG_DIR="/etc/ix-transit-fabric"
@@ -328,6 +328,7 @@ ix-transit-fabric - NAT-IX + EasyTier + nftables 中转线路管理脚本
 	  bash install.sh refresh-nat-code [线路ID]
 	  bash install.sh show-easytier-command [线路ID]
 	  bash install.sh show-easytier-status [线路ID]
+	  bash install.sh diagnose [线路ID]
 
 主备：
   bash install.sh health-all
@@ -6667,7 +6668,7 @@ print_nat_ingress_import_complete_summary() {
         printf '规则数：%s\n' "$rule_count"
         printf 'nftables：%s\n' "$nft_label"
         printf 'EasyTier：%s\n' "$active_label"
-        printf '快速检查：bash install.sh show-easytier-status %s\n' "$profile_id"
+        printf '快速检查：bash install.sh diagnose %s\n' "$profile_id"
         RULE_ID="$saved_rule_id"; RULE_NOTE="$saved_note"; RULE_ENABLED="$saved_enabled"; CLIENT_PORT="$saved_client"; NAT_PUBLIC_PORT="$saved_nat_public"
         TRANSIT_PORT="$saved_transit"; LANDING_HOST="$saved_landing_host"; LANDING_PORT="$saved_landing_port"; FORWARD_PROTO="$saved_proto"; CREATED_AT="$saved_created"; UPDATED_AT="$saved_updated"
         return 0
@@ -7520,6 +7521,7 @@ sync_nat_listener_code_rules_to_ingress_profile() {
     local default_client client_port first="true" remote_ids=" " existing answer local_exists="false"
     local first_client="" first_transit="" first_landing_host="" first_landing_port="" first_proto=""
     local first_rule_id="" added=0 updated=0 disabled=0 kept=0 failed=0 saved_code_count=0 saved_enabled_count=0 missing_rules=""
+    local added_ids="" updated_ids=""
     validate_profile_id "$profile_id" || die_user "PROFILE_ID 格式不正确：${profile_id}"
     print_code_rules_import_summary "$profile_id"
     while IFS=$'\t' read -r -u 3 rule_id note enabled nat_public_port transit_port landing_host landing_port forward_proto || [[ -n "${rule_id:-}" ]]; do
@@ -7552,8 +7554,10 @@ sync_nat_listener_code_rules_to_ingress_profile() {
         if [[ "${enabled:-true}" == "true" ]]; then
             if [[ "$local_exists" == "true" ]]; then
                 updated=$((updated + 1))
+                updated_ids="${updated_ids}${updated_ids:+ }${rule_id}"
             else
                 added=$((added + 1))
+                added_ids="${added_ids}${added_ids:+ }${rule_id}"
             fi
         else
             disabled=$((disabled + 1))
@@ -7621,6 +7625,8 @@ sync_nat_listener_code_rules_to_ingress_profile() {
     printf '* 失败规则：%s\n' "$failed"
     printf '* 实际保存规则：%s\n' "$saved_code_count"
     printf '* 启用规则数：%s\n' "$saved_enabled_count"
+    [[ -n "$added_ids" ]] && printf '* 新增规则 ID：%s\n' "$added_ids"
+    [[ -n "$updated_ids" ]] && printf '* 更新规则 ID：%s\n' "$updated_ids"
     IXTF_LAST_SYNC_SAVED_RULE_COUNT="$saved_code_count"
 }
 
@@ -8699,7 +8705,7 @@ EOF
     printf '* 虚拟网中转：%s:%s -> %s:%s\n' "${NAT_ET_IP:-NAT IX 虚拟 IP}" "$TRANSIT_PORT" "$LANDING_HOST" "$LANDING_PORT"
     printf '* 协议：%s\n' "$(proto_display_user "${FORWARD_PROTO:-both}")"
     printf '* 状态：%s\n\n' "$(profile_rule_status_display)"
-    printf '快速检查：bash install.sh show-easytier-status %s\n\n' "$profile_id"
+    printf '快速检查：bash install.sh diagnose %s\n\n' "$profile_id"
     prompt_refresh_access_code_after_rule_change "$profile_id"
     return 0
 }
@@ -8710,6 +8716,7 @@ prompt_refresh_access_code_after_rule_change() {
     load_profile_or_die "$profile_id"
     [[ "${ROLE:-}" == "nat-transit" && "${NAT_DIRECTION:-ingress-listener}" == "nat-listener" ]] || return 0
     printf '\n公网入口机需要重新导入接入码才能同步该规则。\n'
+    printf '说明：NAT IX 侧 listener 已更新；公网入口需重新导入后新增/变更规则才生效。\n'
     if [[ "$(prompt_yes_no "是否现在生成新的接入码" "true")" == "true" ]]; then
         regenerate_nat_profile_code "$profile_id"
     else
@@ -10178,6 +10185,58 @@ show_easytier_status() {
     print_easytier_peer_hints "$service"
 }
 
+diagnose_profile() {
+    local profile_id="$1" rc=0
+    load_profile_or_die "$profile_id"
+    normalize_profile_compat_vars
+    printf '\n===== ix-transit-fabric 诊断：%s =====\n' "$profile_id"
+    printf '线路类型：%s\n' "$(profile_role_label_zh)"
+    if [[ "${ROLE:-}" == "nat-ingress" || "${ROLE:-}" == "nat-transit" ]]; then
+        printf '线路模式：%s\n' "$(nat_direction_label "${NAT_DIRECTION:-ingress-listener}")"
+    fi
+
+    printf '\n--- EasyTier ---\n'
+    show_easytier_status "$profile_id" || rc=1
+
+    case "${ROLE:-}:${NAT_DIRECTION:-ingress-listener}" in
+        nat-ingress:nat-listener)
+            printf '\n--- nftables 转发 ---\n'
+            verify_nft_profiles_core || rc=1
+            printf '\n提示：客户端应连接 %s:CLIENT_PORT。\n' "${INGRESS_PUBLIC_HOST:-公网入口机公网 IP}"
+            printf '该端口由 nftables DNAT 转发，ss -lntp 通常看不到监听。\n'
+            ;;
+        nat-transit:nat-listener)
+            printf '\n--- NAT IX 规则一致性 ---\n'
+            verify_nat_transit_rule_consistency "$profile_id" || rc=1
+            printf '\n提示：商家入口 %s:NAT_PUBLIC_PORT 应在 ss -lntp 中看到 EasyTier 监听。\n' "${NAT_PUBLIC_HOST:-商家 NAT/IX 地址}"
+            ;;
+    esac
+
+    printf '\n--- 转发规则 ---\n'
+    print_forward_rule_health_summary "$profile_id"
+
+    printf '\n更多命令：\n'
+    printf '  bash install.sh show-port-map --compact %s\n' "$profile_id"
+    printf '  bash install.sh export-diagnostic\n'
+    return "$rc"
+}
+
+diagnose() {
+    require_root "$@"
+    local profile_id="${1:-}" count
+    count="$(profile_count)"
+    [[ "$count" != "0" ]] || die_user "当前没有线路。"
+    if [[ -z "$profile_id" ]]; then
+        if ! profile_id="$(resolve_profile_id_for_cmd "" diagnose)"; then
+            return_or_exit 2 || return $?
+        fi
+    elif ! load_profile "$profile_id" 2>/dev/null; then
+        print_profile_selection_hint "$profile_id" diagnose
+        return_or_exit 2 || return $?
+    fi
+    diagnose_profile "$profile_id"
+}
+
 parse_sample_seconds() {
     local sample="${1:-0}"
     [[ "$sample" =~ ^[0-9]+$ ]] || return 1
@@ -10444,6 +10503,111 @@ print_forward_rule_health_summary() {
     LOCAL_PORT="$saved_local"; TRANSIT_PORT="$saved_transit"; LANDING_HOST="$saved_landing_host"; LANDING_PORT="$saved_landing_port"; FORWARD_PROTO="$saved_proto"
 }
 
+profile_enabled_rule_count() {
+    local profile_id="$1" rule_id count=0
+    local saved_rule_id="${RULE_ID:-}" saved_note="${RULE_NOTE:-}" saved_enabled="${RULE_ENABLED:-}" saved_client="${CLIENT_PORT:-}" saved_nat_public="${NAT_PUBLIC_PORT:-}"
+    local saved_transit="${TRANSIT_PORT:-}" saved_landing_host="${LANDING_HOST:-}" saved_landing_port="${LANDING_PORT:-}" saved_proto="${FORWARD_PROTO:-both}"
+    for rule_id in $(profile_rule_ids "$profile_id"); do
+        load_rule "$profile_id" "$rule_id" || continue
+        [[ "${RULE_ENABLED:-true}" == "true" ]] && count=$((count + 1))
+    done
+    RULE_ID="$saved_rule_id"; RULE_NOTE="$saved_note"; RULE_ENABLED="$saved_enabled"; CLIENT_PORT="$saved_client"; NAT_PUBLIC_PORT="$saved_nat_public"
+    TRANSIT_PORT="$saved_transit"; LANDING_HOST="$saved_landing_host"; LANDING_PORT="$saved_landing_port"; FORWARD_PROTO="$saved_proto"
+    printf '%s\n' "$count"
+}
+
+print_nat_transit_local_listener_health() {
+    local profile_id="$1" rule_id nat_port rc ok=0 bad=0 total=0
+    local saved_rule_id="${RULE_ID:-}" saved_note="${RULE_NOTE:-}" saved_enabled="${RULE_ENABLED:-}" saved_client="${CLIENT_PORT:-}" saved_nat_public="${NAT_PUBLIC_PORT:-}"
+    local saved_transit="${TRANSIT_PORT:-}" saved_landing_host="${LANDING_HOST:-}" saved_landing_port="${LANDING_PORT:-}" saved_proto="${FORWARD_PROTO:-both}"
+    local proto="${NAT_LISTENER_PROTO:-${ET_LISTENER_PROTO:-both}}"
+    for rule_id in $(profile_rule_ids "$profile_id"); do
+        load_rule "$profile_id" "$rule_id" || continue
+        [[ "${RULE_ENABLED:-true}" == "true" ]] || continue
+        nat_port="$(rule_nat_public_port_value 2>/dev/null || true)"
+        [[ -n "$nat_port" ]] || continue
+        total=$((total + 1))
+        set +e
+        check_listener_proto_port "$proto" "$nat_port"
+        rc=$?
+        set -e
+        case "$rc" in
+            0)
+                ok=$((ok + 1))
+                printf '* [%s] 商家入口 %s：监听正常\n' "$rule_id" "$nat_port"
+                ;;
+            2)
+                printf '* [%s] 商家入口 %s：无法检查\n' "$rule_id" "$nat_port"
+                health_mark warning "无法检查商家入口监听"
+                ;;
+            *)
+                bad=$((bad + 1))
+                printf '* [%s] 商家入口 %s：未检测到监听\n' "$rule_id" "$nat_port"
+                ;;
+        esac
+    done
+    if [[ "$total" -eq 0 ]]; then
+        printf '* 商家入口监听：无启用规则\n'
+        health_mark down "无启用转发规则"
+    elif [[ "$bad" -gt 0 && "$bad" -ge "$total" ]]; then
+        health_mark down "所有商家入口均未监听"
+    elif [[ "$bad" -gt 0 ]]; then
+        health_mark warning "部分商家入口未监听"
+    else
+        printf '* 商家入口监听汇总：%s/%s 正常\n' "$ok" "$total"
+    fi
+    RULE_ID="$saved_rule_id"; RULE_NOTE="$saved_note"; RULE_ENABLED="$saved_enabled"; CLIENT_PORT="$saved_client"; NAT_PUBLIC_PORT="$saved_nat_public"
+    TRANSIT_PORT="$saved_transit"; LANDING_HOST="$saved_landing_host"; LANDING_PORT="$saved_landing_port"; FORWARD_PROTO="$saved_proto"
+}
+
+print_nat_ingress_nat_peer_health() {
+    local profile_id="$1" rule_id nat_port nc_cmd reachable=0 bad=0 total=0 host="${NAT_PUBLIC_HOST:-}"
+    local saved_rule_id="${RULE_ID:-}" saved_note="${RULE_NOTE:-}" saved_enabled="${RULE_ENABLED:-}" saved_client="${CLIENT_PORT:-}" saved_nat_public="${NAT_PUBLIC_PORT:-}"
+    local saved_transit="${TRANSIT_PORT:-}" saved_landing_host="${LANDING_HOST:-}" saved_landing_port="${LANDING_PORT:-}" saved_proto="${FORWARD_PROTO:-both}"
+    [[ -n "$host" ]] || {
+        printf '* 商家 NAT/IX 入口：未配置\n'
+        health_mark down "商家入口未配置"
+        RULE_ID="$saved_rule_id"; RULE_NOTE="$saved_note"; RULE_ENABLED="$saved_enabled"; CLIENT_PORT="$saved_client"; NAT_PUBLIC_PORT="$saved_nat_public"
+        TRANSIT_PORT="$saved_transit"; LANDING_HOST="$saved_landing_host"; LANDING_PORT="$saved_landing_port"; FORWARD_PROTO="$saved_proto"
+        return 0
+    }
+    nc_cmd="$(detect_nc_cmd 2>/dev/null || true)"
+    for rule_id in $(profile_rule_ids "$profile_id"); do
+        load_rule "$profile_id" "$rule_id" || continue
+        [[ "${RULE_ENABLED:-true}" == "true" ]] || continue
+        nat_port="$(rule_nat_public_port_value 2>/dev/null || true)"
+        [[ -n "$nat_port" ]] || continue
+        total=$((total + 1))
+        if [[ -n "$nc_cmd" && "${NAT_LISTENER_PROTO:-both}" != "udp" ]]; then
+            if "$nc_cmd" -vz -w 3 "$host" "$nat_port" >/dev/null 2>&1; then
+                reachable=$((reachable + 1))
+                printf '* [%s] 商家入口 %s:%s：可达\n' "$rule_id" "$host" "$nat_port"
+            else
+                bad=$((bad + 1))
+                printf '* [%s] 商家入口 %s:%s：不可达\n' "$rule_id" "$host" "$nat_port"
+            fi
+        elif et_peer_contains_port "$nat_port"; then
+            reachable=$((reachable + 1))
+            printf '* [%s] 商家入口 %s:%s：已配置 peer\n' "$rule_id" "$host" "$nat_port"
+        else
+            bad=$((bad + 1))
+            printf '* [%s] 商家入口 %s:%s：EasyTier peer 未包含该端口\n' "$rule_id" "$host" "$nat_port"
+        fi
+    done
+    if [[ "$total" -eq 0 ]]; then
+        printf '* 商家 NAT/IX 入口：无启用规则\n'
+        health_mark down "无启用转发规则"
+    elif [[ "$bad" -gt 0 && "$bad" -ge "$total" ]]; then
+        health_mark warning "所有商家入口均不可达或未配置 peer"
+    elif [[ "$bad" -gt 0 ]]; then
+        health_mark warning "部分商家入口不可达或未配置 peer"
+    else
+        printf '* 商家入口汇总：%s/%s 正常\n' "$reachable" "$total"
+    fi
+    RULE_ID="$saved_rule_id"; RULE_NOTE="$saved_note"; RULE_ENABLED="$saved_enabled"; CLIENT_PORT="$saved_client"; NAT_PUBLIC_PORT="$saved_nat_public"
+    TRANSIT_PORT="$saved_transit"; LANDING_HOST="$saved_landing_host"; LANDING_PORT="$saved_landing_port"; FORWARD_PROTO="$saved_proto"
+}
+
 latency_report() {
     require_root "$@"
     local parsed profile_id sample rule_id metric
@@ -10632,57 +10796,32 @@ run_formal_nat_health_check() {
 
     case "${ROLE:-}" in
         nat-transit)
-            set +e
-            check_listener_proto_port "${NAT_LISTENER_PROTO:-${ET_LISTENER_PROTO:-tcp}}" "${NAT_LISTENER_PORT:-${ET_LISTENER_PORT:-0}}"
-            rc=$?
-            set -e
-            case "$rc" in
-                0) printf '* 商家入口监听：正常\n' ;;
-                2) printf '* 商家入口监听：无法检查\n'; health_mark warning "无法检查商家入口监听" ;;
-                *) printf '* 商家入口监听：未检测到\n'; health_mark down "商家入口未监听" ;;
-            esac
+            print_nat_transit_local_listener_health "$profile_id"
 
             route_target="${INGRESS_ET_IP:-}"
             if command_exists ip && [[ -n "$route_target" ]]; then
                 if ip route get "$route_target" >/dev/null 2>&1; then
-                    printf '* 连接 NAT IX：正常\n'
+                    printf '* 公网入口虚拟网：路由已建立（%s）\n' "$route_target"
                 else
-                    printf '* 连接 NAT IX：等待公网入口机接入\n'
+                    printf '* 公网入口虚拟网：等待公网入口机接入（%s）\n' "$route_target"
                     health_mark warning "公网入口机尚未接入或路由未建立"
                 fi
             else
-                printf '* 连接 NAT IX：无法检查\n'
-                health_mark warning "无法检查公网入口机连接"
+                printf '* 公网入口虚拟网：无法检查\n'
+                health_mark warning "无法检查公网入口虚拟网"
             fi
-
-            tcp_target_host="${LANDING_HOST:-}"
-            tcp_target_port="${LANDING_PORT:-}"
             ;;
         nat-ingress)
-            if [[ -n "${NAT_PUBLIC_HOST:-}" && -n "${NAT_LISTENER_PORT:-}" ]]; then
-                if nc_cmd="$(detect_nc_cmd 2>/dev/null)" && [[ "${NAT_LISTENER_PROTO:-both}" != "udp" ]]; then
-                    if "$nc_cmd" -vz -w 3 "$NAT_PUBLIC_HOST" "$NAT_LISTENER_PORT" >/dev/null 2>&1; then
-                        printf '* 连接 NAT IX：正常\n'
-                    else
-                        printf '* 连接 NAT IX：不可达\n'
-                        health_mark warning "商家入口暂不可达"
-                    fi
-                else
-                    printf '* 连接 NAT IX：已配置\n'
-                fi
-            else
-                printf '* 连接 NAT IX：未配置\n'
-                health_mark down "商家入口未配置"
-            fi
-
-            tcp_target_host="${NAT_ET_IP:-}"
-            tcp_target_port="${TRANSIT_PORT:-}"
+            print_nat_ingress_nat_peer_health "$profile_id"
             ;;
     esac
 
-    if [[ -n "$tcp_target_host" && -n "$tcp_target_port" ]]; then
+    enabled_rules="$(profile_enabled_rule_count "$profile_id")"
+    if [[ "${enabled_rules:-0}" -gt 1 ]]; then
+        printf '* 落地服务：%s 条启用规则，详见下方「转发规则」\n' "$enabled_rules"
+    elif [[ "${ROLE:-}" == "nat-transit" && -n "${LANDING_HOST:-}" && -n "${LANDING_PORT:-}" ]]; then
         if nc_cmd="$(detect_nc_cmd 2>/dev/null)" && [[ "${FORWARD_PROTO:-both}" != "udp" ]]; then
-            if "$nc_cmd" -vz -w 3 "$tcp_target_host" "$tcp_target_port" >/dev/null 2>&1; then
+            if "$nc_cmd" -vz -w 3 "${LANDING_HOST:-}" "${LANDING_PORT:-}" >/dev/null 2>&1; then
                 printf '* 落地服务：可达\n'
             else
                 printf '* 落地服务：不可达\n'
@@ -10691,9 +10830,19 @@ run_formal_nat_health_check() {
         else
             printf '* 落地服务：已配置\n'
         fi
+    elif [[ "${ROLE:-}" == "nat-ingress" && -n "${NAT_ET_IP:-}" && -n "${TRANSIT_PORT:-}" ]]; then
+        if nc_cmd="$(detect_nc_cmd 2>/dev/null)" && [[ "${FORWARD_PROTO:-both}" != "udp" ]]; then
+            if "$nc_cmd" -vz -w 3 "${NAT_ET_IP:-}" "${TRANSIT_PORT:-}" >/dev/null 2>&1; then
+                printf '* 虚拟网中转：可达\n'
+            else
+                printf '* 虚拟网中转：不可达\n'
+                health_mark warning "虚拟网中转 TCP 探测失败"
+            fi
+        else
+            printf '* 虚拟网中转：已配置\n'
+        fi
     else
-        printf '* 落地服务：未配置\n'
-        health_mark down "落地服务未配置"
+        printf '* 落地/中转：未配置或详见下方「转发规则」\n'
     fi
 
     IFS=$'\t' read -r counter_state counter_packets counter_bytes <<<"$(profile_counter_health_status)"
@@ -16711,6 +16860,9 @@ main() {
             ;;
         show-easytier-status)
             show_easytier_status "${args[1]:-}"
+            ;;
+        diagnose)
+            diagnose "${args[1]:-}"
             ;;
         panel-guide)
             panel_guide_cmd "${args[1]:-}"

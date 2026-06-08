@@ -1,6 +1,6 @@
 # ix-transit-fabric
 
-当前版本：`1.2.0-alpha.13`
+当前版本：`1.2.0-alpha.14`
 
 `ix-transit-fabric` 用于管理 NAT-IX 中转线路：公网入口机接收客户端连接，通过 EasyTier 连接 NAT IX 机器，NAT IX 机器再用 nftables 转发到落地机业务端口。
 
@@ -175,6 +175,7 @@ NAT IX 接入码 v4 使用 `code_schema=4`，每条 `rules` 规则包含独立 `
 
 ## alpha 注意事项
 
+- `1.2.0-alpha.14` 新增 `diagnose` 一键诊断；health 逐规则检查商家入口；导入同步展示规则 ID diff。
 - `1.2.0-alpha.13` 增强 show-easytier-status 诊断输出；verify-nft-profiles 中文化；NAT IX 规则一致性检查；导入/增规则摘要附带诊断命令。
 - `1.2.0-alpha.12` 修复 NAT IX 多 listener 未宣告 `--mapped-listeners` 导致第二条及后续转发不通；规则变更后自动重启 EasyTier 并等待就绪；端口段 prompt 不再打印完整展开列表。
 - `1.2.0-alpha.11` 修复公网入口机重复导入接入码时 EasyTier 未重启导致多规则不通；规则变更刷新接入码不再无谓轮换组网密钥；修复端口段 spec 在子 shell 中丢失。

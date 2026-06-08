@@ -1,5 +1,22 @@
 # Changelog
 
+## 1.2.0-alpha.14
+
+### Added
+
+- 新增 `bash install.sh diagnose [线路ID]` 一键诊断：合并 EasyTier 状态、nft/一致性检查、转发规则健康与操作提示。
+
+### Fixed
+
+- 健康检查改为逐规则探测商家入口（NAT IX listener / 公网入口 peer），不再只测第一个端口。
+- 修正 NAT IX 侧 health 文案（「连接 NAT IX」→「公网入口虚拟网」）。
+
+### Changed
+
+- 公网入口导入同步结果展示新增/更新规则 ID 列表。
+- 增规则提示明确 NAT IX 已生效、公网入口需重新导入。
+- 完成摘要/增规则后的快速检查改为 `diagnose` 命令。
+
 ## 1.2.0-alpha.13
 
 ### Fixed
