@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-SCRIPT_VERSION="1.2.0-alpha.11"
+SCRIPT_VERSION="1.2.0-alpha.12"
 APP_NAME="ix-transit-fabric"
 
 CONFIG_DIR="/etc/ix-transit-fabric"
@@ -2326,7 +2326,6 @@ prompt_nat_public_ports() {
             PROMPT_NAT_PUBLIC_PORT_RAW="$value"
             PROMPT_NAT_PUBLIC_PORT_MODE="$(nat_public_port_mode_for_input "$value")"
             PROMPT_NAT_PUBLIC_PORTS_NORMALIZED="$normalized"
-            printf '%s\n' "$normalized"
             return 0
         fi
         log_warn "商家入口端口必须是 1-65535 的单端口、端口段或逗号列表。"
@@ -2964,7 +2963,7 @@ clear_config_vars() {
     for key in PROFILE_ID PROFILE_NAME ENABLED LANDING_PUBLIC_HOST EASYTIER_VERSION CREATED_AT UPDATED_AT REMARK \
         LINE_GROUP LINE_ROLE LINE_PRIORITY HEALTH_CHECK_ENABLED HEALTH_STATUS LAST_HEALTH_CHECK_AT LAST_HEALTH_REASON LAST_SWITCH_AT SWITCH_NOTE \
         ROLE NAT_DIRECTION ET_NETWORK_NAME ET_NETWORK_SECRET ET_HOSTNAME ET_IPV4 ET_SUBNET \
-        ET_LISTENER_PROTO ET_LISTENER_PORT ET_LISTENERS ET_PEERS ET_NO_LISTENER \
+        ET_LISTENER_PROTO ET_LISTENER_PORT ET_LISTENERS ET_MAPPED_LISTENERS ET_PEERS ET_NO_LISTENER \
         LISTENER_PROTOS LISTENER_PORT CNIX_ENTRY_PROTOS \
         ET_PRIVATE_MODE ET_EXPLICIT_ONLY IXTF_EXPLICIT_ONLY CNIX_ENTRY_PROTO CNIX_ENTRY_HOST CNIX_ENTRY_PORT \
         LOCAL_PORT LANDING_ET_IP REMOTE_PORT FORWARD_PROTO SERVICE_PORT CODE_LISTENER_PORT \
@@ -3007,7 +3006,7 @@ load_env_from_path() {
             PROFILE_ID|PROFILE_NAME|ENABLED|LANDING_PUBLIC_HOST|EASYTIER_VERSION|CREATED_AT|UPDATED_AT|REMARK|\
             LINE_GROUP|LINE_ROLE|LINE_PRIORITY|HEALTH_CHECK_ENABLED|HEALTH_STATUS|LAST_HEALTH_CHECK_AT|LAST_HEALTH_REASON|LAST_SWITCH_AT|SWITCH_NOTE|\
             ROLE|NAT_DIRECTION|ET_NETWORK_NAME|ET_NETWORK_SECRET|ET_HOSTNAME|ET_IPV4|ET_SUBNET|\
-            ET_LISTENER_PROTO|ET_LISTENER_PORT|ET_LISTENERS|ET_PEERS|\
+            ET_LISTENER_PROTO|ET_LISTENER_PORT|ET_LISTENERS|ET_MAPPED_LISTENERS|ET_PEERS|\
             LISTENER_PROTOS|LISTENER_PORT|CNIX_ENTRY_PROTOS|\
             ET_NO_LISTENER|ET_PRIVATE_MODE|ET_EXPLICIT_ONLY|IXTF_EXPLICIT_ONLY|CNIX_ENTRY_PROTO|CNIX_ENTRY_HOST|\
             CNIX_ENTRY_PORT|LOCAL_PORT|LANDING_ET_IP|REMOTE_PORT|FORWARD_PROTO|\
@@ -3331,6 +3330,7 @@ save_profile_env() {
                     printf 'ET_LISTENER_PROTO=%s\n' "$NAT_LISTENER_PROTO"
                     printf 'ET_LISTENER_PORT=%s\n' "$NAT_LISTENER_PORT"
                     printf 'ET_LISTENERS=%s\n' "$(quote_env_value "${ET_LISTENERS:-$(listener_urls_for_ports_value "$NAT_LISTENER_PROTO" "${NAT_PUBLIC_PORTS:-$NAT_LISTENER_PORT}" 2>/dev/null || true)}")"
+                    [[ -n "${ET_MAPPED_LISTENERS:-}" ]] && printf 'ET_MAPPED_LISTENERS=%s\n' "$(quote_env_value "$ET_MAPPED_LISTENERS")"
                     printf 'ET_NO_LISTENER=%s\n' "${ET_NO_LISTENER:-false}"
                 else
                     printf 'INGRESS_PUBLIC_HOST=%s\n' "$(quote_env_value "$INGRESS_PUBLIC_HOST")"
@@ -3735,6 +3735,14 @@ print_easytier_listeners() {
     done <<<"${ET_LISTENERS// /$'\n'}"
 }
 
+easytier_supports_mapped_listeners() {
+    local et_path help_text
+    et_path="$(detect_easytier_binary 2>/dev/null || true)"
+    [[ -n "$et_path" ]] || return 0
+    help_text="$("$et_path" --help 2>&1 || true)"
+    grep -q -- '--mapped-listeners' <<<"$help_text"
+}
+
 render_easytier_wrapper() {
     install -d -m 0755 "$LIBEXEC_DIR"
     local tmp
@@ -3858,6 +3866,15 @@ case "\$ROLE" in
                 [[ -n "\$listener" ]] || continue
                 args+=(--listeners "\$listener")
             done
+            if [[ -n "\${ET_MAPPED_LISTENERS:-}" ]]; then
+                if "\$EASYTIER_BIN" --help 2>&1 | grep -q -- '--mapped-listeners'; then
+                    read -r -a mapped_items <<<"\$ET_MAPPED_LISTENERS"
+                    for mapped in "\${mapped_items[@]}"; do
+                        [[ -n "\$mapped" ]] || continue
+                        args+=(--mapped-listeners "\$mapped")
+                    done
+                fi
+            fi
         else
             require_var ET_PEERS
             read -r -a peer_items <<<"\$ET_PEERS"
@@ -4509,6 +4526,7 @@ refresh_nat_public_endpoints_for_profile() {
             ET_LISTENER_PROTO="$NAT_LISTENER_PROTO"
             ET_LISTENER_PORT="$NAT_LISTENER_PORT"
             ET_LISTENERS="$(listener_urls_for_ports_value "${NAT_LISTENER_PROTO:-both}" "$ports" 2>/dev/null || true)"
+            ET_MAPPED_LISTENERS="$(peer_urls_for_ports_value "${NAT_LISTENER_PROTO:-both}" "$NAT_PUBLIC_HOST" "$ports" 2>/dev/null || true)"
             ET_NO_LISTENER="${ET_NO_LISTENER:-false}"
             ;;
         nat-ingress)
@@ -7885,6 +7903,10 @@ regenerate_nat_profile_code() {
     save_profile_code_file "$profile_id" "$(generate_nat_code)"
     printf '已生成新的接入码。\n'
     printf '公网入口机需要重新导入新的接入码。\n'
+    if [[ "${ROLE:-}" == "nat-transit" && "${NAT_DIRECTION:-ingress-listener}" == "nat-listener" ]]; then
+        render_profile_service_files
+        restart_profile "$profile_id" || log_warn "接入码已更新，但 EasyTier 服务重启未完成。"
+    fi
     show_code "$profile_id"
 }
 
@@ -9159,6 +9181,7 @@ restart_profile() {
         log_warn "Profile 服务重启失败：${service}，请运行 bash install.sh export-diagnostic"
         return 1
     fi
+    wait_for_easytier_ready "$profile_id" 30 || log_warn "EasyTier 重启后未在预期时间内就绪，请运行 bash install.sh show-easytier-status ${profile_id}"
     log_debug "已重启 Profile 服务：${service}"
 }
 

@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.2.0-alpha.12
+
+### Fixed
+
+- 修复 NAT IX 多 listener 未向 EasyTier 宣告 `--mapped-listeners`，导致第二条及后续转发规则 peer 无法正确连接商家公网入口。
+- 修复规则变更后 NAT IX 仅更新 env 未重启 EasyTier，listener/peer 未生效。
+- 修复 `restart_profile` 重启后未等待 EasyTier 就绪即返回，实机导入时易出现短暂不可用。
+
+### Changed
+
+- NAT IX（nat-listener）刷新 endpoint 时写入 `ET_MAPPED_LISTENERS`，wrapper 在 EasyTier 支持时追加 `--mapped-listeners`。
+- `prompt_nat_public_ports` 不再向终端 stdout 打印完整展开端口列表（spec 仍正确写入接入码）。
+
 ## 1.2.0-alpha.11
 
 ### Fixed

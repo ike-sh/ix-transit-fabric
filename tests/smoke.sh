@@ -13,8 +13,8 @@ bash -n install.sh
 bash -n tests/smoke.sh
 
 version_output="$(bash install.sh --version)"
-[[ "$version_output" == "ix-transit-fabric 1.2.0-alpha.11" ]]
-[[ "$(tr -d '\r\n' < VERSION)" == "1.2.0-alpha.11" ]]
+[[ "$version_output" == "ix-transit-fabric 1.2.0-alpha.12" ]]
+[[ "$(tr -d '\r\n' < VERSION)" == "1.2.0-alpha.12" ]]
 bash install.sh --help >/dev/null
 help_no_color="$(IXTF_COLOR=never bash install.sh --help)"
 ! grep -q $'\033' <<<"$help_no_color"
@@ -76,7 +76,9 @@ for token in \
     "无效选择，请输入列表中的序号" \
     "公网入口机不建议直接新增落地规则" \
     "NAT IX 机器新增转发规则" \
-    "请刷新接入码，并在公网入口机重新导入" \
+    "公网入口机需要重新导入接入码才能同步该规则" \
+    "公网入口机需要重新导入新的接入码" \
+    "公网入口机需要重新导入接入码才能同步该规则" \
     "已应用全部线路的 nftables 项目表" \
     "TCP/UDP" \
     "线路类型：" \
@@ -121,7 +123,7 @@ for token in \
     "转发规则管理" \
     "alpha 注意事项" \
     "公网入口机侧指定" \
-    "1.2.0-alpha.11" \
+    "1.2.0-alpha.12" \
     "IXTF_COLOR=never"; do
     grep -q -- "$token" README.md
 done
@@ -462,6 +464,9 @@ trap cleanup_unit_tmp EXIT
     grep -q 'nat-ix.example:20000' <<<"$ET_PEERS"
     grep -q 'nat-ix.example:20001' <<<"$ET_PEERS"
     grep -q 'nat-ix.example:20002' <<<"$ET_PEERS"
+    grep -q 'nat-ix.example:20000' <<<"$ET_MAPPED_LISTENERS"
+    grep -q 'nat-ix.example:20001' <<<"$ET_MAPPED_LISTENERS"
+    grep -q 'nat-ix.example:20002' <<<"$ET_MAPPED_LISTENERS"
     saved_nat_public="${NAT_PUBLIC_PORT:-}"
     RULE_ID=rule-main
     print_nat_ingress_import_complete_summary ing-sync >/dev/null
