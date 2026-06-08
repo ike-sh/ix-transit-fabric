@@ -1,6 +1,6 @@
 # ix-transit-fabric
 
-当前版本：`1.2.0-alpha.9`
+当前版本：`1.2.0-alpha.10`
 
 `ix-transit-fabric` 用于管理 NAT-IX 中转线路：公网入口机接收客户端连接，通过 EasyTier 连接 NAT IX 机器，NAT IX 机器再用 nftables 转发到落地机业务端口。
 
@@ -175,6 +175,7 @@ NAT IX 接入码 v4 使用 `code_schema=4`，每条 `rules` 规则包含独立 `
 
 ## alpha 注意事项
 
+- `1.2.0-alpha.10` 修复端口遍历上下文遗漏 `NAT_PUBLIC_PORT`；导入一致性检查仅校验接入码内规则；清理死代码与重复刷新提示。
 - `1.2.0-alpha.9` 修复公网入口机导入后 `saved_nat_public` 未定义报错；新增/修改/启用/停止/删除规则后可立即生成接入码；接入码不再携带完整展开的端口池；普通输出进一步精简；导入后增加规则数、nftables 和 EasyTier peer 一致性检查。
 - `1.2.0-alpha.8` 为每条规则增加独立商家入口端口，接入码升级到 `code_schema=4`，并修复重复导入同一 NAT IX 接入码造成新建冲突线路的问题。
 - `1.2.0-alpha.7` 修复接入码空白输入、多规则导入保存、同 `rule_id` 端口冲突误判、普通摘要过长和关键提示颜色。

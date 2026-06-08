@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.2.0-alpha.10
+
+### Fixed
+
+- 修复 `current_profile_forward_client_ports()` 恢复上下文时遗漏 `NAT_PUBLIC_PORT` 的问题。
+- 修复公网入口导入一致性检查将磁盘上非接入码规则纳入校验导致误报的问题。
+
+### Changed
+
+- 删除已无调用的 `print_rule_sync_required_notice()` 死代码。
+- 规则编辑菜单统一由 `prompt_refresh_access_code_after_rule_change` 提示刷新接入码，移除重复内联文案。
+
 ## 1.2.0-alpha.9
 
 ### Fixed

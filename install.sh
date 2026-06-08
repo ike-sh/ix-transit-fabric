@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-SCRIPT_VERSION="1.2.0-alpha.9"
+SCRIPT_VERSION="1.2.0-alpha.10"
 APP_NAME="ix-transit-fabric"
 
 CONFIG_DIR="/etc/ix-transit-fabric"
@@ -4870,7 +4870,7 @@ current_profile_forward_client_ports() {
             done
             ;;
     esac
-    RULE_ID="$saved_rule_id"; RULE_NOTE="$saved_note"; RULE_ENABLED="$saved_enabled"; CLIENT_PORT="$saved_client"; TRANSIT_PORT="$saved_transit"; LANDING_HOST="$saved_landing_host"; LANDING_PORT="$saved_landing_port"; FORWARD_PROTO="$saved_proto"; CREATED_AT="$saved_created"; UPDATED_AT="$saved_updated"
+    RULE_ID="$saved_rule_id"; RULE_NOTE="$saved_note"; RULE_ENABLED="$saved_enabled"; CLIENT_PORT="$saved_client"; NAT_PUBLIC_PORT="${saved_nat_public:-}"; TRANSIT_PORT="$saved_transit"; LANDING_HOST="$saved_landing_host"; LANDING_PORT="$saved_landing_port"; FORWARD_PROTO="$saved_proto"; CREATED_AT="$saved_created"; UPDATED_AT="$saved_updated"
 }
 
 profile_forward_client_ports_for_conflict() (
@@ -6406,8 +6406,16 @@ bash install.sh verify-nft-profiles
 EOF
 }
 
+profile_has_code_rule_id() {
+    local want="$1" line rule_id
+    while IFS=$'\t' read -r rule_id _ _ _ _ _ _ _ || [[ -n "${rule_id:-}" ]]; do
+        [[ "${rule_id:-}" == "$want" ]] && return 0
+    done <<<"${CODE_RULES_TSV:-}"
+    return 1
+}
+
 verify_nat_ingress_import_consistency() {
-    local profile_id="$1" expected_count="${2:-0}" rule_id issues=() saved_count=0 enabled_count=0
+    local profile_id="$1" expected_count="${2:-0}" rule_id issues=() saved_count=0 enabled_count=0 code_enabled_count=0
     local saved_rule_id="${RULE_ID:-}" saved_note="${RULE_NOTE:-}" saved_enabled="${RULE_ENABLED:-}" saved_client="${CLIENT_PORT:-}" saved_nat_public="${NAT_PUBLIC_PORT:-}"
     local saved_transit="${TRANSIT_PORT:-}" saved_landing_host="${LANDING_HOST:-}" saved_landing_port="${LANDING_PORT:-}" saved_proto="${FORWARD_PROTO:-both}" saved_created="${CREATED_AT:-}" saved_updated="${UPDATED_AT:-}"
     local nft_text expected_rules actual_rules missing_rules nat_port dport
@@ -6415,6 +6423,9 @@ verify_nat_ingress_import_consistency() {
     load_profile_or_die "$profile_id"
     normalize_profile_compat_vars
     for rule_id in $(profile_rule_ids "$profile_id"); do
+        if [[ -n "${CODE_RULES_TSV:-}" ]] && ! profile_has_code_rule_id "$rule_id"; then
+            continue
+        fi
         load_rule "$profile_id" "$rule_id" || continue
         saved_count=$((saved_count + 1))
         [[ "${RULE_ENABLED:-true}" == "true" ]] || continue
@@ -6441,8 +6452,16 @@ verify_nat_ingress_import_consistency() {
             issues+=("EasyTier peer 未包含商家入口端口 ${nat_port}")
         fi
     done
+    if [[ -n "${CODE_RULES_TSV:-}" ]]; then
+        while IFS=$'\t' read -r rule_id _ enabled _ _ _ _ _ || [[ -n "${rule_id:-}" ]]; do
+            [[ -n "${rule_id:-}" ]] || continue
+            [[ "${enabled:-true}" == "true" ]] && code_enabled_count=$((code_enabled_count + 1))
+        done <<<"${CODE_RULES_TSV:-}"
+    fi
     if [[ "$expected_count" -gt 0 && "$saved_count" -ne "$expected_count" ]]; then
         issues+=("实际保存规则数 ${saved_count} 与同步结果 ${expected_count} 不一致")
+    elif [[ "${code_enabled_count:-0}" -gt 0 && "$enabled_count" -ne "$code_enabled_count" ]]; then
+        issues+=("启用规则数 ${enabled_count} 与接入码启用规则数 ${code_enabled_count} 不一致")
     fi
     expected_rules="$(expected_forwarding_nft_rules 2>/dev/null || true)"
     if command_exists nft && nft list table ip "$NFT_TABLE" >/dev/null 2>&1; then
@@ -8519,11 +8538,6 @@ EOF
     return 0
 }
 
-print_rule_sync_required_notice() {
-    printf '规则已修改，但公网入口机尚未同步。\n'
-    printf '请刷新接入码，并在公网入口机重新导入。\n'
-}
-
 prompt_refresh_access_code_after_rule_change() {
     local profile_id="$1"
     [[ -n "${IXTF_TEST_SOURCE:-}" ]] && return 0
@@ -8606,8 +8620,6 @@ EOF
                     value="$(prompt_port "请输入新的虚拟网中转端口" "${TRANSIT_PORT:-}")" || return 1
                     port_used_by_profile_rule "$profile_id" transit "$value" "$rule_id" && die_user "虚拟网中转端口已被同线路其他规则使用：${value}"
                     TRANSIT_PORT="$value"
-                    printf '该修改会影响公网入口机。\n'
-                    printf '请刷新接入码，并在公网入口机重新导入。\n'
                     changed=1
                 else
                     printf '公网入口线路不允许修改虚拟网中转端口。请到 NAT IX 机器修改并刷新接入码。\n'
@@ -8620,8 +8632,6 @@ EOF
                     nat_public_port_in_pool "$value" || die_user "商家入口端口不在 NAT_PUBLIC_PORTS 中：${value}"
                     port_used_by_profile_rule "$profile_id" nat-public "$value" "$rule_id" && die_user "商家入口端口已被同线路其他规则使用：${value}"
                     NAT_PUBLIC_PORT="$value"
-                    printf '该修改会影响公网入口机。\n'
-                    printf '请刷新接入码，并在公网入口机重新导入。\n'
                     changed=1
                 else
                     printf '公网入口线路不能修改商家入口端口；请在 NAT IX 机器修改并刷新接入码。\n'
