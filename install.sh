@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-SCRIPT_VERSION="1.2.0-alpha.10"
+SCRIPT_VERSION="1.2.0-alpha.11"
 APP_NAME="ix-transit-fabric"
 
 CONFIG_DIR="/etc/ix-transit-fabric"
@@ -2310,6 +2310,9 @@ peer_urls_for_ports_value() {
 prompt_nat_public_ports() {
     local label="$1" default="${2:-}" value normalized
     require_tty
+    PROMPT_NAT_PUBLIC_PORTS_NORMALIZED=""
+    PROMPT_NAT_PUBLIC_PORT_RAW=""
+    PROMPT_NAT_PUBLIC_PORT_MODE=""
     while true; do
         if [[ -n "$default" ]]; then
             printf '%s（可填单端口、端口段或逗号列表，默认 %s）：' "$label" "$default" >&2
@@ -2322,6 +2325,7 @@ prompt_nat_public_ports() {
         if normalized="$(normalize_nat_public_ports_input "$value")"; then
             PROMPT_NAT_PUBLIC_PORT_RAW="$value"
             PROMPT_NAT_PUBLIC_PORT_MODE="$(nat_public_port_mode_for_input "$value")"
+            PROMPT_NAT_PUBLIC_PORTS_NORMALIZED="$normalized"
             printf '%s\n' "$normalized"
             return 0
         fi
@@ -6075,7 +6079,8 @@ collect_nat_listener_inputs() {
     default_transit_port="$(pick_random_port || true)"
 
     NAT_PUBLIC_HOST="$(prompt_validated "请输入商家分配给你的 NAT/IX 入口地址" "" validate_host "请输入商家分配给你的入口 IP 或域名。")" || return 1
-    nat_public_ports_input="$(prompt_nat_public_ports "请输入商家分配给你的 NAT/IX 入口端口或端口段" "")" || return 1
+    prompt_nat_public_ports "请输入商家分配给你的 NAT/IX 入口端口或端口段" "" || return 1
+    nat_public_ports_input="${PROMPT_NAT_PUBLIC_PORTS_NORMALIZED:-}"
     NAT_PUBLIC_PORT_SPEC="${PROMPT_NAT_PUBLIC_PORT_RAW:-$nat_public_ports_input}"
     NAT_PUBLIC_PORTS="$nat_public_ports_input"
     NAT_PUBLIC_PORT_MODE="${PROMPT_NAT_PUBLIC_PORT_MODE:-$(nat_public_port_mode_for_input "$nat_public_ports_input")}"
@@ -6119,7 +6124,7 @@ collect_nat_listener_inputs() {
     fi
     ET_LISTENER_PROTO="$NAT_LISTENER_PROTO"
     ET_LISTENER_PORT="$NAT_LISTENER_PORT"
-    ET_LISTENERS="$(listener_urls_for_ports_value "$NAT_LISTENER_PROTO" "$NAT_PUBLIC_PORTS")"
+    ET_LISTENERS="$(listener_urls_for_ports_value "$NAT_LISTENER_PROTO" "$NAT_LISTENER_PORT")"
     ET_NO_LISTENER="false"
     ET_PRIVATE_MODE="true"
     ET_EXPLICIT_ONLY="true"
@@ -7640,7 +7645,7 @@ add_nat_ingress_from_listener_code() {
         log_warn "nftables 校验未完全通过，可运行 bash install.sh verify-nft-profiles 查看详情。"
     fi
     printf '正在启动 EasyTier...\n' >&2
-    start_profile "$PROFILE_ID"
+    restart_profile "$PROFILE_ID" || log_warn "EasyTier 服务重启未完成，请运行 bash install.sh restart-profile ${PROFILE_ID}"
     printf '完成\n' >&2
     if ! verify_nat_ingress_import_consistency "$PROFILE_ID" "${IXTF_LAST_SYNC_SAVED_RULE_COUNT:-0}"; then
         return 1
@@ -7867,6 +7872,20 @@ refresh_code() {
         save_landing_code_file "$(generate_landing_code)"
         show_code
     fi
+}
+
+regenerate_nat_profile_code() {
+    local profile_id="${1:-${PROFILE_ID:-}}"
+    profile_id="$(resolve_profile_id "$profile_id")"
+    load_profile_or_die "$profile_id"
+    [[ "${ROLE:-}" == "nat-ingress" || ( "${ROLE:-}" == "nat-transit" && "${NAT_DIRECTION:-ingress-listener}" == "nat-listener" ) ]] || die_user "regenerate_nat_profile_code 只适用于 NAT-IX 线路。"
+    validate_easytier_args
+    refresh_nat_public_endpoints_for_profile "$profile_id"
+    save_profile_env "$profile_id"
+    save_profile_code_file "$profile_id" "$(generate_nat_code)"
+    printf '已生成新的接入码。\n'
+    printf '公网入口机需要重新导入新的接入码。\n'
+    show_code "$profile_id"
 }
 
 refresh_nat_code() {
@@ -8523,9 +8542,7 @@ EOF
     RULE_ENABLED="true"
     save_rule_env "$profile_id" "$rule_id"
     apply_nft_all
-    load_profile_or_die "$profile_id"
-    refresh_nat_public_endpoints_for_profile "$profile_id"
-    save_profile_env "$profile_id" >/dev/null
+    refresh_profile_after_rule_change "$profile_id"
     load_rule "$profile_id" "$rule_id" || die_user "新增规则已保存，但无法重新读取：${rule_id}"
     printf '\n转发规则已新增：\n\n'
     printf '* 规则：%s\n' "$rule_id"
@@ -8545,10 +8562,7 @@ prompt_refresh_access_code_after_rule_change() {
     [[ "${ROLE:-}" == "nat-transit" && "${NAT_DIRECTION:-ingress-listener}" == "nat-listener" ]] || return 0
     printf '\n公网入口机需要重新导入接入码才能同步该规则。\n'
     if [[ "$(prompt_yes_no "是否现在生成新的接入码" "true")" == "true" ]]; then
-        refresh_profile_after_rule_change "$profile_id"
-        render_profile_service_files
-        restart_profile "$profile_id" || log_warn "规则已保存，但 EasyTier 服务重启未完成。"
-        refresh_code "$profile_id"
+        regenerate_nat_profile_code "$profile_id"
     else
         printf '稍后可在"转发规则管理 -> 刷新接入码"中生成。\n'
     fi
@@ -8560,6 +8574,10 @@ refresh_profile_after_rule_change() {
     load_profile_or_die "$profile_id"
     refresh_nat_public_endpoints_for_profile "$profile_id"
     save_profile_env "$profile_id" >/dev/null
+    if [[ "${NAT_DIRECTION:-ingress-listener}" == "nat-listener" && ( "${ROLE:-}" == "nat-transit" || "${ROLE:-}" == "nat-ingress" ) ]]; then
+        render_profile_service_files
+        restart_profile "$profile_id" || log_warn "规则已保存，但 EasyTier 服务重启未完成。"
+    fi
 }
 
 menu_edit_rule() {
@@ -8821,9 +8839,7 @@ add_rule() {
     fi
     save_rule_env "$profile_id" "$rule_id"
     apply_nft_all || true
-    load_profile_or_die "$profile_id"
-    refresh_nat_public_endpoints_for_profile "$profile_id"
-    save_profile_env "$profile_id" >/dev/null
+    refresh_profile_after_rule_change "$profile_id"
     load_rule "$profile_id" "$rule_id" || die_user "新增规则已保存，但无法重新读取：${rule_id}"
     printf '转发规则已新增：\n'
     printf '规则：%s\n' "$rule_id"

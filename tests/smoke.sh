@@ -13,8 +13,8 @@ bash -n install.sh
 bash -n tests/smoke.sh
 
 version_output="$(bash install.sh --version)"
-[[ "$version_output" == "ix-transit-fabric 1.2.0-alpha.10" ]]
-[[ "$(tr -d '\r\n' < VERSION)" == "1.2.0-alpha.10" ]]
+[[ "$version_output" == "ix-transit-fabric 1.2.0-alpha.11" ]]
+[[ "$(tr -d '\r\n' < VERSION)" == "1.2.0-alpha.11" ]]
 bash install.sh --help >/dev/null
 help_no_color="$(IXTF_COLOR=never bash install.sh --help)"
 ! grep -q $'\033' <<<"$help_no_color"
@@ -121,7 +121,7 @@ for token in \
     "转发规则管理" \
     "alpha 注意事项" \
     "公网入口机侧指定" \
-    "1.2.0-alpha.10" \
+    "1.2.0-alpha.11" \
     "IXTF_COLOR=never"; do
     grep -q -- "$token" README.md
 done
@@ -398,6 +398,15 @@ trap cleanup_unit_tmp EXIT
     ! grep -q '"nat_public_ports":"18301,18302,18303' <<<"$(base64url_decode "${range_code#IXTF1:}")"
     grep -q '"nat_public_port_spec":"18301-18399"' <<<"$(base64url_decode "${range_code#IXTF1:}")"
     grep -q '"nat_public_port":20001' <<<"$(base64url_decode "${range_code#IXTF1:}")"
+
+    value="18301-18399"
+    normalized="$(normalize_nat_public_ports_input "$value")"
+    PROMPT_NAT_PUBLIC_PORT_RAW="$value"
+    PROMPT_NAT_PUBLIC_PORT_MODE="$(nat_public_port_mode_for_input "$value")"
+    PROMPT_NAT_PUBLIC_PORTS_NORMALIZED="$normalized"
+    spec_from_prompt="${PROMPT_NAT_PUBLIC_PORT_RAW:-$PROMPT_NAT_PUBLIC_PORTS_NORMALIZED}"
+    [[ "$spec_from_prompt" == "18301-18399" ]]
+    [[ "$PROMPT_NAT_PUBLIC_PORT_MODE" == "range" ]]
 
     CODE_NAT_LISTENER_PORT=29999
     CODE_RULES_TSV=$'rule-old\told\ttrue\t49999\told.example\t59999\ttcp'

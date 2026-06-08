@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.2.0-alpha.11
+
+### Fixed
+
+- 修复公网入口机重复导入接入码时使用 `start_profile` 而非 `restart_profile`，导致 EasyTier 仍运行旧 peer/密钥、多规则转发不通。
+- 修复 `prompt_nat_public_ports` 在命令替换子 shell 中设置变量丢失，导致端口段接入码 `nat_public_port_spec` 被展开为完整列表。
+- 修复 NAT IX 新增/变更规则后 listener 未及时重启的问题。
+
+### Changed
+
+- 规则变更后生成接入码（`regenerate_nat_profile_code`）不再轮换 `network_secret`；手动「刷新接入码」仍会换密钥。
+- 规则变更后 NAT IX / 公网入口机会自动重启 EasyTier 以应用 listener/peer 变更。
+
 ## 1.2.0-alpha.10
 
 ### Fixed
