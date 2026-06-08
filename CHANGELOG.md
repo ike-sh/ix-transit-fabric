@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.2.0-alpha.18
+
+### Removed
+
+- 移除 panel-landing / panel-ingress 新建入口：`install-panel-landing`、`install-panel-ingress`、`install-panel-ingress-from-code`、`panel-guide` 调用时将提示使用 NAT IX 流程。
+- 移除 README 中 panel 旧模式兼容说明。
+
+### Note
+
+- 磁盘上已有的 panel 类型 Profile 仍可读取运行，但不再支持新建或 panel 向导。
+
 ## 1.2.0-alpha.17
 
 ### Fixed

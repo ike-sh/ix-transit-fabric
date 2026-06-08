@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-SCRIPT_VERSION="1.2.0-alpha.17"
+SCRIPT_VERSION="1.2.0-alpha.18"
 APP_NAME="ix-transit-fabric"
 
 CONFIG_DIR="/etc/ix-transit-fabric"
@@ -227,6 +227,11 @@ color_init
 log_info() { print_info "$*"; }
 log_warn() { print_warn "$*"; }
 log_error() { print_error "$*"; }
+
+panel_mode_removed() {
+    die_user "panel-landing / panel-ingress 已移除。请运行 bash install.sh，使用「创建 NAT IX 中转线路」和「公网入口机导入接入码」。"
+}
+
 debug_enabled() {
     case "${IXTF_DEBUG:-false}" in
         1|true|TRUE|yes|YES|on|ON|debug|DEBUG) return 0 ;;
@@ -308,7 +313,6 @@ ix-transit-fabric - NAT-IX + EasyTier + nftables 中转线路管理脚本
 	  bash install.sh add-ingress-profile-from-code [--code IXTF1:...] [--code-file PATH]
 	  bash install.sh add-nat-ingress-profile
 	  bash install.sh add-nat-transit-profile-from-code [--code IXTF1:...] [--code-file PATH]
-	  bash install.sh panel-guide [--all|线路ID]
 
 	多线路：
 	  bash install.sh list-profiles
@@ -6940,22 +6944,7 @@ panel_guide_all() {
 }
 
 panel_guide_cmd() {
-    require_root "$@"
-    case "${1:-}" in
-        --all)
-            panel_guide_all
-            ;;
-        "")
-            if [[ -d "$PROFILES_DIR" && "$(profile_count)" != "0" ]]; then
-                panel_guide_profile ""
-            else
-                panel_guide
-            fi
-            ;;
-        *)
-            panel_guide_profile "$1"
-            ;;
-    esac
+    panel_mode_removed
 }
 
 nat_guide_profile() {
@@ -7189,24 +7178,7 @@ EOF
 }
 
 install_panel_landing() {
-    require_root "$@"
-    run_profile_install_preflight landing
-    if [[ -n "$INSTALL_ENV_FILE_PATH" ]]; then
-        load_install_env_file "panel-landing"
-    else
-        require_tty install-panel-landing
-        collect_landing_inputs || return 1
-        validate_easytier_args
-    fi
-    ensure_systemctl
-    ensure_listener_port_available_before_start
-    save_env
-    save_landing_code_file "$(generate_landing_code)"
-    render_systemd_service
-    restart_easytier
-    post_install_summary "panel-landing"
-    printf '\n落地机接入码：\n'
-    show_code || true
+    panel_mode_removed
 }
 
 collect_profile_identity() {
@@ -7805,112 +7777,11 @@ add_nat_ingress_from_listener_code() {
 }
 
 install_panel_ingress() {
-    require_root "$@"
-    run_profile_install_preflight ingress
-    if [[ -n "$INSTALL_ENV_FILE_PATH" ]]; then
-        load_install_env_file "panel-ingress"
-    else
-        require_tty install-panel-ingress
-        collect_ingress_inputs || return 1
-        validate_easytier_args
-    fi
-    ensure_systemctl
-    ensure_listener_port_available_before_start
-    if [[ "${FORWARD_ENABLED:-true}" == "true" ]]; then
-        enable_ip_forward
-        apply_nft
-    fi
-    save_env
-    render_systemd_service
-    restart_easytier
-    post_install_summary "panel-ingress"
+    panel_mode_removed
 }
 
 install_panel_ingress_from_code() {
-    local code default_local_port remote_default remote_rc forward_later
-    require_root "$@"
-    run_profile_install_preflight ingress
-    require_tty install-panel-ingress-from-code
-
-    code="$(read_code_from_args_or_prompt)" || die_user "未读取到接入码。"
-    parse_landing_code "$code"
-
-    ROLE="panel-ingress"
-    ET_NETWORK_NAME="$CODE_NETWORK_NAME"
-    ET_NETWORK_SECRET="$CODE_NETWORK_SECRET"
-    LANDING_EASYTIER_VERSION="$CODE_EASYTIER_VERSION"
-    check_easytier_version_compat "$CODE_EASYTIER_VERSION"
-    ET_HOSTNAME="ix-ingress"
-    ET_IPV4="${CODE_SUGGESTED_INGRESS_ET_CIDR:-$(generate_ingress_et_ip "${ET_SUBNET:-$(generate_et_subnet)}")}"
-    ET_SUBNET="${ET_SUBNET:-$(cidr_network24 "$ET_IPV4")}"
-
-    printf '\n已从接入码导入 EasyTier 网络名、网络密钥、落地机 EasyTier IP 和 listener 信息。\n'
-    printf '入口机节点名默认：%s\n' "$ET_HOSTNAME"
-    printf '入口机 EasyTier 虚拟 IP 默认：%s\n' "$ET_IPV4"
-    printf '\n请确认 CNIX 面板出口已经填写落地机 EasyTier listener：\n'
-    printf '  出口 IP：落地 VPS 公网 IP（用户自行确认）\n'
-    printf '  出口端口：%s\n' "$CODE_LISTENER_PORT"
-    printf '  出口协议：%s\n\n' "$(proto_display "$CODE_LISTENER_PROTO")"
-
-    CNIX_ENTRY_HOST="$(prompt_validated "请输入 CNIX 商家提供的入口 IP 或域名" "" validate_host "CNIX 面板入口 IP 或域名不能为空。")" || return 1
-    CNIX_ENTRY_PORT="$(prompt_port "请输入 CNIX 商家提供的入口端口" "")" || return 1
-    printf '如果 CNIX 面板只开了单协议，请在这里选择对应协议；否则直接回车使用 TCP/UDP。\n' >&2
-    CNIX_ENTRY_PROTO=both
-    CNIX_ENTRY_PROTO="$(prompt_entry_proto "请输入 CNIX 商家提供的入口协议（tcp / udp / tcp+udp / ws / wss / quic / wg / all）" "$CNIX_ENTRY_PROTO")" || return 1
-    default_local_port="$(pick_random_port || true)"
-    LOCAL_PORT="$(prompt_random_port "请输入入口机公网业务端口 LOCAL_PORT" "$default_local_port")" || return 1
-    LANDING_ET_IP="$CODE_LANDING_ET_IP"
-    remote_default="${CODE_REMOTE_PORT:-}"
-    while true; do
-        set +e
-        if [[ -n "$remote_default" ]]; then
-            REMOTE_PORT="$(prompt_remote_port_with_context "请输入落地机业务端口 REMOTE_PORT" "$remote_default" "$CODE_LISTENER_PORT" "$CNIX_ENTRY_PORT" "$LOCAL_PORT")"
-        else
-            REMOTE_PORT="$(prompt_remote_port_with_context "接入码未包含业务端口，请输入落地机业务端口 REMOTE_PORT，例如 8233" "" "$CODE_LISTENER_PORT" "$CNIX_ENTRY_PORT" "$LOCAL_PORT")"
-        fi
-        remote_rc=$?
-        set -e
-        if [[ "$remote_rc" -eq 0 ]]; then
-            FORWARD_ENABLED="true"
-            break
-        fi
-        if [[ "$remote_rc" -eq 3 && -z "$remote_default" ]]; then
-            set +e
-            ask_forward_later
-            forward_later=$?
-            set -e
-            if [[ "$forward_later" -eq 0 ]]; then
-                FORWARD_ENABLED="false"
-                LOCAL_PORT=""
-                LANDING_ET_IP="$CODE_LANDING_ET_IP"
-                REMOTE_PORT=""
-                FORWARD_PROTO=""
-                break
-            fi
-        else
-            return 1
-        fi
-    done
-    if [[ "$FORWARD_ENABLED" == "true" ]]; then
-        FORWARD_PROTO="$(prompt_forward_proto "请选择业务转发协议（tcp / udp / both / tcp/udp）" "both")" || return 1
-    fi
-    ET_PRIVATE_MODE="true"
-    ET_EXPLICIT_ONLY="true"
-    IXTF_EXPLICIT_ONLY="true"
-    ET_PEERS="$(peer_urls_value "$CNIX_ENTRY_PROTO" "$CNIX_ENTRY_HOST" "$CNIX_ENTRY_PORT")"
-    ET_NO_LISTENER="true"
-
-    validate_easytier_args
-    ensure_systemctl
-    ensure_listener_port_available_before_start
-    if [[ "$FORWARD_ENABLED" == "true" ]]; then
-        enable_ip_forward
-        apply_nft
-    fi
-    save_env
-    render_systemd_service
-    restart_easytier
-    post_install_summary "panel-ingress"
+    panel_mode_removed
 }
 
 configure_forward() {
@@ -16070,10 +15941,6 @@ NAT-IX 高级说明
 推荐模式：
   NAT IX 机器监听，公网入口机连接 NAT IX。
   适合商家给了 NAT/IX 入口 IP:端口。
-
-历史配置：
-  panel-landing / panel-ingress 为旧 CNIX 面板流程（已 deprecated）。
-  已存在配置仍尽量兼容；新部署只推荐 NAT IX listener 流程。
 
 端口命名：
   客户端入口端口：最终客户端连接公网入口机的端口。
