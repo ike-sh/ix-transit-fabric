@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.2.0-alpha.13
+
+### Fixed
+
+- 增强 `show-easytier-status`：展示 peers/listeners/mapped-listeners 数量与明细，以及 mapped-listeners 运行时是否启用。
+- 新增 NAT IX 侧 `verify_nat_transit_rule_consistency`，规则变更后校验 listener/mapped/nft 与启用规则一致。
+
+### Changed
+
+- `verify-nft-profiles` 用户面向输出统一为中文。
+- 公网入口导入文案「正在启动」改为「正在重启」；完成摘要与增规则后输出可直接复制的 `show-easytier-status` 命令。
+- 删除未使用的 `easytier_supports_mapped_listeners()` 死代码。
+
 ## 1.2.0-alpha.12
 
 ### Fixed

@@ -13,8 +13,8 @@ bash -n install.sh
 bash -n tests/smoke.sh
 
 version_output="$(bash install.sh --version)"
-[[ "$version_output" == "ix-transit-fabric 1.2.0-alpha.12" ]]
-[[ "$(tr -d '\r\n' < VERSION)" == "1.2.0-alpha.12" ]]
+[[ "$version_output" == "ix-transit-fabric 1.2.0-alpha.13" ]]
+[[ "$(tr -d '\r\n' < VERSION)" == "1.2.0-alpha.13" ]]
 bash install.sh --help >/dev/null
 help_no_color="$(IXTF_COLOR=never bash install.sh --help)"
 ! grep -q $'\033' <<<"$help_no_color"
@@ -106,8 +106,12 @@ for token in \
     "EasyTier peer 未包含商家入口端口" \
     "正在写入配置..." \
     "正在应用转发规则..." \
-    "正在启动 EasyTier..." \
+    "正在重启 EasyTier..." \
     "verify_nat_ingress_import_consistency" \
+    "verify_nat_transit_rule_consistency" \
+    "print_easytier_endpoint_summary" \
+    "nftables 转发规则校验" \
+    "快速检查：bash install.sh show-easytier-status" \
     "prompt_refresh_access_code_after_rule_change"; do
     grep -q -- "$token" install.sh
 done
@@ -122,7 +126,7 @@ for token in \
     "转发规则管理" \
     "alpha 注意事项" \
     "公网入口机侧指定" \
-    "1.2.0-alpha.12" \
+    "1.2.0-alpha.13" \
     "IXTF_COLOR=never"; do
     grep -q -- "$token" README.md
 done
@@ -466,6 +470,7 @@ trap cleanup_unit_tmp EXIT
     grep -q 'nat-ix.example:20000' <<<"$ET_MAPPED_LISTENERS"
     grep -q 'nat-ix.example:20001' <<<"$ET_MAPPED_LISTENERS"
     grep -q 'nat-ix.example:20002' <<<"$ET_MAPPED_LISTENERS"
+    verify_nat_transit_rule_consistency "$PROFILE_ID" >/dev/null
     saved_nat_public="${NAT_PUBLIC_PORT:-}"
     RULE_ID=rule-main
     print_nat_ingress_import_complete_summary ing-sync >/dev/null

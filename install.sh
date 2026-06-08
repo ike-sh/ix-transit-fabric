@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-SCRIPT_VERSION="1.2.0-alpha.12"
+SCRIPT_VERSION="1.2.0-alpha.13"
 APP_NAME="ix-transit-fabric"
 
 CONFIG_DIR="/etc/ix-transit-fabric"
@@ -2256,6 +2256,33 @@ et_peer_contains_port() {
     return 1
 }
 
+easytier_urls_contain_port() {
+    local want="$1" urls="${2:-}" url port
+    for url in $urls; do
+        [[ -n "$url" ]] || continue
+        port="${url##*:}"
+        port="${port%%/*}"
+        [[ "$port" == "$want" ]] && return 0
+    done
+    return 1
+}
+
+easytier_url_list_count() {
+    local urls="${1:-}" item count=0
+    for item in $urls; do
+        [[ -n "$item" ]] && count=$((count + 1))
+    done
+    printf '%s\n' "$count"
+}
+
+print_easytier_url_list() {
+    local urls="${1:-}" item
+    for item in $urls; do
+        [[ -n "$item" ]] || continue
+        printf '  %s\n' "$item"
+    done
+}
+
 first_nat_public_port() {
     local ports="${1:-${NAT_PUBLIC_PORTS:-${NAT_LISTENER_PORT:-}}}" first
     ports="${ports//[[:space:]]/}"
@@ -3735,12 +3762,58 @@ print_easytier_listeners() {
     done <<<"${ET_LISTENERS// /$'\n'}"
 }
 
-easytier_supports_mapped_listeners() {
-    local et_path help_text
-    et_path="$(detect_easytier_binary 2>/dev/null || true)"
-    [[ -n "$et_path" ]] || return 0
-    help_text="$("$et_path" --help 2>&1 || true)"
-    grep -q -- '--mapped-listeners' <<<"$help_text"
+print_easytier_endpoint_summary() {
+    local count mapped_supported="未知" et_path
+    case "${ROLE:-}" in
+        nat-ingress)
+            if [[ -n "${ET_PEERS:-}" ]]; then
+                count="$(easytier_url_list_count "$ET_PEERS")"
+                printf 'EasyTier peers（%s 个）：\n' "$count"
+                print_easytier_url_list "$ET_PEERS"
+            else
+                printf 'EasyTier peers：未配置\n'
+            fi
+            ;;
+        nat-transit)
+            if [[ "${NAT_DIRECTION:-ingress-listener}" == "nat-listener" ]]; then
+                if [[ -n "${ET_LISTENERS:-}" ]]; then
+                    count="$(easytier_url_list_count "$ET_LISTENERS")"
+                    printf 'EasyTier listeners（%s 个）：\n' "$count"
+                    print_easytier_url_list "$ET_LISTENERS"
+                else
+                    printf 'EasyTier listeners：未配置\n'
+                fi
+                if [[ -n "${ET_MAPPED_LISTENERS:-}" ]]; then
+                    count="$(easytier_url_list_count "$ET_MAPPED_LISTENERS")"
+                    et_path="$(detect_easytier_binary 2>/dev/null || true)"
+                    if [[ -n "$et_path" ]] && "$et_path" --help 2>&1 | grep -q -- '--mapped-listeners'; then
+                        mapped_supported="是"
+                    elif [[ -n "$et_path" ]]; then
+                        mapped_supported="否（当前 EasyTier 不支持 --mapped-listeners）"
+                    fi
+                    printf 'EasyTier mapped-listeners（%s 个，运行时启用：%s）：\n' "$count" "$mapped_supported"
+                    print_easytier_url_list "$ET_MAPPED_LISTENERS"
+                else
+                    printf 'EasyTier mapped-listeners：未配置\n'
+                fi
+            elif [[ -n "${ET_PEERS:-}" ]]; then
+                count="$(easytier_url_list_count "$ET_PEERS")"
+                printf 'EasyTier peers（%s 个）：\n' "$count"
+                print_easytier_url_list "$ET_PEERS"
+            else
+                printf 'EasyTier peers：未配置\n'
+            fi
+            ;;
+        panel-ingress)
+            if [[ -n "${ET_PEERS:-}" ]]; then
+                count="$(easytier_url_list_count "$ET_PEERS")"
+                printf 'EasyTier peers（%s 个）：\n' "$count"
+                print_easytier_url_list "$ET_PEERS"
+            else
+                printf 'EasyTier peers：未配置\n'
+            fi
+            ;;
+    esac
 }
 
 render_easytier_wrapper() {
@@ -6437,6 +6510,58 @@ profile_has_code_rule_id() {
     return 1
 }
 
+verify_nat_transit_rule_consistency() {
+    local profile_id="$1" rule_id nat_port issues=() enabled_count=0 nft_text
+    local saved_rule_id="${RULE_ID:-}" saved_note="${RULE_NOTE:-}" saved_enabled="${RULE_ENABLED:-}" saved_client="${CLIENT_PORT:-}" saved_nat_public="${NAT_PUBLIC_PORT:-}"
+    local saved_transit="${TRANSIT_PORT:-}" saved_landing_host="${LANDING_HOST:-}" saved_landing_port="${LANDING_PORT:-}" saved_proto="${FORWARD_PROTO:-both}" saved_created="${CREATED_AT:-}" saved_updated="${UPDATED_AT:-}"
+
+    load_profile_or_die "$profile_id"
+    [[ "${ROLE:-}" == "nat-transit" && "${NAT_DIRECTION:-ingress-listener}" == "nat-listener" ]] || return 0
+    refresh_nat_public_endpoints_for_profile "$profile_id"
+    if command_exists nft && nft list table ip "$NFT_TABLE" >/dev/null 2>&1; then
+        nft_text="$(nft list table ip "$NFT_TABLE" 2>/dev/null || true)"
+    elif [[ -r "$NFT_FILE" ]]; then
+        nft_text="$(cat "$NFT_FILE" 2>/dev/null || true)"
+    else
+        nft_text=""
+    fi
+    for rule_id in $(profile_rule_ids "$profile_id"); do
+        load_rule "$profile_id" "$rule_id" || continue
+        [[ "${RULE_ENABLED:-true}" == "true" ]] || continue
+        enabled_count=$((enabled_count + 1))
+        nat_port="$(rule_nat_public_port_value 2>/dev/null || true)"
+        [[ -n "$nat_port" ]] || issues+=("规则 ${rule_id} 缺少商家入口端口 NAT_PUBLIC_PORT")
+        [[ -n "${TRANSIT_PORT:-}" ]] || issues+=("规则 ${rule_id} 缺少虚拟网中转端口 TRANSIT_PORT")
+        [[ -n "${LANDING_HOST:-}" && -n "${LANDING_PORT:-}" ]] || issues+=("规则 ${rule_id} 缺少落地目标")
+        if [[ -n "$nat_port" && -n "${ET_LISTENERS:-}" ]] && ! easytier_urls_contain_port "$nat_port" "${ET_LISTENERS:-}"; then
+            issues+=("EasyTier listener 未包含商家入口端口 ${nat_port}（规则 ${rule_id}）")
+        fi
+        if [[ -n "$nat_port" && -n "${ET_MAPPED_LISTENERS:-}" ]] && ! easytier_urls_contain_port "$nat_port" "${ET_MAPPED_LISTENERS:-}"; then
+            issues+=("EasyTier mapped-listener 未包含商家入口端口 ${nat_port}（规则 ${rule_id}）")
+        fi
+        if [[ -n "$nft_text" && -n "${TRANSIT_PORT:-}" && -n "${NAT_ET_IP:-}" ]]; then
+            if ! grep -qE "(tcp|udp) dport ${TRANSIT_PORT} " <<<"$nft_text"; then
+                issues+=("nftables 未找到虚拟网中转端口 ${TRANSIT_PORT}（规则 ${rule_id}）")
+            fi
+        fi
+    done
+    RULE_ID="$saved_rule_id"; RULE_NOTE="$saved_note"; RULE_ENABLED="$saved_enabled"; CLIENT_PORT="$saved_client"; NAT_PUBLIC_PORT="$saved_nat_public"
+    TRANSIT_PORT="$saved_transit"; LANDING_HOST="$saved_landing_host"; LANDING_PORT="$saved_landing_port"; FORWARD_PROTO="$saved_proto"; CREATED_AT="$saved_created"; UPDATED_AT="$saved_updated"
+    if [[ "$enabled_count" -eq 0 ]]; then
+        return 0
+    fi
+    if [[ "${#issues[@]}" -gt 0 ]]; then
+        log_warn "NAT IX 规则一致性检查发现问题："
+        local item
+        for item in "${issues[@]}"; do
+            log_warn "  * ${item}"
+        done
+        log_warn "建议运行：bash install.sh show-easytier-status ${profile_id}"
+        return 1
+    fi
+    return 0
+}
+
 verify_nat_ingress_import_consistency() {
     local profile_id="$1" expected_count="${2:-0}" rule_id issues=() saved_count=0 enabled_count=0 code_enabled_count=0
     local saved_rule_id="${RULE_ID:-}" saved_note="${RULE_NOTE:-}" saved_enabled="${RULE_ENABLED:-}" saved_client="${CLIENT_PORT:-}" saved_nat_public="${NAT_PUBLIC_PORT:-}"
@@ -6542,6 +6667,7 @@ print_nat_ingress_import_complete_summary() {
         printf '规则数：%s\n' "$rule_count"
         printf 'nftables：%s\n' "$nft_label"
         printf 'EasyTier：%s\n' "$active_label"
+        printf '快速检查：bash install.sh show-easytier-status %s\n' "$profile_id"
         RULE_ID="$saved_rule_id"; RULE_NOTE="$saved_note"; RULE_ENABLED="$saved_enabled"; CLIENT_PORT="$saved_client"; NAT_PUBLIC_PORT="$saved_nat_public"
         TRANSIT_PORT="$saved_transit"; LANDING_HOST="$saved_landing_host"; LANDING_PORT="$saved_landing_port"; FORWARD_PROTO="$saved_proto"; CREATED_AT="$saved_created"; UPDATED_AT="$saved_updated"
         return 0
@@ -7662,7 +7788,7 @@ add_nat_ingress_from_listener_code() {
     if ! verify_nft_profiles_core >/dev/null 2>&1; then
         log_warn "nftables 校验未完全通过，可运行 bash install.sh verify-nft-profiles 查看详情。"
     fi
-    printf '正在启动 EasyTier...\n' >&2
+    printf '正在重启 EasyTier...\n' >&2
     restart_profile "$PROFILE_ID" || log_warn "EasyTier 服务重启未完成，请运行 bash install.sh restart-profile ${PROFILE_ID}"
     printf '完成\n' >&2
     if ! verify_nat_ingress_import_consistency "$PROFILE_ID" "${IXTF_LAST_SYNC_SAVED_RULE_COUNT:-0}"; then
@@ -7906,6 +8032,7 @@ regenerate_nat_profile_code() {
     if [[ "${ROLE:-}" == "nat-transit" && "${NAT_DIRECTION:-ingress-listener}" == "nat-listener" ]]; then
         render_profile_service_files
         restart_profile "$profile_id" || log_warn "接入码已更新，但 EasyTier 服务重启未完成。"
+        verify_nat_transit_rule_consistency "$profile_id" || true
     fi
     show_code "$profile_id"
 }
@@ -8541,8 +8668,7 @@ EOF
         return 0
     fi
     [[ "${ROLE:-}" == "nat-transit" ]] || die_user "新增落地规则请在 NAT IX 机器执行。"
-    printf '\nNAT IX 机器新增转发规则\n'
-    printf '新增转发规则\n\n'
+    printf '\nNAT IX 机器新增转发规则\n\n'
     rule_id="$(generate_unique_rule_id "$profile_id" rule)"
     RULE_ID="$rule_id"
     RULE_NOTE="$(prompt_optional_text "请输入规则备注，例如：游戏、网页、备用落地" "")" || return 1
@@ -8573,6 +8699,7 @@ EOF
     printf '* 虚拟网中转：%s:%s -> %s:%s\n' "${NAT_ET_IP:-NAT IX 虚拟 IP}" "$TRANSIT_PORT" "$LANDING_HOST" "$LANDING_PORT"
     printf '* 协议：%s\n' "$(proto_display_user "${FORWARD_PROTO:-both}")"
     printf '* 状态：%s\n\n' "$(profile_rule_status_display)"
+    printf '快速检查：bash install.sh show-easytier-status %s\n\n' "$profile_id"
     prompt_refresh_access_code_after_rule_change "$profile_id"
     return 0
 }
@@ -8599,6 +8726,9 @@ refresh_profile_after_rule_change() {
     if [[ "${NAT_DIRECTION:-ingress-listener}" == "nat-listener" && ( "${ROLE:-}" == "nat-transit" || "${ROLE:-}" == "nat-ingress" ) ]]; then
         render_profile_service_files
         restart_profile "$profile_id" || log_warn "规则已保存，但 EasyTier 服务重启未完成。"
+        if [[ "${ROLE:-}" == "nat-transit" ]]; then
+            verify_nat_transit_rule_consistency "$profile_id" || true
+        fi
     fi
 }
 
@@ -9603,36 +9733,36 @@ verify_nft_profiles_core() {
     read -r landing_count ingress_count transit_count other_count < <(profile_role_counts)
     forwarding_count="$(enabled_forwarding_ingress_count)"
     if [[ "$forwarding_count" -eq 0 ]]; then
-        printf 'nftables profile verification\n'
+        printf 'nftables 转发规则校验\n'
         printf '当前机器没有启用中的入口转发 Profile，nftables 转发校验已跳过。\n'
         return 0
     fi
 
     if command_exists nft && nft list table ip "$NFT_TABLE" >/dev/null 2>&1; then
-        source="runtime table ip ${NFT_TABLE}"
+        source="运行时表 ip ${NFT_TABLE}"
         text="$(nft list table ip "$NFT_TABLE" 2>/dev/null || true)"
     elif [[ -r "$NFT_FILE" ]]; then
         source="$NFT_FILE"
         text="$(cat "$NFT_FILE" 2>/dev/null || true)"
     else
-        printf 'nftables profile verification\n'
-        printf 'Source: unavailable (no runtime table and no readable %s)\n' "$NFT_FILE"
+        printf 'nftables 转发规则校验\n'
+        printf '数据源：不可用（无运行时表且无法读取 %s）\n' "$NFT_FILE"
         printf '[WARN] 入口转发 Profile 已启用，但当前没有可读取的 nftables 项目表。\n'
-        printf 'Suggested repair after config review: bash install.sh apply-nft-all\n'
+        printf '建议修复：bash install.sh apply-nft-all\n'
         return 1
     fi
 
     expected_rules="$(expected_forwarding_nft_rules)"
     actual_rules="$(nft_dnat_rules_from_text "$text")"
 
-    printf 'nftables profile verification\n'
-    printf 'Source: %s\n' "$source"
-    printf '\nExpected rules:\n'
+    printf 'nftables 转发规则校验\n'
+    printf '数据源：%s\n' "$source"
+    printf '\n期望规则：\n'
     print_rule_list "$expected_rules"
-    printf '\nActual rules:\n'
+    printf '\n实际规则：\n'
     print_rule_list "$actual_rules"
 
-    printf '\nExpected forwarding rules:\n'
+    printf '\n期望转发规则明细：\n'
     for id in $(profile_ids); do
         load_profile "$id" >/dev/null 2>&1 || continue
         profile_needs_nft_forward || continue
@@ -9651,28 +9781,28 @@ verify_nft_profiles_core() {
         fi
     done
     if [[ "$expected" -eq 0 ]]; then
-        printf '  - none\n'
+        printf '  - 无\n'
         if [[ -n "$actual_rules" ]]; then
-            printf '[WARN] No enabled + FORWARD_ENABLED=true ingress Profile exists, so the project table should not contain forwarding rules.\n'
+            printf '[WARN] 当前没有启用且开启转发的入口 Profile，但项目表中仍有转发规则。\n'
         else
-            printf '[OK] No enabled forwarding Profile and no actual forwarding rules.\n'
+            printf '[OK] 无启用转发 Profile，且实际无转发规则。\n'
         fi
     fi
 
     missing_rules="$(comm -23 <(printf '%s\n' "$expected_rules" | awk 'NF' | sort -u) <(printf '%s\n' "$actual_rules" | awk 'NF' | sort -u) || true)"
     extra_rules="$(comm -13 <(printf '%s\n' "$expected_rules" | awk 'NF' | sort -u) <(printf '%s\n' "$actual_rules" | awk 'NF' | sort -u) || true)"
-    printf '\nMissing rules:\n'
+    printf '\n缺失规则：\n'
     print_rule_list "$missing_rules"
     if [[ -n "$missing_rules" ]]; then
         issues=$((issues + $(printf '%s\n' "$missing_rules" | awk 'NF{c++} END{print c+0}')))
     fi
-    printf '\nExtra rules:\n'
+    printf '\n多余规则：\n'
     print_rule_list "$extra_rules"
     if [[ -n "$extra_rules" ]]; then
         issues=$((issues + $(printf '%s\n' "$extra_rules" | awk 'NF{c++} END{print c+0}')))
     fi
 
-    printf '\nDisabled Profile residual rules:\n'
+    printf '\n已停用线路残留规则：\n'
     for id in $(profile_ids); do
         load_profile "$id" >/dev/null 2>&1 || continue
         case "${ROLE:-}" in panel-ingress|nat-ingress|nat-transit) ;; *) continue ;; esac
@@ -9680,13 +9810,13 @@ verify_nft_profiles_core() {
         profile_nft_target >/dev/null 2>&1 || continue
         if [[ "${ENABLED:-true}" != "true" ]] && nft_text_has_profile_rule "$text"; then
             disabled_residue=$((disabled_residue + 1))
-            printf '[FAIL] disabled Profile %s still has nft rule (PORT=%s)\n' "$id" "$(profile_nft_dport 2>/dev/null || printf missing)"
+            printf '[FAIL] 已停用线路 %s 仍有 nft 规则（端口=%s）\n' "$id" "$(profile_nft_dport 2>/dev/null || printf missing)"
         fi
     done
-    [[ "$disabled_residue" -gt 0 ]] || printf '  - none\n'
+    [[ "$disabled_residue" -gt 0 ]] || printf '  - 无\n'
     issues=$((issues + disabled_residue))
 
-    printf '\nFORWARD_ENABLED=false Profile residual rules:\n'
+    printf '\n转发已关闭线路残留规则：\n'
     for id in $(profile_ids); do
         load_profile "$id" >/dev/null 2>&1 || continue
         case "${ROLE:-}" in panel-ingress|nat-ingress|nat-transit) ;; *) continue ;; esac
@@ -9694,31 +9824,31 @@ verify_nft_profiles_core() {
         profile_nft_target >/dev/null 2>&1 || continue
         if [[ "${ENABLED:-true}" == "true" && "${FORWARD_ENABLED:-true}" != "true" ]] && nft_text_has_profile_rule "$text"; then
             standby_residue=$((standby_residue + 1))
-            printf '[FAIL] FORWARD_ENABLED=false Profile %s still has nft rule (PORT=%s)\n' "$id" "$(profile_nft_dport 2>/dev/null || printf missing)"
+            printf '[FAIL] 转发已关闭线路 %s 仍有 nft 规则（端口=%s）\n' "$id" "$(profile_nft_dport 2>/dev/null || printf missing)"
         fi
     done
-    [[ "$standby_residue" -gt 0 ]] || printf '  - none\n'
+    [[ "$standby_residue" -gt 0 ]] || printf '  - 无\n'
     issues=$((issues + standby_residue))
 
     expected_ports="$(active_forwarding_local_ports)"
     actual_ports="$(nft_dnat_local_ports_from_text "$text")"
-    printf '\nUnknown LOCAL_PORT rules:\n'
+    printf '\n未知 LOCAL_PORT 规则：\n'
     while IFS= read -r port; do
         [[ -n "$port" ]] || continue
         if ! grep -qxF "$port" <<<"$expected_ports"; then
-            printf '[FAIL] nftables table contains unknown LOCAL_PORT rule: %s\n' "$port"
+            printf '[FAIL] nftables 表包含未知 LOCAL_PORT 规则：%s\n' "$port"
             unknown_count=$((unknown_count + 1))
         fi
     done <<<"$actual_ports"
-    [[ "$unknown_count" -gt 0 ]] || printf '  - none\n'
+    [[ "$unknown_count" -gt 0 ]] || printf '  - 无\n'
     issues=$((issues + unknown_count))
 
     if [[ "$issues" -eq 0 ]]; then
-        printf '\n[OK] nftables rules match enabled + FORWARD_ENABLED=true ingress Profiles.\n'
+        printf '\n[OK] nftables 规则与启用中的入口转发 Profile 一致。\n'
         return 0
     fi
-    printf '\n[FAIL] nftables rules differ from Profile state.\n'
-    printf 'Suggested repair: bash install.sh apply-nft-all\n'
+    printf '\n[FAIL] nftables 规则与 Profile 状态不一致。\n'
+    printf '建议修复：bash install.sh apply-nft-all\n'
     return 1
 }
 
@@ -9970,31 +10100,31 @@ print_service_status_short() {
 
 print_easytier_peer_hints() {
     local service="$1" logs filtered latest
-    printf 'EasyTier peer hints:\n'
+    printf 'EasyTier 运行日志摘要：\n'
     if command_exists journalctl; then
         logs="$(journalctl -u "$service" -n 80 --no-pager 2>&1 || true)"
         logs="$(redact_sensitive_text "$logs")"
         filtered="$(grep -Eai 'new peer|peer connection|tunnel_type|tcp|udp|latency|error|timeout' <<<"$logs" 2>/dev/null || true)"
-        grep -Eqi 'tunnel_type.*tcp' <<<"$filtered" && printf '* found tunnel_type=tcp\n'
-        grep -Eqi 'tunnel_type.*udp' <<<"$filtered" && printf '* found tunnel_type=udp\n'
+        grep -Eqi 'tunnel_type.*tcp' <<<"$filtered" && printf '* 检测到 tunnel_type=tcp\n'
+        grep -Eqi 'tunnel_type.*udp' <<<"$filtered" && printf '* 检测到 tunnel_type=udp\n'
         latest="$(grep -Eai 'new peer|peer connection|tunnel_type|latency|error|timeout' <<<"$filtered" 2>/dev/null | tail -n 1 || true)"
         if [[ -n "$latest" ]]; then
-            printf '* latest peer connection log: %s\n' "$latest"
+            printf '* 最近连接日志：%s\n' "$latest"
         else
-            printf '* no recent peer/tunnel hint found in journalctl\n'
+            printf '* journalctl 中无近期 peer/隧道日志\n'
         fi
     else
-        printf '* journalctl unavailable\n'
+        printf '* journalctl 不可用\n'
     fi
     if command_exists easytier-cli; then
-        printf 'easytier-cli hints:\n'
+        printf 'easytier-cli 摘要：\n'
         set +e
         easytier-cli peer 2>&1 | redact_sensitive_text | sed -n '1,20p'
         easytier-cli route 2>&1 | redact_sensitive_text | sed -n '1,20p'
         easytier-cli node 2>&1 | redact_sensitive_text | sed -n '1,20p'
         set -e
     else
-        printf '* easytier-cli unavailable\n'
+        printf '* easytier-cli 不可用\n'
     fi
 }
 
@@ -10008,6 +10138,7 @@ show_easytier_status() {
         print_profile_selection_hint "$profile_id" show-easytier-status
         return_or_exit 2 || return $?
     fi
+    refresh_nat_public_endpoints_for_profile "$profile_id"
     service="$(profile_service_name "$profile_id")"
     printf 'EasyTier 状态：%s\n' "$profile_id"
     print_service_status_short "$service"
@@ -10025,21 +10156,25 @@ show_easytier_status() {
         2) printf '本机 ET IP：无法检查（ip 命令不可用）\n' ;;
         *) printf '本机 ET IP：不存在（%s）\n' "${ET_IPV4:-未配置}" ;;
     esac
+    printf '\n'
+    print_easytier_endpoint_summary
+    printf '\n'
     case "${ROLE:-}" in
-        nat-ingress) target_ip="${NAT_ET_IP:-}"; route_label="到 NAT_ET_IP route/peer" ;;
-        nat-transit) target_ip="${INGRESS_ET_IP:-}"; route_label="到 INGRESS_ET_IP route/peer" ;;
-        panel-ingress) target_ip="${LANDING_ET_IP:-}"; route_label="到 LANDING_ET_IP route/peer" ;;
-        *) target_ip=""; route_label="route/peer" ;;
+        nat-ingress) target_ip="${NAT_ET_IP:-}"; route_label="到 NAT IX 虚拟 IP 的路由/peer" ;;
+        nat-transit) target_ip="${INGRESS_ET_IP:-}"; route_label="到公网入口虚拟 IP 的路由/peer" ;;
+        panel-ingress) target_ip="${LANDING_ET_IP:-}"; route_label="到落地虚拟 IP 的路由/peer" ;;
+        *) target_ip=""; route_label="路由/peer" ;;
     esac
     if [[ -n "$target_ip" ]] && command_exists ip; then
         if ip route get "$target_ip" >/dev/null 2>&1; then
-            printf '%s：存在（%s）\n' "$route_label" "$target_ip"
+            printf '%s：已确认（%s）\n' "$route_label" "$target_ip"
         else
             printf '%s：未确认（%s）\n' "$route_label" "$target_ip"
         fi
     elif [[ -n "$target_ip" ]]; then
         printf '%s：无法检查（ip 命令不可用）\n' "$route_label"
     fi
+    printf '\n'
     print_easytier_peer_hints "$service"
 }
 
