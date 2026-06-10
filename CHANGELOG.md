@@ -1,5 +1,23 @@
 # Changelog
 
+## 1.2.4
+
+### Changed
+
+- 部署/导入输出精简：默认单行彩色摘要（`[OK]`/`[WARN]`/`[INFO]`），完整细节仅 `IXTF_DEBUG=true` 时显示。
+- 线路创建预检改为静默一行通过/失败（`preflight_check quiet`）。
+- 公网入口导入完成摘要改为显示接入码规则数（不含已停用 orphan 规则）及客户端连接地址。
+
+### Removed
+
+- 删除未使用的孤立代码：`run_nat_mode_b_menu`、`show_nat_menu`、`run_nat_menu_action`、`show_nat_advanced_explanation`、`show_profile_summary_legacy_tail`。
+
+### Upgrade
+
+```bash
+ix upgrade-script
+```
+
 ## 1.2.3
 
 ### Added
