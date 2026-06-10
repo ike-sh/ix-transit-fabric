@@ -1,5 +1,24 @@
 # Changelog
 
+## 1.2.3
+
+### Added
+
+- 新增 `upgrade-script` / `ix upgrade-script`：自动拉取 GitHub 最新 Release 并同步 `ix` / libexec 安装脚本（高级维护菜单 14）。
+- `SCRIPT_VERSION` 与 `VERSION` 文件对齐。
+
+### Changed
+
+- 重写 README：一键安装改为自动解析最新 Release；补充菜单升级流程与 `ix` libexec 说明。
+
+### Upgrade
+
+```bash
+ix upgrade-script
+# 或
+IXTF_UPGRADE_YES=1 bash install.sh upgrade-script
+```
+
 ## 1.2.2
 
 ### Fixed

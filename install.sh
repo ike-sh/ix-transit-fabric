@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-SCRIPT_VERSION="1.2.0"
+SCRIPT_VERSION="1.2.3"
 APP_NAME="ix-transit-fabric"
+IXTF_PROJECT_REPO="ike-sh/ix-transit-fabric"
 
 CONFIG_DIR="/etc/ix-transit-fabric"
 ENV_FILE="${CONFIG_DIR}/ix-transit.env"
@@ -270,6 +271,7 @@ ix-transit-fabric - NAT-IX + EasyTier + nftables 中转线路管理脚本
   bash install.sh IX
   ix / IX                 # 无参数进菜单；ix health / ix diagnose / ix --version 等同子命令
   bash install.sh install-ix-cli
+  bash install.sh upgrade-script
   bash install.sh --debug install-easytier
 
 安装 / 更新：
@@ -3972,6 +3974,58 @@ install_ix_cli() {
     if [[ -x "$IX_CLI_BIN" && -x "$IX_CLI_BIN_UPPER" ]]; then
         log_ok "验证通过：$(command -v ix) 与 $(command -v IX)"
     fi
+}
+
+latest_ix_script_release_tag() {
+    local tmp tag
+    tmp="$(make_tmp_file "ix-transit-fabric.release-tag")"
+    if ! download_with_mirrors "https://api.github.com/repos/${IXTF_PROJECT_REPO}/releases/latest" "$tmp"; then
+        rm -f -- "$tmp"
+        return 1
+    fi
+    tag="$(grep -oE '"tag_name"[[:space:]]*:[[:space:]]*"[^"]+"' "$tmp" | head -n1 | sed -E 's/.*"([^"]+)"$/\1/')"
+    rm -f -- "$tmp"
+    [[ -n "$tag" ]] || return 1
+    printf '%s\n' "$tag"
+}
+
+upgrade_script() {
+    require_root "$@"
+    local tag="${IXTF_TAG:-}" before after tmp answer target_ver installed_ver
+    before="$SCRIPT_VERSION"
+    if [[ -z "$tag" ]]; then
+        tag="$(latest_ix_script_release_tag)" || die_user "无法从 GitHub Releases 获取最新版本。可手动指定：IXTF_TAG=v1.2.2 bash install.sh upgrade-script"
+    fi
+    [[ "$tag" == v* ]] || tag="v${tag}"
+    target_ver="${tag#v}"
+    printf '当前运行版本：%s\n' "$before"
+    printf '目标 Release：%s\n' "$target_ver"
+    if [[ "$before" == "$target_ver" ]]; then
+        installed_ver=""
+        if [[ -x "$IX_CLI_INSTALL_SH" ]]; then
+            installed_ver="$(bash "$IX_CLI_INSTALL_SH" --version 2>/dev/null | awk '{print $2}')"
+        fi
+        if [[ -z "$installed_ver" || "$installed_ver" == "$target_ver" ]]; then
+            log_ok "管理脚本已是最新版本。"
+            return 0
+        fi
+        printf 'ix 已安装副本版本：%s（将同步到 %s）\n' "$installed_ver" "$target_ver"
+    fi
+    if is_interactive_input && [[ "${IXTF_UPGRADE_YES:-}" != "1" ]]; then
+        answer="$(prompt_yes_no "下载 ${tag} 并更新 ix / libexec 安装脚本" "true")" || return 1
+        [[ "$answer" == "true" ]] || { log_info "已取消升级。"; return 0; }
+    fi
+    tmp="$(make_tmp_file "ix-transit-fabric.upgrade")"
+    if ! download_with_mirrors "https://raw.githubusercontent.com/${IXTF_PROJECT_REPO}/${tag}/install.sh" "$tmp"; then
+        rm -f -- "$tmp"
+        die_user "下载 install.sh 失败：${tag}"
+    fi
+    chmod 0755 "$tmp"
+    bash "$tmp" install-ix-cli
+    after="$(bash "$IX_CLI_INSTALL_SH" --version 2>/dev/null | awk '{print $2}')"
+    rm -f -- "$tmp"
+    log_ok "升级完成：${before} → ${after:-$target_ver}"
+    log_info "验证：ix --version"
 }
 
 remove_ix_cli_shortcut() {
@@ -15275,6 +15329,7 @@ run_advanced_menu_action() {
         11) cleanup_history ;;
         12) cleanup_state ;;
         13) show_monitor_menu ;;
+        14) upgrade_script ;;
         0) return 10 ;;
         *) log_warn "未知选项，请重新选择。"; return 0 ;;
     esac
@@ -15300,6 +15355,7 @@ ix-transit-fabric 高级维护
  11) 清理 history
  12) 清理 state
  13) 监控 / 通知 / DDNS
+ 14) 升级管理脚本
   0) 返回主菜单
 MENU
         printf '请选择：' >&2
@@ -15812,6 +15868,9 @@ main() {
             ;;
         install-ix-cli)
             install_ix_cli
+            ;;
+        upgrade-script|upgrade)
+            upgrade_script
             ;;
         install-easytier)
             install_easytier
