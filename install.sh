@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-SCRIPT_VERSION="1.3.2"
+SCRIPT_VERSION="1.3.3"
 APP_NAME="ix-transit-fabric"
 IXTF_PROJECT_REPO="ike-sh/ix-transit-fabric"
 
@@ -15282,7 +15282,39 @@ uninstall() {
         systemctl daemon-reload
     fi
 
-    log_ok "卸载完成，备份仍保留：${BACKUP_DIR}"
+    log_ok "卸载完成，配置备份仍保留：${BACKUP_DIR}"
+}
+
+uninstall_from_menu() {
+    require_root "$@"
+    require_tty
+
+    local mode
+    cat >&2 <<'EOF'
+
+卸载 ix-transit-fabric
+
+  1) 卸载服务（保留配置备份）
+  2) 完全清理（删除全部配置与备份）
+  0) 取消
+EOF
+    printf '请选择：' >&2
+    IFS= read -r mode || return 0
+    mode="$(normalize_menu_choice "$mode")"
+    case "$mode" in
+        1)
+            uninstall
+            print_info "重新安装：curl -fsSL https://raw.githubusercontent.com/ike-sh/ix-transit-fabric/main/scripts/bootstrap.sh | sudo bash"
+            return 11
+            ;;
+        2)
+            purge
+            print_info "重新安装：curl -fsSL https://raw.githubusercontent.com/ike-sh/ix-transit-fabric/main/scripts/bootstrap.sh | sudo bash"
+            return 11
+            ;;
+        0|"") return 0 ;;
+        *) log_warn "未知选项。"; return 0 ;;
+    esac
 }
 
 safe_remove_project_dir() {
@@ -15390,12 +15422,11 @@ run_advanced_menu_action() {
         5) show_nft ;;
         6) export_diagnostic ;;
         7) install_nc_tool ;;
-        8) uninstall ;;
-        9) purge ;;
-        10) self_check ;;
-        11) cleanup_state ;;
-        12) show_monitor_menu ;;
-        13) upgrade_script ;;
+        8) uninstall_from_menu ;;
+        9) self_check ;;
+        10) cleanup_state ;;
+        11) show_monitor_menu ;;
+        12) upgrade_script ;;
         0) return 10 ;;
         *) log_warn "未知选项，请重新选择。"; return 0 ;;
     esac
@@ -15415,12 +15446,11 @@ ix-transit-fabric 高级维护
   5) 查看 nftables 项目表
   6) 导出脱敏诊断报告
   7) 安装诊断工具
-  8) 卸载服务（保留配置备份）
-  9) 完全清理（删除配置、服务和备份）
- 10) 最终自检
- 11) 清理历史与运行状态
- 12) 监控 / 通知 / DDNS
- 13) 升级管理脚本
+  8) 卸载 / 完全清理
+  9) 最终自检
+ 10) 清理历史与运行状态
+ 11) 监控 / 通知 / DDNS
+ 12) 升级管理脚本
   0) 返回主菜单
 MENU
         printf '请选择：' >&2
@@ -15438,6 +15468,7 @@ MENU
         set -e
 
         [[ "$rc" -eq 10 ]] && return 0
+        [[ "$rc" -eq 11 ]] && return 11
         if [[ "$rc" -ne 0 ]]; then
             log_error "菜单操作失败（退出码 ${rc}），已返回菜单。"
         fi
@@ -15590,6 +15621,7 @@ MENU
         set -e
 
         [[ "$rc" -eq 10 ]] && return 0
+        [[ "$rc" -eq 11 ]] && return 11
         if [[ "$rc" -ne 0 ]]; then
             log_error "菜单操作失败（退出码 ${rc}），已返回菜单。"
         fi
@@ -15807,6 +15839,7 @@ MENU
         set -e
 
         [[ "$rc" -eq 10 ]] && return 0
+        [[ "$rc" -eq 11 ]] && return 0
         if [[ "$rc" -ne 0 ]]; then
             log_error "菜单操作失败（退出码 ${rc}），已返回菜单。"
         fi

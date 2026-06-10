@@ -1,6 +1,6 @@
 # ix-transit-fabric
 
-**当前版本**：[`v1.3.2`](https://github.com/ike-sh/ix-transit-fabric/releases/tag/v1.3.2)  
+**当前版本**：[`v1.3.3`](https://github.com/ike-sh/ix-transit-fabric/releases/tag/v1.3.3)  
 **作者**：ike  
 **仓库**：[https://github.com/ike-sh/ix-transit-fabric](https://github.com/ike-sh/ix-transit-fabric)
 
