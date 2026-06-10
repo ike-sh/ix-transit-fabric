@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-SCRIPT_VERSION="1.3.5"
+SCRIPT_VERSION="1.3.6"
 APP_NAME="ix-transit-fabric"
 IXTF_PROJECT_REPO="ike-sh/ix-transit-fabric"
 
@@ -6000,9 +6000,10 @@ show_code() {
         fi
         if [[ "${ROLE:-}" == "nat-transit" && "${NAT_DIRECTION:-ingress-listener}" == "nat-listener" ]]; then
             if ! verbose_deploy_output; then
-                printf '%s\n' "$(format_rules_for_code_summary "$PROFILE_ID")"
-                printf '%s\n' "$code"
-                print_info "复制上方接入码到公网入口机（菜单 2 或 ix add-nat-ingress-from-listener-code）"
+                printf '%s\n\n' "$(format_rules_for_code_summary "$PROFILE_ID")"
+                printf '%s\n' "$(c_bold '接入码（仅复制下方一行 IXTF1:...）：')"
+                printf '%s\n\n' "$code"
+                print_info "粘贴到公网入口机：菜单 2 或 ix add-nat-ingress-from-listener-code"
                 return 0
             fi
             cat <<EOF
