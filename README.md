@@ -32,7 +32,7 @@
 
 ### 一键安装（推荐，单行）
 
-不依赖 GitHub API（国内网络更稳），从 `main/VERSION` 解析最新标签：
+不依赖 GitHub API，**直接拉取 `main/install.sh` 最新版**（可用 `IXTF_TAG=vX.Y.Z` 固定版本）：
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/ike-sh/ix-transit-fabric/main/scripts/bootstrap.sh | sudo bash

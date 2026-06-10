@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.2.7
+
+### Fixed
+
+- `bootstrap.sh` 默认拉取 **`main/install.sh`**（不再经 VERSION→旧 tag），避免装到无 `repair-ix-cli` 的旧版后 `ix` 仍指向 `/root/install.sh`。
+- bootstrap 结束强制 `ix --version` 自检，失败则退出并提示修复命令。
+
 ## 1.2.6
 
 ### Fixed

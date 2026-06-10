@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-SCRIPT_VERSION="1.2.6"
+SCRIPT_VERSION="1.2.7"
 APP_NAME="ix-transit-fabric"
 IXTF_PROJECT_REPO="ike-sh/ix-transit-fabric"
 
