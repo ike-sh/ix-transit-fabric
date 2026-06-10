@@ -6610,11 +6610,14 @@ verify_nat_transit_rule_consistency() {
 
 verify_nat_ingress_import_consistency() {
     local profile_id="$1" expected_count="${2:-0}" rule_id issues=() saved_count=0 enabled_count=0 code_enabled_count=0
+    local code_rules_tsv="${CODE_RULES_TSV:-}"
     local saved_rule_id="${RULE_ID:-}" saved_note="${RULE_NOTE:-}" saved_enabled="${RULE_ENABLED:-}" saved_client="${CLIENT_PORT:-}" saved_nat_public="${NAT_PUBLIC_PORT:-}"
     local saved_transit="${TRANSIT_PORT:-}" saved_landing_host="${LANDING_HOST:-}" saved_landing_port="${LANDING_PORT:-}" saved_proto="${FORWARD_PROTO:-both}" saved_created="${CREATED_AT:-}" saved_updated="${UPDATED_AT:-}"
     local nft_text expected_rules actual_rules missing_rules nat_port dport
 
+    # load_profile_or_die -> clear_config_vars unsets CODE_RULES_TSV; keep import scope for counts.
     load_profile_or_die "$profile_id"
+    CODE_RULES_TSV="$code_rules_tsv"
     normalize_profile_compat_vars
     for rule_id in $(profile_rule_ids "$profile_id"); do
         if [[ -n "${CODE_RULES_TSV:-}" ]] && ! profile_has_code_rule_id "$rule_id"; then
@@ -13855,8 +13858,6 @@ self_check() {
     detect_nc_cmd >/dev/null 2>&1 || printf '  - TCP 端口诊断可运行：bash install.sh install-netcat\n'
     [[ -n "$et_path" ]] || printf '  - 启动线路前需要安装 EasyTier：bash install.sh install-easytier\n'
     printf '  - 问题反馈可运行：bash install.sh export-diagnostic\n'
-    printf '\n开发者检查：\n'
-    printf '  - 可运行：bash tests/smoke.sh\n'
     return 0
 }
 

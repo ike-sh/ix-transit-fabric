@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.2.1
+
+### Fixed
+
+- 修复公网入口机导入接入码后，本地已停用且不在接入码中的 orphan 规则导致「实际保存规则数与同步结果不一致」误报（`load_profile_or_die` 会清空 `CODE_RULES_TSV`，校验计数口径错误）。
+
+### Upgrade
+
+```bash
+curl -fsSL -o install.sh \
+  "https://raw.githubusercontent.com/ike-sh/ix-transit-fabric/v1.2.1/install.sh?ts=$(date +%s)"
+bash install.sh install-ix-cli
+```
+
 ## 1.2.0
 
 **正式版** — NAT-IX 双机中转线路管理，经双机实机验证。
