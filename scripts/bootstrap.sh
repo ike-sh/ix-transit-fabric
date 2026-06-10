@@ -44,7 +44,6 @@ if [[ "$(id -u)" -eq 0 ]]; then
     [[ -n "$ver" ]] && echo "[OK] ${ver}" || { echo "[ERROR] ix 仍不可用" >&2; exit 1; }
     if [[ "${IXTF_NO_MENU:-}" != "1" ]]; then
         if [[ -e /dev/tty && -r /dev/tty && -w /dev/tty ]]; then
-            echo "[INFO] 进入管理菜单（Ctrl+C 退出）"
             exec /usr/local/bin/ix </dev/tty >/dev/tty 2>&1
         elif [[ -t 0 ]]; then
             exec /usr/local/bin/ix
