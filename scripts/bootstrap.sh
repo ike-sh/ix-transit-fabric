@@ -23,9 +23,16 @@ chmod +x "$tmp"
 if [[ "$(id -u)" -eq 0 ]]; then
     bash "$tmp" install-easytier
     bash "$tmp" install-ix-cli
-    bash "$tmp" repair-ix-cli 2>/dev/null || bash "$tmp" install-ix-cli
+    bash "$tmp" repair-ix-cli 2>/dev/null || true
     ver="$(/usr/local/bin/ix --version 2>/dev/null || true)"
-    [[ -n "$ver" ]] && echo "[OK] ${ver}" || { echo "[ERROR] ix 仍不可用，请运行：sudo /usr/local/libexec/ix-transit-fabric/install.sh repair-ix-cli" >&2; exit 1; }
+    if [[ -z "$ver" ]]; then
+        fix_sh="$(mktemp /tmp/ix-transit-fix.XXXXXX)"
+        curl -fsSL -o "$fix_sh" "https://raw.githubusercontent.com/${REPO}/main/scripts/fix-ix.sh?ts=${TS}"
+        bash "$fix_sh"
+        rm -f -- "$fix_sh"
+        ver="$(/usr/local/bin/ix --version 2>/dev/null || true)"
+    fi
+    [[ -n "$ver" ]] && echo "[OK] ${ver}" || { echo "[ERROR] ix 仍不可用，请运行 fix-ix.sh" >&2; exit 1; }
 else
     echo "[INFO] 非 root：仅下载 install.sh 到当前目录"
     install -m 0755 "$tmp" ./install.sh

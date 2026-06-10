@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.2.8
+
+### Added
+
+- `scripts/fix-ix.sh`：专用修复脚本，强制同步 `main/install.sh` 并用 `tee` 重写 `ix` wrapper。
+
+### Fixed
+
+- `install-ix-cli` 重写 wrapper 前先 `rm -f` 旧文件，避免无法覆盖。
+- `bootstrap.sh` 在 `ix --version` 失败时自动 fallback 执行 `fix-ix.sh`。
+
 ## 1.2.7
 
 ### Fixed

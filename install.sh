@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-SCRIPT_VERSION="1.2.7"
+SCRIPT_VERSION="1.2.8"
 APP_NAME="ix-transit-fabric"
 IXTF_PROJECT_REPO="ike-sh/ix-transit-fabric"
 
@@ -3998,6 +3998,7 @@ render_ix_cli_wrappers() {
     render_ix_cli_wrapper_file >"$tmp_ix"
     cp -a -- "$tmp_ix" "$tmp_IX"
     install -d -m 0755 /usr/local/bin
+    rm -f -- "$IX_CLI_BIN" "$IX_CLI_BIN_UPPER"
     install -m 0755 "$tmp_ix" "$IX_CLI_BIN"
     install -m 0755 "$tmp_IX" "$IX_CLI_BIN_UPPER"
     rm -f -- "$tmp_ix" "$tmp_IX"
