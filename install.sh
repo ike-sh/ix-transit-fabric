@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-SCRIPT_VERSION="1.3.9"
+SCRIPT_VERSION="1.3.11"
 APP_NAME="ix-transit-fabric"
 IXTF_PROJECT_REPO="ike-sh/ix-transit-fabric"
 
@@ -757,11 +757,10 @@ normalize_easytier_version() {
 latest_easytier_version() {
     local tmp tag
     tmp="$(make_tmp_file "ix-transit-fabric.github-api")"
-    if ! download_with_mirrors "https://api.github.com/repos/${GITHUB_REPO}/releases/latest" "$tmp"; then
+    if ! curl -fsSL -o "$tmp" "https://api.github.com/repos/${GITHUB_REPO}/releases/latest" 2>/dev/null; then
         rm -f -- "$tmp"
         return 1
     fi
-
     tag="$(grep -m1 '"tag_name"' "$tmp" | sed -E 's/.*"tag_name"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/' || true)"
     rm -f -- "$tmp"
     [[ -n "$tag" && "$tag" != *"tag_name"* ]] || return 1
@@ -2418,19 +2417,9 @@ normalize_nat_direction() {
 }
 
 profile_uses_easytier_listener() {
-    case "${ROLE:-}" in
-        nat-transit)
-            return 0
-            ;;
-        nat-ingress)
-            [[ "${NAT_DIRECTION:-ingress-listener}" == "ingress-listener" ]]
-            ;;
-        nat-transit)
-            [[ "${NAT_DIRECTION:-ingress-listener}" == "nat-listener" ]]
-            ;;
-        *)
-            return 1
-            ;;
+    case "${ROLE:-}:${NAT_DIRECTION:-ingress-listener}" in
+        nat-transit:nat-listener|nat-ingress:ingress-listener) return 0 ;;
+        *) return 1 ;;
     esac
 }
 
@@ -2765,22 +2754,6 @@ prompt_remote_port_with_context() {
             2) log_warn "已取消使用该 REMOTE_PORT，请重新输入。" ;;
         esac
     done
-}
-
-ask_forward_later() {
-    local answer
-    cat >&2 <<EOF
-尚未配置落地机业务端口，无法生成业务转发规则。
-你可以：
-1) 输入业务端口
-2) 暂时只配置 EasyTier，不应用 nftables 转发
-EOF
-    answer="$(prompt_required "请选择" "1")" || return 1
-    case "$answer" in
-        1) return 1 ;;
-        2) return 0 ;;
-        *) log_warn "请输入 1 或 2。默认建议 1。"; return 1 ;;
-    esac
 }
 
 prompt_listener_proto() {
@@ -4089,22 +4062,6 @@ fetch_version_text() {
     printf '%s\n' "$ver"
 }
 
-latest_ix_script_release_tag() {
-    local tmp tag ver
-    tmp="$(make_tmp_file "ix-transit-fabric.release-tag")"
-    if curl -fsSL -o "$tmp" "https://api.github.com/repos/${IXTF_PROJECT_REPO}/releases/latest" 2>/dev/null; then
-        tag="$(grep -oE '"tag_name"[[:space:]]*:[[:space:]]*"[^"]+"' "$tmp" | head -n1 | sed -E 's/.*"([^"]+)"$/\1/')"
-        rm -f -- "$tmp"
-        [[ -n "$tag" ]] && { printf '%s\n' "$tag"; return 0; }
-    fi
-    rm -f -- "$tmp"
-    if ver="$(fetch_version_text "main")"; then
-        [[ "$ver" == v* ]] && printf '%s\n' "$ver" || printf 'v%s\n' "$ver"
-        return 0
-    fi
-    return 1
-}
-
 upgrade_script() {
     require_root "$@"
     local tag ref="main" before after tmp answer target_ver installed_ver downloaded_ver
@@ -5252,18 +5209,18 @@ self_check_ddns_timer_status() {
 }
 
 profile_easytier_proto_display() {
-    case "${ROLE:-}" in
-        nat-transit)
+    case "${ROLE:-}:${NAT_DIRECTION:-ingress-listener}" in
+        nat-transit:nat-listener)
             proto_display_user "${NAT_LISTENER_PROTO:-${ET_LISTENER_PROTO:-both}}"
             ;;
-        nat-ingress)
+        nat-ingress:nat-listener)
             proto_display_user "${NAT_LISTENER_PROTO:-both}"
             ;;
-        nat-transit)
-            proto_display_user "${ET_LISTENER_PROTO:-${LISTENER_PROTOS:-both}}"
+        nat-ingress:*)
+            proto_display_user "${INGRESS_LISTENER_PROTO:-${ET_LISTENER_PROTO:-both}}"
             ;;
         *)
-            proto_display_user "${FORWARD_PROTO:-both}"
+            proto_display_user "${ET_LISTENER_PROTO:-${FORWARD_PROTO:-both}}"
             ;;
     esac
 }
@@ -7523,6 +7480,10 @@ sync_nat_listener_code_rules_to_ingress_profile() {
             rm -f -- "$(rule_env_path "$profile_id" "$existing")"
             deleted=$((deleted + 1))
             deleted_ids="${deleted_ids}${deleted_ids:+ }${existing}"
+            if [[ "$existing" == "${first_rule_id:-}" ]]; then
+                first="true"
+                first_rule_id=""
+            fi
         else
             kept=$((kept + 1))
         fi
