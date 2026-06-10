@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-SCRIPT_VERSION="1.2.8"
+SCRIPT_VERSION="1.2.9"
 APP_NAME="ix-transit-fabric"
 IXTF_PROJECT_REPO="ike-sh/ix-transit-fabric"
 
@@ -4026,10 +4026,29 @@ install_ix_cli() {
     fi
 }
 
+remove_ix_shell_alias_overrides() {
+    local f removed=0
+    require_root
+    for f in /root/.bashrc /root/.bash_profile /root/.profile /etc/bash.bashrc /etc/profile; do
+        [[ -f "$f" ]] || continue
+        if grep -qE 'alias (ix|IX)=' "$f" 2>/dev/null; then
+            sed -i.bak -E '/alias (ix|IX)=/d' "$f"
+            log_ok "已移除 ${f} 中的 ix/IX 别名"
+            removed=1
+        fi
+    done
+    install -d -m 0755 /etc/profile.d
+    printf '%s\n' '# ix-transit-fabric: 清除旧 install.sh 别名' 'unalias ix 2>/dev/null || true' 'unalias IX 2>/dev/null || true' \
+        >/etc/profile.d/ix-transit-fabric.sh
+    chmod 0644 /etc/profile.d/ix-transit-fabric.sh
+    [[ "$removed" -eq 1 ]] && log_warn "当前终端请执行：unalias ix; hash -r" || true
+}
+
 repair_ix_cli() {
     require_root "$@"
     [[ -x "$IX_CLI_INSTALL_SH" ]] || die_user "缺少 ${IX_CLI_INSTALL_SH}，请先运行 bootstrap 或 install-ix-cli。"
     render_ix_cli_wrappers
+    remove_ix_shell_alias_overrides
     log_ok "已修复 ix / IX wrapper → ${IX_CLI_INSTALL_SH}"
     "$IX_CLI_BIN" --version
 }

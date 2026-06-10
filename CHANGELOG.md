@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.2.9
+
+### Fixed
+
+- **ix 菜单打不开**：根因常为 `~/.bashrc` 中 `alias ix='bash /root/install.sh ix'` 覆盖 `/usr/local/bin/ix`；`fix-ix.sh` / `repair-ix-cli` 现自动删除该别名并写入 `/etc/profile.d/ix-transit-fabric.sh`。
+
 ## 1.2.8
 
 ### Added

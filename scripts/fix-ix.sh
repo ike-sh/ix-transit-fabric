@@ -36,10 +36,28 @@ EOF
 chmod 0755 /usr/local/bin/ix
 cp -a /usr/local/bin/ix /usr/local/bin/IX
 
-if declare -F ix >/dev/null 2>&1; then
-    echo "[WARN] 当前 shell 存在 ix 函数，请执行：unset -f ix; hash -r"
-fi
+remove_ix_shell_overrides() {
+    local f line removed=0
+    for f in /root/.bashrc /root/.bash_profile /root/.profile /etc/bash.bashrc /etc/profile; do
+        [[ -f "$f" ]] || continue
+        if grep -qE 'alias (ix|IX)=' "$f" 2>/dev/null; then
+            line="$(grep -nE 'alias (ix|IX)=' "$f" | head -1 || true)"
+            sed -i.bak -E '/alias (ix|IX)=/d' "$f"
+            echo "[OK] 已移除 ${f} 中的 ix 别名（${line}）"
+            removed=1
+        fi
+    done
+    [[ "$removed" -eq 1 ]] || echo "[INFO] 未在常见 rc 文件中发现 ix 别名"
+    cat >/etc/profile.d/ix-transit-fabric.sh <<'EOF'
+# ix-transit-fabric: 清除指向旧 ~/install.sh 的 shell 别名
+unalias ix 2>/dev/null || true
+unalias IX 2>/dev/null || true
+EOF
+    chmod 0644 /etc/profile.d/ix-transit-fabric.sh
+}
+
+remove_ix_shell_overrides
 
 echo "[OK] $("/usr/local/bin/ix" --version)"
-echo "[OK] 请用绝对路径测试：/usr/local/bin/ix"
-echo "若仍失败，执行：type ix; head -3 /usr/local/bin/ix"
+echo "[OK] 当前会话请执行：unalias ix 2>/dev/null; hash -r; ix"
+echo "或新开 SSH 会话后直接运行 ix"
