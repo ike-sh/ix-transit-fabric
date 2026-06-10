@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.2.6
+
+### Fixed
+
+- `ix` / `IX` wrapper 硬编码 libexec 路径，避免旧版指向 `/root/install.sh` 导致菜单无法打开。
+- 新增 `repair-ix-cli`；`install-ix-cli` 与 `bootstrap.sh` 安装后自动自检并修复 wrapper。
+
+### Upgrade
+
+```bash
+sudo /usr/local/libexec/ix-transit-fabric/install.sh repair-ix-cli
+# 或重新 bootstrap
+```
+
 ## 1.2.5
 
 ### Added

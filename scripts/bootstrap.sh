@@ -23,6 +23,8 @@ chmod +x "$tmp"
 if [[ "$(id -u)" -eq 0 ]]; then
     bash "$tmp" install-easytier
     bash "$tmp" install-ix-cli
+    bash "$tmp" repair-ix-cli
+    echo "[OK] $(/usr/local/bin/ix --version 2>/dev/null || echo 'ix 验证失败')"
 else
     echo "[INFO] 非 root：仅下载 install.sh 到当前目录"
     install -m 0755 "$tmp" ./install.sh

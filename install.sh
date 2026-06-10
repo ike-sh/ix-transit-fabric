@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-SCRIPT_VERSION="1.2.5"
+SCRIPT_VERSION="1.2.6"
 APP_NAME="ix-transit-fabric"
 IXTF_PROJECT_REPO="ike-sh/ix-transit-fabric"
 
@@ -3974,13 +3974,19 @@ sync_ix_cli_install_sh() {
 }
 
 render_ix_cli_wrapper_file() {
-    cat <<EOF
+    cat <<'EOF'
 #!/usr/bin/env bash
 set -Eeuo pipefail
-if ((\$#)); then
-    exec bash "${IX_CLI_INSTALL_SH}" "\$@"
+IX_INSTALL_SH="/usr/local/libexec/ix-transit-fabric/install.sh"
+if [[ ! -x "$IX_INSTALL_SH" ]]; then
+    printf '%s\n' "[ERROR] 未找到 ix 安装脚本：${IX_INSTALL_SH}" >&2
+    printf '%s\n' "请运行：curl -fsSL https://raw.githubusercontent.com/ike-sh/ix-transit-fabric/main/scripts/bootstrap.sh | sudo bash" >&2
+    exit 1
+fi
+if (($#)); then
+    exec bash "$IX_INSTALL_SH" "$@"
 else
-    exec bash "${IX_CLI_INSTALL_SH}" ix
+    exec bash "$IX_INSTALL_SH" ix
 fi
 EOF
 }
@@ -4012,6 +4018,19 @@ install_ix_cli() {
     if [[ -x "$IX_CLI_BIN" && -x "$IX_CLI_BIN_UPPER" ]]; then
         log_ok "验证通过：$(command -v ix) 与 $(command -v IX)"
     fi
+    if ! "$IX_CLI_BIN" --version >/dev/null 2>&1; then
+        log_warn "ix 命令自检失败，正在重写 wrapper ..."
+        render_ix_cli_wrappers
+        "$IX_CLI_BIN" --version || die_user "ix 命令仍不可用，请检查 ${IX_CLI_INSTALL_SH}"
+    fi
+}
+
+repair_ix_cli() {
+    require_root "$@"
+    [[ -x "$IX_CLI_INSTALL_SH" ]] || die_user "缺少 ${IX_CLI_INSTALL_SH}，请先运行 bootstrap 或 install-ix-cli。"
+    render_ix_cli_wrappers
+    log_ok "已修复 ix / IX wrapper → ${IX_CLI_INSTALL_SH}"
+    "$IX_CLI_BIN" --version
 }
 
 latest_ix_script_release_tag() {
@@ -15783,6 +15802,9 @@ main() {
             ;;
         install-ix-cli)
             install_ix_cli
+            ;;
+        repair-ix-cli)
+            repair_ix_cli
             ;;
         upgrade-script|upgrade)
             upgrade_script
