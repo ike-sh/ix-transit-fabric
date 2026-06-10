@@ -1,6 +1,6 @@
 # ix-transit-fabric
 
-**当前版本**：[`v1.2.4`](https://github.com/ike-sh/ix-transit-fabric/releases/tag/v1.2.4)  
+**当前版本**：[`v1.2.5`](https://github.com/ike-sh/ix-transit-fabric/releases/tag/v1.2.5)  
 **作者**：ike  
 **仓库**：[https://github.com/ike-sh/ix-transit-fabric](https://github.com/ike-sh/ix-transit-fabric)
 
@@ -30,19 +30,24 @@
 
 ## 安装
 
-### 一键安装（自动拉取最新 Release）
+### 一键安装（推荐，单行）
 
-以下命令会查询 GitHub Releases 最新标签，**无需手写版本号**：
+不依赖 GitHub API（国内网络更稳），从 `main/VERSION` 解析最新标签：
 
 ```bash
-IXTF_REPO=ike-sh/ix-transit-fabric
-TAG=$(curl -fsSL "https://api.github.com/repos/${IXTF_REPO}/releases/latest" \
-  | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
-curl -fsSL -o install.sh \
-  "https://raw.githubusercontent.com/${IXTF_REPO}/${TAG}/install.sh?ts=$(date +%s)"
+curl -fsSL https://raw.githubusercontent.com/ike-sh/ix-transit-fabric/main/scripts/bootstrap.sh | sudo bash
+```
+
+非 root 时仅下载 `install.sh` 到当前目录，按提示再 `sudo` 执行。
+
+### 手动安装（分步）
+
+```bash
+V=$(curl -fsSL https://raw.githubusercontent.com/ike-sh/ix-transit-fabric/main/VERSION | tr -d '[:space:]')
+curl -fsSL -o install.sh "https://raw.githubusercontent.com/ike-sh/ix-transit-fabric/v${V}/install.sh?ts=$(date +%s)"
 chmod +x install.sh
-bash install.sh install-easytier
-bash install.sh install-ix-cli
+sudo bash install.sh install-easytier
+sudo bash install.sh install-ix-cli
 ```
 
 安装 EasyTier 与全局命令 `ix` / `IX` 后，直接输入 `ix` 进入管理菜单。

@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.2.5
+
+### Added
+
+- `scripts/bootstrap.sh`：单行安装 `curl .../bootstrap.sh | sudo bash`，通过 `main/VERSION` 解析标签，不依赖 GitHub API。
+
+### Fixed
+
+- `upgrade-script` / README 安装命令在 `api.github.com` 404 时失败；现回退读取 `raw.githubusercontent.com/.../main/VERSION`。
+
+### Upgrade
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/ike-sh/ix-transit-fabric/main/scripts/bootstrap.sh | sudo bash
+```
+
 ## 1.2.4
 
 ### Changed

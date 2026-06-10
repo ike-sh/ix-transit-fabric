@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-SCRIPT_VERSION="1.2.4"
+SCRIPT_VERSION="1.2.5"
 APP_NAME="ix-transit-fabric"
 IXTF_PROJECT_REPO="ike-sh/ix-transit-fabric"
 
@@ -4015,16 +4015,17 @@ install_ix_cli() {
 }
 
 latest_ix_script_release_tag() {
-    local tmp tag
+    local tmp tag ver
     tmp="$(make_tmp_file "ix-transit-fabric.release-tag")"
-    if ! download_with_mirrors "https://api.github.com/repos/${IXTF_PROJECT_REPO}/releases/latest" "$tmp"; then
+    if download_with_mirrors "https://api.github.com/repos/${IXTF_PROJECT_REPO}/releases/latest" "$tmp"; then
+        tag="$(grep -oE '"tag_name"[[:space:]]*:[[:space:]]*"[^"]+"' "$tmp" | head -n1 | sed -E 's/.*"([^"]+)"$/\1/')"
         rm -f -- "$tmp"
-        return 1
+        [[ -n "$tag" ]] && { printf '%s\n' "$tag"; return 0; }
     fi
-    tag="$(grep -oE '"tag_name"[[:space:]]*:[[:space:]]*"[^"]+"' "$tmp" | head -n1 | sed -E 's/.*"([^"]+)"$/\1/')"
     rm -f -- "$tmp"
-    [[ -n "$tag" ]] || return 1
-    printf '%s\n' "$tag"
+    ver="$(curl -fsSL "https://raw.githubusercontent.com/${IXTF_PROJECT_REPO}/main/VERSION" 2>/dev/null | tr -d '[:space:]' || true)"
+    [[ -n "$ver" ]] || return 1
+    [[ "$ver" == v* ]] && printf '%s\n' "$ver" || printf 'v%s\n' "$ver"
 }
 
 upgrade_script() {
