@@ -6610,50 +6610,74 @@ verify_nat_transit_rule_consistency() {
 
 verify_nat_ingress_import_consistency() {
     local profile_id="$1" expected_count="${2:-0}" rule_id issues=() saved_count=0 enabled_count=0 code_enabled_count=0
-    local code_rules_tsv="${CODE_RULES_TSV:-}"
+    local code_rules_tsv="${3:-${IXTF_LAST_SYNC_CODE_RULES_TSV:-${CODE_RULES_TSV:-}}}"
     local saved_rule_id="${RULE_ID:-}" saved_note="${RULE_NOTE:-}" saved_enabled="${RULE_ENABLED:-}" saved_client="${CLIENT_PORT:-}" saved_nat_public="${NAT_PUBLIC_PORT:-}"
     local saved_transit="${TRANSIT_PORT:-}" saved_landing_host="${LANDING_HOST:-}" saved_landing_port="${LANDING_PORT:-}" saved_proto="${FORWARD_PROTO:-both}" saved_created="${CREATED_AT:-}" saved_updated="${UPDATED_AT:-}"
-    local nft_text expected_rules actual_rules missing_rules nat_port dport
+    local nft_text expected_rules actual_rules missing_rules nat_port dport enabled
 
-    # load_profile_or_die -> clear_config_vars unsets CODE_RULES_TSV; keep import scope for counts.
+    # restart_profile / load_profile_or_die clear CODE_RULES_TSV; sync stashes TSV for post-restart verify.
     load_profile_or_die "$profile_id"
-    CODE_RULES_TSV="$code_rules_tsv"
+    [[ -n "$code_rules_tsv" ]] && CODE_RULES_TSV="$code_rules_tsv"
     normalize_profile_compat_vars
-    for rule_id in $(profile_rule_ids "$profile_id"); do
-        if [[ -n "${CODE_RULES_TSV:-}" ]] && ! profile_has_code_rule_id "$rule_id"; then
-            continue
-        fi
-        load_rule "$profile_id" "$rule_id" || continue
-        saved_count=$((saved_count + 1))
-        [[ "${RULE_ENABLED:-true}" == "true" ]] || continue
-        enabled_count=$((enabled_count + 1))
-        [[ -n "${CLIENT_PORT:-}" ]] || issues+=("规则 ${rule_id} 已保存，但缺少 CLIENT_PORT")
-        nat_port="$(rule_nat_public_port_value 2>/dev/null || true)"
-        [[ -n "$nat_port" ]] || issues+=("规则 ${rule_id} 已保存，但缺少 NAT_PUBLIC_PORT")
-        [[ -n "${TRANSIT_PORT:-}" ]] || issues+=("规则 ${rule_id} 已保存，但缺少 TRANSIT_PORT")
-        [[ -n "${LANDING_HOST:-}" ]] || issues+=("规则 ${rule_id} 已保存，但缺少 LANDING_HOST")
-        [[ -n "${LANDING_PORT:-}" ]] || issues+=("规则 ${rule_id} 已保存，但缺少 LANDING_PORT")
-        if [[ -n "${CLIENT_PORT:-}" ]]; then
-            if command_exists nft && nft list table ip "$NFT_TABLE" >/dev/null 2>&1; then
-                nft_text="$(nft list table ip "$NFT_TABLE" 2>/dev/null || true)"
-            elif [[ -r "$NFT_FILE" ]]; then
-                nft_text="$(cat "$NFT_FILE" 2>/dev/null || true)"
-            else
-                nft_text=""
-            fi
-            if [[ -n "$nft_text" ]] && ! grep -qE "(tcp|udp) dport ${CLIENT_PORT} " <<<"$nft_text"; then
-                issues+=("规则 ${rule_id} 已保存，但 nftables 未找到客户端入口端口 ${CLIENT_PORT}")
-            fi
-        fi
-        if [[ -n "$nat_port" ]] && ! et_peer_contains_port "$nat_port"; then
-            issues+=("EasyTier peer 未包含商家入口端口 ${nat_port}")
-        fi
-    done
-    if [[ -n "${CODE_RULES_TSV:-}" ]]; then
+    if [[ -n "$code_rules_tsv" ]]; then
         while IFS=$'\t' read -r rule_id _ enabled _ _ _ _ _ || [[ -n "${rule_id:-}" ]]; do
             [[ -n "${rule_id:-}" ]] || continue
             [[ "${enabled:-true}" == "true" ]] && code_enabled_count=$((code_enabled_count + 1))
-        done <<<"${CODE_RULES_TSV:-}"
+            [[ -f "$(rule_env_path "$profile_id" "$rule_id" 2>/dev/null || printf /nonexistent)" ]] || continue
+            saved_count=$((saved_count + 1))
+            load_rule "$profile_id" "$rule_id" || continue
+            [[ "${RULE_ENABLED:-true}" == "true" ]] || continue
+            enabled_count=$((enabled_count + 1))
+            [[ -n "${CLIENT_PORT:-}" ]] || issues+=("规则 ${rule_id} 已保存，但缺少 CLIENT_PORT")
+            nat_port="$(rule_nat_public_port_value 2>/dev/null || true)"
+            [[ -n "$nat_port" ]] || issues+=("规则 ${rule_id} 已保存，但缺少 NAT_PUBLIC_PORT")
+            [[ -n "${TRANSIT_PORT:-}" ]] || issues+=("规则 ${rule_id} 已保存，但缺少 TRANSIT_PORT")
+            [[ -n "${LANDING_HOST:-}" ]] || issues+=("规则 ${rule_id} 已保存，但缺少 LANDING_HOST")
+            [[ -n "${LANDING_PORT:-}" ]] || issues+=("规则 ${rule_id} 已保存，但缺少 LANDING_PORT")
+            if [[ -n "${CLIENT_PORT:-}" ]]; then
+                if command_exists nft && nft list table ip "$NFT_TABLE" >/dev/null 2>&1; then
+                    nft_text="$(nft list table ip "$NFT_TABLE" 2>/dev/null || true)"
+                elif [[ -r "$NFT_FILE" ]]; then
+                    nft_text="$(cat "$NFT_FILE" 2>/dev/null || true)"
+                else
+                    nft_text=""
+                fi
+                if [[ -n "$nft_text" ]] && ! grep -qE "(tcp|udp) dport ${CLIENT_PORT} " <<<"$nft_text"; then
+                    issues+=("规则 ${rule_id} 已保存，但 nftables 未找到客户端入口端口 ${CLIENT_PORT}")
+                fi
+            fi
+            if [[ -n "$nat_port" ]] && ! et_peer_contains_port "$nat_port"; then
+                issues+=("EasyTier peer 未包含商家入口端口 ${nat_port}")
+            fi
+        done <<<"$code_rules_tsv"
+    else
+        for rule_id in $(profile_rule_ids "$profile_id"); do
+            load_rule "$profile_id" "$rule_id" || continue
+            saved_count=$((saved_count + 1))
+            [[ "${RULE_ENABLED:-true}" == "true" ]] || continue
+            enabled_count=$((enabled_count + 1))
+            [[ -n "${CLIENT_PORT:-}" ]] || issues+=("规则 ${rule_id} 已保存，但缺少 CLIENT_PORT")
+            nat_port="$(rule_nat_public_port_value 2>/dev/null || true)"
+            [[ -n "$nat_port" ]] || issues+=("规则 ${rule_id} 已保存，但缺少 NAT_PUBLIC_PORT")
+            [[ -n "${TRANSIT_PORT:-}" ]] || issues+=("规则 ${rule_id} 已保存，但缺少 TRANSIT_PORT")
+            [[ -n "${LANDING_HOST:-}" ]] || issues+=("规则 ${rule_id} 已保存，但缺少 LANDING_HOST")
+            [[ -n "${LANDING_PORT:-}" ]] || issues+=("规则 ${rule_id} 已保存，但缺少 LANDING_PORT")
+            if [[ -n "${CLIENT_PORT:-}" ]]; then
+                if command_exists nft && nft list table ip "$NFT_TABLE" >/dev/null 2>&1; then
+                    nft_text="$(nft list table ip "$NFT_TABLE" 2>/dev/null || true)"
+                elif [[ -r "$NFT_FILE" ]]; then
+                    nft_text="$(cat "$NFT_FILE" 2>/dev/null || true)"
+                else
+                    nft_text=""
+                fi
+                if [[ -n "$nft_text" ]] && ! grep -qE "(tcp|udp) dport ${CLIENT_PORT} " <<<"$nft_text"; then
+                    issues+=("规则 ${rule_id} 已保存，但 nftables 未找到客户端入口端口 ${CLIENT_PORT}")
+                fi
+            fi
+            if [[ -n "$nat_port" ]] && ! et_peer_contains_port "$nat_port"; then
+                issues+=("EasyTier peer 未包含商家入口端口 ${nat_port}")
+            fi
+        done
     fi
     if [[ "$expected_count" -gt 0 && "$saved_count" -ne "$expected_count" ]]; then
         issues+=("实际保存规则数 ${saved_count} 与同步结果 ${expected_count} 不一致")
@@ -7385,6 +7409,7 @@ sync_nat_listener_code_rules_to_ingress_profile() {
     [[ -n "$added_ids" ]] && printf '* 新增规则 ID：%s\n' "$added_ids"
     [[ -n "$updated_ids" ]] && printf '* 更新规则 ID：%s\n' "$updated_ids"
     IXTF_LAST_SYNC_SAVED_RULE_COUNT="$saved_code_count"
+    IXTF_LAST_SYNC_CODE_RULES_TSV="${CODE_RULES_TSV:-}"
 }
 
 find_existing_nat_ingress_profile_for_code() (

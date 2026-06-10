@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.2.2
+
+### Fixed
+
+- 修复 v1.2.1 仍误报导入计数不一致：`restart_profile` 在 `verify` 之前调用 `load_profile_or_die` 清空 `CODE_RULES_TSV`；同步阶段现持久化 `IXTF_LAST_SYNC_CODE_RULES_TSV`，校验仅统计接入码规则（与 `saved_code_count` 同口径）。
+
+### Upgrade
+
+```bash
+curl -fsSL -o install.sh \
+  "https://raw.githubusercontent.com/ike-sh/ix-transit-fabric/v1.2.2/install.sh?ts=$(date +%s)"
+bash install.sh install-ix-cli
+```
+
 ## 1.2.1
 
 ### Fixed
