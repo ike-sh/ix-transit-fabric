@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-SCRIPT_VERSION="1.3.8"
+SCRIPT_VERSION="1.3.9"
 APP_NAME="ix-transit-fabric"
 IXTF_PROJECT_REPO="ike-sh/ix-transit-fabric"
 
@@ -4132,9 +4132,20 @@ upgrade_script() {
     fi
     chmod 0755 "$tmp"
     downloaded_ver="$(grep -m1 '^SCRIPT_VERSION=' "$tmp" | sed -E 's/^SCRIPT_VERSION="([^"]+)".*/\1/')"
-    if [[ "$before" == "$downloaded_ver" && "${installed_ver:-$before}" == "$downloaded_ver" ]]; then
+    if [[ "$downloaded_ver" != "$target_ver" ]]; then
+        log_warn "install.sh 下载版本 ${downloaded_ver} 与 main/VERSION ${target_ver} 不一致，2 秒后重试..."
+        sleep 2
+        if ! fetch_repo_file_contents "install.sh" "$tmp" "$ref"; then
+            rm -f -- "$tmp"
+            die_user "重试下载 install.sh 失败：${ref}"
+        fi
+        chmod 0755 "$tmp"
+        downloaded_ver="$(grep -m1 '^SCRIPT_VERSION=' "$tmp" | sed -E 's/^SCRIPT_VERSION="([^"]+)".*/\1/')"
+        [[ "$downloaded_ver" == "$target_ver" ]] || die_user "下载仍为 ${downloaded_ver}，与目标 ${target_ver} 不符。请运行：curl -fsSL \"https://raw.githubusercontent.com/ike-sh/ix-transit-fabric/main/scripts/fix-ix.sh?ts=\$(date +%s)\" | sudo bash"
+    fi
+    if [[ "$before" == "$target_ver" && "${installed_ver:-$before}" == "$target_ver" ]]; then
         rm -f -- "$tmp"
-        log_ok "管理脚本已是最新版本（${downloaded_ver}）。"
+        log_ok "管理脚本已是最新版本（${target_ver}）。"
         return 0
     fi
     if is_interactive_input && [[ "${IXTF_UPGRADE_YES:-}" != "1" ]]; then
@@ -15485,7 +15496,7 @@ ix-transit-fabric 高级维护
   9) 最终自检
  10) 清理历史与运行状态
  11) 监控 / 通知 / DDNS
- 12) 升级管理脚本
+ 12) 升级管理脚本（main 最新）
   0) 返回主菜单
 MENU
         printf '请选择：' >&2
