@@ -33,6 +33,16 @@ if [[ "$(id -u)" -eq 0 ]]; then
         ver="$(/usr/local/bin/ix --version 2>/dev/null || true)"
     fi
     [[ -n "$ver" ]] && echo "[OK] ${ver}" || { echo "[ERROR] ix 仍不可用，请运行 fix-ix.sh" >&2; exit 1; }
+    if [[ "${IXTF_NO_MENU:-}" != "1" ]]; then
+        if [[ -e /dev/tty && -r /dev/tty && -w /dev/tty ]]; then
+            echo "[INFO] 进入管理菜单（Ctrl+C 退出）"
+            exec /usr/local/bin/ix </dev/tty >/dev/tty 2>&1
+        elif [[ -t 0 ]]; then
+            exec /usr/local/bin/ix
+        else
+            echo "[INFO] 安装完成。运行 ix 进入管理菜单。"
+        fi
+    fi
 else
     echo "[INFO] 非 root：仅下载 install.sh 到当前目录"
     install -m 0755 "$tmp" ./install.sh

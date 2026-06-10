@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-SCRIPT_VERSION="1.3.1"
+SCRIPT_VERSION="1.3.2"
 APP_NAME="ix-transit-fabric"
 IXTF_PROJECT_REPO="ike-sh/ix-transit-fabric"
 
@@ -6391,7 +6391,7 @@ collect_nat_listener_inputs() {
         NAT_ET_CIDR="$default_nat_cidr"
         INGRESS_ET_CIDR="$default_ingress_cidr"
         TRANSIT_PORT="$default_transit_port"
-        NAT_LISTENER_PROTO="$(prompt_easytier_protocol_choice 1)" || return 1
+        NAT_LISTENER_PROTO="both"
         FORWARD_PROTO="both"
     fi
     NAT_LISTENER_PROTOS="$(normalize_listener_protos "$NAT_LISTENER_PROTO" "both")"
