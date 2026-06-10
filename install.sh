@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-SCRIPT_VERSION="1.2.9"
+SCRIPT_VERSION="1.3.1"
 APP_NAME="ix-transit-fabric"
 IXTF_PROJECT_REPO="ike-sh/ix-transit-fabric"
 
@@ -2803,7 +2803,8 @@ prompt_listener_proto() {
 prompt_easytier_protocol_choice() {
     local value default="${1:-1}" normalized
     require_tty
-    cat >&2 <<'EOF'
+    if verbose_deploy_output; then
+        cat >&2 <<'EOF'
 请选择 EasyTier 组网协议：
 
 1. TCP/UDP（推荐）
@@ -2815,8 +2816,11 @@ prompt_easytier_protocol_choice() {
 7. WireGuard
 8. ALL
 EOF
-    while true; do
         printf '请选择 [1-8]，默认 %s：' "$default" >&2
+    else
+        printf '组网协议 [1-8，回车=%s TCP/UDP]：' "$default" >&2
+    fi
+    while true; do
         IFS= read -r value || return 1
         value="${value:-$default}"
         case "$value" in
@@ -2902,12 +2906,16 @@ prompt_yes_no() {
 }
 
 confirm_recommended_nat_listener_role() {
-    cat >&2 <<'EOF'
+    if verbose_deploy_output; then
+        cat >&2 <<'EOF'
 创建 NAT IX 中转线路
 
 请在 NAT IX 机器上执行本步骤。
 该机器负责监听商家分配的 NAT/IX 入口，并把流量转发到落地机。
 EOF
+    else
+        print_info "NAT IX 机器：创建中转线路"
+    fi
     return 0
 }
 
@@ -2938,10 +2946,12 @@ prompt_virtual_transit_port() {
     if [[ -z "$default_port" ]]; then
         default_port="$(pick_random_port || true)"
     fi
-    cat >&2 <<'EOF'
+    if verbose_deploy_output; then
+        cat >&2 <<'EOF'
 虚拟网中转端口用于 EasyTier 虚拟网内部转发，不需要公网放行。
 通常保持自动随机即可。
 EOF
+    fi
     answer="$(prompt_yes_no "是否自定义虚拟网中转端口" "false")" || return 1
     if [[ "$answer" == "true" ]]; then
         prompt_port "请输入虚拟网中转端口（仅 EasyTier 虚拟网内部使用，不是商家入口端口）" "$default_port"
@@ -5985,6 +5995,12 @@ show_code() {
             save_profile_code_file "$PROFILE_ID" "$code"
         fi
         if [[ "${ROLE:-}" == "nat-transit" && "${NAT_DIRECTION:-ingress-listener}" == "nat-listener" ]]; then
+            if ! verbose_deploy_output; then
+                printf '%s\n' "$(format_rules_for_code_summary "$PROFILE_ID")"
+                printf '%s\n' "$code"
+                print_info "复制上方接入码到公网入口机（菜单 2 或 ix add-nat-ingress-from-listener-code）"
+                return 0
+            fi
             cat <<EOF
 NAT IX 中转线路接入码：${PROFILE_ID:-default}
 
@@ -6655,7 +6671,9 @@ print_nat_listener_created_summary() {
     load_profile_or_die "$profile_id"
     normalize_profile_compat_vars
     printf '\n%s %s\n' "$(c_green '[OK]')" "$(c_green "NAT IX 线路已创建：${profile_id}")"
-    print_info "请将接入码复制到公网入口机（菜单 2 或 ix add-nat-ingress-from-listener-code）"
+    if verbose_deploy_output; then
+        print_info "请将接入码复制到公网入口机（菜单 2 或 ix add-nat-ingress-from-listener-code）"
+    fi
     show_code "$profile_id" || true
 }
 
@@ -15367,7 +15385,7 @@ run_advanced_menu_action() {
     case "$choice" in
         1) list_profiles ;;
         2) show_profile_from_menu ;;
-        3) status_all ;;
+        3) manage_profiles_menu ;;
         4) show_port_map_all ;;
         5) show_nft ;;
         6) export_diagnostic ;;
@@ -15375,10 +15393,9 @@ run_advanced_menu_action() {
         8) uninstall ;;
         9) purge ;;
         10) self_check ;;
-        11) cleanup_history ;;
-        12) cleanup_state ;;
-        13) show_monitor_menu ;;
-        14) upgrade_script ;;
+        11) cleanup_state ;;
+        12) show_monitor_menu ;;
+        13) upgrade_script ;;
         0) return 10 ;;
         *) log_warn "未知选项，请重新选择。"; return 0 ;;
     esac
@@ -15393,7 +15410,7 @@ ix-transit-fabric 高级维护
 
   1) 线路列表
   2) 查看指定线路配置
-  3) 查看所有状态
+  3) 启用 / 禁用 / 删除线路
   4) 查看端口地图
   5) 查看 nftables 项目表
   6) 导出脱敏诊断报告
@@ -15401,10 +15418,9 @@ ix-transit-fabric 高级维护
   8) 卸载服务（保留配置备份）
   9) 完全清理（删除配置、服务和备份）
  10) 最终自检
- 11) 清理 history
- 12) 清理 state
- 13) 监控 / 通知 / DDNS
- 14) 升级管理脚本
+ 11) 清理历史与运行状态
+ 12) 监控 / 通知 / DDNS
+ 13) 升级管理脚本
   0) 返回主菜单
 MENU
         printf '请选择：' >&2
@@ -15432,7 +15448,7 @@ manage_profiles_menu() {
     local choice profile_id
     cat >&2 <<'MENU'
 
-线路维护
+线路启停 / 删除
 
   1) 启用线路
   2) 禁用线路
@@ -15521,18 +15537,15 @@ run_monitor_menu_action() {
         9) notify_disable ;;
         10) notify_status ;;
         11) health_history ;;
-        12) traffic_status ;;
-        13) traffic_report ;;
-        14) traffic_reset_all ;;
-        15)
+        12)
             if ddns_user_disabled; then
                 log_warn "DDNS 定时刷新已禁用；本次为手动刷新。"
             fi
             ddns_refresh_all
             ;;
-        16) ddns_enable ;;
-        17) ddns_disable ;;
-        18) ddns_status ;;
+        13) ddns_enable ;;
+        14) ddns_disable ;;
+        15) ddns_status ;;
         0) return 10 ;;
         *) log_warn "未知选项，请重新选择。"; return 0 ;;
     esac
@@ -15543,7 +15556,7 @@ show_monitor_menu() {
     while true; do
         cat >&2 <<'MENU'
 
-监控 / 通知 / 流量统计 / DDNS
+监控 / 通知 / DDNS
 
   1) 立即运行一次监控
   2) 启用定时健康检查
@@ -15556,13 +15569,10 @@ show_monitor_menu() {
   9) 禁用通知
  10) 查看通知状态
  11) 查看健康历史
- 12) 查看流量统计
- 13) 查看流量报告
- 14) 重置流量计数
- 15) 立即刷新 DDNS（手动）
- 16) 启用 DDNS 定时刷新
- 17) 禁用 DDNS 定时刷新
- 18) 查看 DDNS 状态
+ 12) 立即刷新 DDNS（手动）
+ 13) 启用 DDNS 定时刷新
+ 14) 禁用 DDNS 定时刷新
+ 15) 查看 DDNS 状态
   0) 返回
 MENU
         printf '请选择：' >&2
@@ -15575,6 +15585,56 @@ MENU
         export IXTF_IN_MENU=1
         export IXTF_ALLOW_INTERACTIVE=1
         ( trap - ERR; set +e; run_monitor_menu_action "$choice" )
+        rc=$?
+        trap 'on_error $LINENO' ERR
+        set -e
+
+        [[ "$rc" -eq 10 ]] && return 0
+        if [[ "$rc" -ne 0 ]]; then
+            log_error "菜单操作失败（退出码 ${rc}），已返回菜单。"
+        fi
+    done
+}
+
+run_diagnostics_menu_action() {
+    local choice
+    choice="$(normalize_menu_choice "$1")"
+    [[ -z "$choice" ]] && return 0
+    case "$choice" in
+        1) status_all ;;
+        2) health_profile_from_menu ;;
+        3) latency_report_from_menu ;;
+        4) traffic_report ;;
+        5) show_health_menu ;;
+        0) return 10 ;;
+        *) log_warn "未知选项，请重新选择。"; return 0 ;;
+    esac
+}
+
+show_diagnostics_menu() {
+    local choice rc
+    while true; do
+        cat >&2 <<'MENU'
+
+线路状态 / 诊断
+
+  1) 线路列表与运行状态
+  2) 单线路健康检查
+  3) 延迟诊断
+  4) 流量统计
+  5) 健康报告 / 主备切换
+  0) 返回主菜单
+MENU
+        printf '请选择：' >&2
+        IFS= read -r choice || { printf '\n' >&2; return 0; }
+        choice="$(normalize_menu_choice "$choice")"
+        [[ -z "$choice" ]] && continue
+
+        set +e
+        trap - ERR
+        export IXTF_IN_MENU=1
+        export IXTF_ALLOW_INTERACTIVE=1
+        ( trap - ERR; set +e; run_diagnostics_menu_action "$choice" )
         rc=$?
         trap 'on_error $LINENO' ERR
         set -e
@@ -15704,13 +15764,10 @@ run_menu_action() {
         1) add_nat_listener_profile ;;
         2) add_nat_ingress_from_listener_code ;;
         3) show_rule_menu ;;
-        4) status_all ;;
-        5) health_profile_from_menu ;;
-        6) latency_report_from_menu ;;
-        7) traffic_report ;;
-        8) install_easytier ;;
-        9) show_advanced_menu ;;
-        10) return 10 ;;
+        4) show_diagnostics_menu ;;
+        5) install_easytier ;;
+        6) show_advanced_menu ;;
+        7|10) return 10 ;;
         0) return 10 ;;
         *) log_warn "未知选项，请重新选择。"; return 0 ;;
     esac
@@ -15730,13 +15787,10 @@ ix-transit-fabric 管理菜单
   1) 创建 NAT IX 中转线路
   2) 公网入口机导入接入码
   3) 转发规则管理
-  4) 线路列表 / 状态
-  5) 健康检查
-  6) 延迟诊断
-  7) 流量统计
-  8) 安装 / 更新 EasyTier
-  9) 高级维护
- 10) 退出
+  4) 线路状态 / 诊断
+  5) 安装 / 更新 EasyTier
+  6) 高级维护
+  7) 退出
 MENU
         printf '请选择：' >&2
         IFS= read -r choice || { printf '\n' >&2; return 0; }
