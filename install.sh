@@ -6391,7 +6391,7 @@ collect_nat_listener_inputs() {
         NAT_ET_CIDR="$default_nat_cidr"
         INGRESS_ET_CIDR="$default_ingress_cidr"
         TRANSIT_PORT="$default_transit_port"
-        NAT_LISTENER_PROTO="both"
+        NAT_LISTENER_PROTO="$(prompt_easytier_protocol_choice 1)" || return 1
         FORWARD_PROTO="both"
     fi
     NAT_LISTENER_PROTOS="$(normalize_listener_protos "$NAT_LISTENER_PROTO" "both")"
