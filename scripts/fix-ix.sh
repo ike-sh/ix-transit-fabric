@@ -1,22 +1,39 @@
 #!/usr/bin/env bash
-# Fix broken ix wrapper (e.g. points to /root/install.sh). Run:
+# Fix broken ix wrapper / stale install.sh cache. Run:
 # curl -fsSL "https://raw.githubusercontent.com/ike-sh/ix-transit-fabric/main/scripts/fix-ix.sh?ts=$(date +%s)" | sudo bash
 set -euo pipefail
 
 REPO="${IXTF_REPO:-ike-sh/ix-transit-fabric}"
+REF="${IXTF_TAG:-main}"
 LIBEXEC="/usr/local/libexec/ix-transit-fabric"
 INSTALL_SH="${LIBEXEC}/install.sh"
 TS="$(date +%s)"
+
+fetch_repo_file() {
+    local relpath="$1" dest="$2" ref="${3:-main}"
+    if curl -fsSL -H "Accept: application/vnd.github.raw+json" \
+        -o "$dest" "https://api.github.com/repos/${REPO}/contents/${relpath}?ref=${ref}" 2>/dev/null; then
+        return 0
+    fi
+    curl -fsSL -o "$dest" "https://raw.githubusercontent.com/${REPO}/${ref}/${relpath}?ts=${TS}"
+}
 
 if [[ "$(id -u)" -ne 0 ]]; then
     echo "[ERROR] 请使用 sudo 运行" >&2
     exit 1
 fi
 
-echo "[INFO] 同步 install.sh ..."
+if [[ -n "${IXTF_TAG:-}" ]]; then
+    [[ "$REF" == v* ]] || REF="v${REF}"
+else
+    REF="main"
+fi
+
+echo "[INFO] 同步 install.sh（ref=${REF}，GitHub API 优先）..."
 install -d -m 0755 "$LIBEXEC" /usr/local/bin
-curl -fsSL -o "$INSTALL_SH" "https://raw.githubusercontent.com/${REPO}/main/install.sh?ts=${TS}"
+fetch_repo_file "install.sh" "$INSTALL_SH" "$REF"
 chmod 0755 "$INSTALL_SH"
+remote_ver="$(grep -m1 '^SCRIPT_VERSION=' "$INSTALL_SH" | sed -E 's/^SCRIPT_VERSION="([^"]+)".*/\1/')"
 
 echo "[INFO] 重写 ix / IX wrapper ..."
 tee /usr/local/bin/ix >/dev/null <<'EOF'
@@ -58,6 +75,4 @@ EOF
 
 remove_ix_shell_overrides
 
-echo "[OK] $("/usr/local/bin/ix" --version)"
-echo "[OK] 当前会话请执行：unalias ix 2>/dev/null; hash -r; ix"
-echo "或新开 SSH 会话后直接运行 ix"
+echo "[OK] $("/usr/local/bin/ix" --version)（install.sh ${remote_ver:-?}）"

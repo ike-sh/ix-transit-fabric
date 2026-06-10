@@ -1,11 +1,20 @@
 #!/usr/bin/env bash
 # One-line installer: curl -fsSL .../bootstrap.sh | sudo bash
-# Optional: IXTF_TAG=v1.2.6 to pin a release tag instead of main
+# Optional: IXTF_TAG=v1.3.4 to pin a release tag instead of main
 set -euo pipefail
 
 REPO="${IXTF_REPO:-ike-sh/ix-transit-fabric}"
 TAG="${IXTF_TAG:-}"
 TS="$(date +%s)"
+
+fetch_repo_file() {
+    local relpath="$1" dest="$2" ref="${3:-main}"
+    if curl -fsSL -H "Accept: application/vnd.github.raw+json" \
+        -o "$dest" "https://api.github.com/repos/${REPO}/contents/${relpath}?ref=${ref}" 2>/dev/null; then
+        return 0
+    fi
+    curl -fsSL -o "$dest" "https://raw.githubusercontent.com/${REPO}/${ref}/${relpath}?ts=${TS}"
+}
 
 tmp="$(mktemp /tmp/ix-transit-install.XXXXXX)"
 trap 'rm -f -- "$tmp"' EXIT
@@ -13,26 +22,26 @@ trap 'rm -f -- "$tmp"' EXIT
 if [[ -n "$TAG" ]]; then
     [[ "$TAG" == v* ]] || TAG="v${TAG}"
     echo "[INFO] 下载 ${REPO} ${TAG} ..."
-    curl -fsSL -o "$tmp" "https://raw.githubusercontent.com/${REPO}/${TAG}/install.sh?ts=${TS}"
+    fetch_repo_file "install.sh" "$tmp" "$TAG"
 else
-    echo "[INFO] 下载 ${REPO} main（最新 install.sh）..."
-    curl -fsSL -o "$tmp" "https://raw.githubusercontent.com/${REPO}/main/install.sh?ts=${TS}"
+    echo "[INFO] 下载 ${REPO} main（最新 install.sh，GitHub API）..."
+    fetch_repo_file "install.sh" "$tmp" "main"
 fi
 chmod +x "$tmp"
+remote_ver="$(grep -m1 '^SCRIPT_VERSION=' "$tmp" | sed -E 's/^SCRIPT_VERSION="([^"]+)".*/\1/')"
+[[ -n "$remote_ver" ]] && echo "[INFO] 远端 install.sh 版本：${remote_ver}"
 
 if [[ "$(id -u)" -eq 0 ]]; then
     bash "$tmp" install-easytier
     bash "$tmp" install-ix-cli
-    bash "$tmp" repair-ix-cli 2>/dev/null || true
+    fix_sh="$(mktemp /tmp/ix-transit-fix.XXXXXX)"
+    echo "[INFO] 强制同步 install.sh（绕过 raw CDN 缓存）..."
+    fetch_repo_file "scripts/fix-ix.sh" "$fix_sh" "main"
+    chmod +x "$fix_sh"
+    bash "$fix_sh"
+    rm -f -- "$fix_sh"
     ver="$(/usr/local/bin/ix --version 2>/dev/null || true)"
-    if [[ -z "$ver" ]]; then
-        fix_sh="$(mktemp /tmp/ix-transit-fix.XXXXXX)"
-        curl -fsSL -o "$fix_sh" "https://raw.githubusercontent.com/${REPO}/main/scripts/fix-ix.sh?ts=${TS}"
-        bash "$fix_sh"
-        rm -f -- "$fix_sh"
-        ver="$(/usr/local/bin/ix --version 2>/dev/null || true)"
-    fi
-    [[ -n "$ver" ]] && echo "[OK] ${ver}" || { echo "[ERROR] ix 仍不可用，请运行 fix-ix.sh" >&2; exit 1; }
+    [[ -n "$ver" ]] && echo "[OK] ${ver}" || { echo "[ERROR] ix 仍不可用" >&2; exit 1; }
     if [[ "${IXTF_NO_MENU:-}" != "1" ]]; then
         if [[ -e /dev/tty && -r /dev/tty && -w /dev/tty ]]; then
             echo "[INFO] 进入管理菜单（Ctrl+C 退出）"
@@ -46,6 +55,6 @@ if [[ "$(id -u)" -eq 0 ]]; then
 else
     echo "[INFO] 非 root：仅下载 install.sh 到当前目录"
     install -m 0755 "$tmp" ./install.sh
-    echo "[OK] 已保存 ./install.sh"
+    echo "[OK] 已保存 ./install.sh（${remote_ver:-未知版本}）"
     echo "请运行：sudo bash install.sh install-easytier && sudo bash install.sh install-ix-cli"
 fi

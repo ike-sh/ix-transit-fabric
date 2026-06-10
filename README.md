@@ -1,6 +1,6 @@
 # ix-transit-fabric
 
-**当前版本**：[`v1.3.4`](https://github.com/ike-sh/ix-transit-fabric/releases/tag/v1.3.4)  
+**当前版本**：[`v1.3.5`](https://github.com/ike-sh/ix-transit-fabric/releases/tag/v1.3.5)  
 **作者**：ike  
 **仓库**：[https://github.com/ike-sh/ix-transit-fabric](https://github.com/ike-sh/ix-transit-fabric)
 
@@ -32,7 +32,7 @@
 
 ### 一键安装（推荐，单行）
 
-不依赖 GitHub API，**直接拉取 `main/install.sh` 最新版**（可用 `IXTF_TAG=vX.Y.Z` 固定版本）：
+一行安装通过 **GitHub API** 拉取最新 `install.sh`（绕过 raw CDN 缓存；可用 `IXTF_TAG=vX.Y.Z` 固定版本）：
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/ike-sh/ix-transit-fabric/main/scripts/bootstrap.sh | sudo bash
