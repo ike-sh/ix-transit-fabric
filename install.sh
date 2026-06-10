@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-SCRIPT_VERSION="1.3.6"
+SCRIPT_VERSION="1.3.8"
 APP_NAME="ix-transit-fabric"
 IXTF_PROJECT_REPO="ike-sh/ix-transit-fabric"
 
@@ -7422,8 +7422,8 @@ sync_nat_listener_code_rules_to_ingress_profile() {
     local profile_id="$1" line rule_id note enabled nat_public_port transit_port landing_host landing_port forward_proto
     local default_client client_port first="true" remote_ids=" " existing answer local_exists="false"
     local first_client="" first_transit="" first_landing_host="" first_landing_port="" first_proto=""
-    local first_rule_id="" added=0 updated=0 disabled=0 kept=0 failed=0 saved_code_count=0 saved_enabled_count=0 missing_rules=""
-    local added_ids="" updated_ids=""
+    local first_rule_id="" added=0 updated=0 disabled=0 deleted=0 kept=0 failed=0 saved_code_count=0 saved_enabled_count=0 missing_rules=""
+    local added_ids="" updated_ids="" deleted_ids="" sync_summary=""
     validate_profile_id "$profile_id" || die_user "PROFILE_ID 格式不正确：${profile_id}"
     print_code_rules_import_summary "$profile_id"
     while IFS=$'\t' read -r -u 3 rule_id note enabled nat_public_port transit_port landing_host landing_port forward_proto || [[ -n "${rule_id:-}" ]]; do
@@ -7479,15 +7479,11 @@ sync_nat_listener_code_rules_to_ingress_profile() {
         [[ "$remote_ids" == *" ${existing} "* ]] && continue
         [[ -f "$(rule_env_path "$profile_id" "$existing" 2>/dev/null || printf /nonexistent)" ]] || continue
         log_warn "本地规则 ${existing} 已不在接入码中"
-        answer="$(prompt_yes_no "是否停用本地规则 ${existing}" "true")" || answer="true"
+        answer="$(prompt_yes_no "是否删除本地转发规则 ${existing}" "true")" || answer="true"
         if [[ "$answer" == "true" ]]; then
-            load_rule "$profile_id" "$existing" || continue
-            RULE_ENABLED="false"
-            if ! save_rule_env "$profile_id" "$existing"; then
-                failed=$((failed + 1))
-                die_user "规则 ${existing} 停用写入失败。"
-            fi
-            disabled=$((disabled + 1))
+            rm -f -- "$(rule_env_path "$profile_id" "$existing")"
+            deleted=$((deleted + 1))
+            deleted_ids="${deleted_ids}${deleted_ids:+ }${existing}"
         else
             kept=$((kept + 1))
         fi
@@ -7523,15 +7519,22 @@ sync_nat_listener_code_rules_to_ingress_profile() {
         printf '\n同步结果：\n\n'
         printf '* 新增规则：%s\n' "$added"
         printf '* 更新规则：%s\n' "$updated"
-        printf '* 停用规则：%s\n' "$disabled"
+        [[ "$deleted" -gt 0 ]] && printf '* 删除规则：%s\n' "$deleted"
+        [[ "$disabled" -gt 0 ]] && printf '* 停用规则：%s\n' "$disabled"
         printf '* 保留规则：%s\n' "$kept"
         printf '* 失败规则：%s\n' "$failed"
         printf '* 实际保存规则：%s\n' "$saved_code_count"
         printf '* 启用规则数：%s\n' "$saved_enabled_count"
         [[ -n "$added_ids" ]] && printf '* 新增规则 ID：%s\n' "$added_ids"
         [[ -n "$updated_ids" ]] && printf '* 更新规则 ID：%s\n' "$updated_ids"
+        [[ -n "$deleted_ids" ]] && printf '* 删除规则 ID：%s\n' "$deleted_ids"
     else
-        print_ok "同步完成：新增 ${added} / 更新 ${updated} / 停用 ${disabled} | 保存 ${saved_code_count} 条，启用 ${saved_enabled_count} 条"
+        {
+            printf '同步完成：新增 %s / 更新 %s' "$added" "$updated"
+            [[ "$deleted" -gt 0 ]] && printf ' / 删除 %s' "$deleted"
+            [[ "$disabled" -gt 0 ]] && printf ' / 停用 %s' "$disabled"
+            printf ' | 保存 %s 条，启用 %s 条' "$saved_code_count" "$saved_enabled_count"
+        } | while IFS= read -r line; do print_ok "$line"; done
         [[ "$failed" -gt 0 ]] && print_error "失败规则：${failed}"
         [[ "$kept" -gt 0 ]] && print_warn "保留未在接入码中的本地规则：${kept} 条"
     fi
