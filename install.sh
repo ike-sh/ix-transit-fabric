@@ -2818,7 +2818,11 @@ prompt_easytier_protocol_choice() {
 EOF
         printf '请选择 [1-8]，默认 %s：' "$default" >&2
     else
-        printf '组网协议 [1-8，回车=%s TCP/UDP]：' "$default" >&2
+        cat >&2 <<'EOF'
+组网协议（回车默认 1 = TCP/UDP）：
+  1 TCP/UDP  2 UDP  3 TCP  4 WebSocket  5 WebSocket TLS  6 QUIC  7 WireGuard  8 ALL
+EOF
+        printf '请选择 [1-8]：' >&2
     fi
     while true; do
         IFS= read -r value || return 1
