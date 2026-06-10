@@ -4067,56 +4067,84 @@ repair_ix_cli() {
     "$IX_CLI_BIN" --version
 }
 
+fetch_repo_file_contents() {
+    local relpath="$1" dest="$2" ref="${3:-main}"
+    if curl -fsSL -H "Accept: application/vnd.github.raw+json" \
+        -o "$dest" "https://api.github.com/repos/${IXTF_PROJECT_REPO}/contents/${relpath}?ref=${ref}" 2>/dev/null && [[ -s "$dest" ]]; then
+        return 0
+    fi
+    curl -fsSL -o "$dest" "https://raw.githubusercontent.com/${IXTF_PROJECT_REPO}/${ref}/${relpath}?ts=$(date +%s)"
+}
+
+fetch_version_text() {
+    local ref="${1:-main}" tmp ver
+    tmp="$(make_tmp_file "ix-transit-fabric.version")"
+    if ! fetch_repo_file_contents "VERSION" "$tmp" "$ref"; then
+        rm -f -- "$tmp"
+        return 1
+    fi
+    ver="$(tr -d '[:space:]' <"$tmp")"
+    rm -f -- "$tmp"
+    [[ -n "$ver" ]] || return 1
+    printf '%s\n' "$ver"
+}
+
 latest_ix_script_release_tag() {
     local tmp tag ver
     tmp="$(make_tmp_file "ix-transit-fabric.release-tag")"
-    if download_with_mirrors "https://api.github.com/repos/${IXTF_PROJECT_REPO}/releases/latest" "$tmp"; then
+    if curl -fsSL -o "$tmp" "https://api.github.com/repos/${IXTF_PROJECT_REPO}/releases/latest" 2>/dev/null; then
         tag="$(grep -oE '"tag_name"[[:space:]]*:[[:space:]]*"[^"]+"' "$tmp" | head -n1 | sed -E 's/.*"([^"]+)"$/\1/')"
         rm -f -- "$tmp"
         [[ -n "$tag" ]] && { printf '%s\n' "$tag"; return 0; }
     fi
     rm -f -- "$tmp"
-    ver="$(curl -fsSL "https://raw.githubusercontent.com/${IXTF_PROJECT_REPO}/main/VERSION" 2>/dev/null | tr -d '[:space:]' || true)"
-    [[ -n "$ver" ]] || return 1
-    [[ "$ver" == v* ]] && printf '%s\n' "$ver" || printf 'v%s\n' "$ver"
+    if ver="$(fetch_version_text "main")"; then
+        [[ "$ver" == v* ]] && printf '%s\n' "$ver" || printf 'v%s\n' "$ver"
+        return 0
+    fi
+    return 1
 }
 
 upgrade_script() {
     require_root "$@"
-    local tag="${IXTF_TAG:-}" before after tmp answer target_ver installed_ver
+    local tag ref="main" before after tmp answer target_ver installed_ver downloaded_ver
     before="$SCRIPT_VERSION"
-    if [[ -z "$tag" ]]; then
-        tag="$(latest_ix_script_release_tag)" || die_user "无法从 GitHub Releases 获取最新版本。可手动指定：IXTF_TAG=v1.2.2 bash install.sh upgrade-script"
+    if [[ -n "${IXTF_TAG:-}" ]]; then
+        tag="${IXTF_TAG}"
+        [[ "$tag" == v* ]] || tag="v${tag}"
+        ref="$tag"
+        target_ver="${tag#v}"
+    else
+        target_ver="$(fetch_version_text "main")" || die_user "无法读取 main/VERSION。可指定：IXTF_TAG=vX.Y.Z ix upgrade-script"
+        tag="v${target_ver}"
     fi
-    [[ "$tag" == v* ]] || tag="v${tag}"
-    target_ver="${tag#v}"
+    installed_ver=""
+    if [[ -x "$IX_CLI_INSTALL_SH" ]]; then
+        installed_ver="$(bash "$IX_CLI_INSTALL_SH" --version 2>/dev/null | awk '{print $2}')"
+    fi
     printf '当前运行版本：%s\n' "$before"
-    printf '目标 Release：%s\n' "$target_ver"
-    if [[ "$before" == "$target_ver" ]]; then
-        installed_ver=""
-        if [[ -x "$IX_CLI_INSTALL_SH" ]]; then
-            installed_ver="$(bash "$IX_CLI_INSTALL_SH" --version 2>/dev/null | awk '{print $2}')"
-        fi
-        if [[ -z "$installed_ver" || "$installed_ver" == "$target_ver" ]]; then
-            log_ok "管理脚本已是最新版本。"
-            return 0
-        fi
-        printf 'ix 已安装副本版本：%s（将同步到 %s）\n' "$installed_ver" "$target_ver"
-    fi
-    if is_interactive_input && [[ "${IXTF_UPGRADE_YES:-}" != "1" ]]; then
-        answer="$(prompt_yes_no "下载 ${tag} 并更新 ix / libexec 安装脚本" "true")" || return 1
-        [[ "$answer" == "true" ]] || { log_info "已取消升级。"; return 0; }
-    fi
+    [[ -n "$installed_ver" && "$installed_ver" != "$before" ]] && printf 'ix 已安装副本版本：%s\n' "$installed_ver"
+    printf '目标版本：%s（ref=%s，GitHub API）\n' "$target_ver" "$ref"
     tmp="$(make_tmp_file "ix-transit-fabric.upgrade")"
-    if ! download_with_mirrors "https://raw.githubusercontent.com/${IXTF_PROJECT_REPO}/${tag}/install.sh" "$tmp"; then
+    if ! fetch_repo_file_contents "install.sh" "$tmp" "$ref"; then
         rm -f -- "$tmp"
-        die_user "下载 install.sh 失败：${tag}"
+        die_user "下载 install.sh 失败：${ref}"
     fi
     chmod 0755 "$tmp"
+    downloaded_ver="$(grep -m1 '^SCRIPT_VERSION=' "$tmp" | sed -E 's/^SCRIPT_VERSION="([^"]+)".*/\1/')"
+    if [[ "$before" == "$downloaded_ver" && "${installed_ver:-$before}" == "$downloaded_ver" ]]; then
+        rm -f -- "$tmp"
+        log_ok "管理脚本已是最新版本（${downloaded_ver}）。"
+        return 0
+    fi
+    if is_interactive_input && [[ "${IXTF_UPGRADE_YES:-}" != "1" ]]; then
+        answer="$(prompt_yes_no "下载 ${tag}（install.sh ${downloaded_ver}）并更新 ix / libexec" "true")" || return 1
+        [[ "$answer" == "true" ]] || { log_info "已取消升级。"; rm -f -- "$tmp"; return 0; }
+    fi
     bash "$tmp" install-ix-cli
     after="$(bash "$IX_CLI_INSTALL_SH" --version 2>/dev/null | awk '{print $2}')"
     rm -f -- "$tmp"
-    log_ok "升级完成：${before} → ${after:-$target_ver}"
+    log_ok "升级完成：${before} → ${after:-$downloaded_ver}"
     log_info "验证：ix --version"
 }
 
@@ -7529,12 +7557,11 @@ sync_nat_listener_code_rules_to_ingress_profile() {
         [[ -n "$updated_ids" ]] && printf '* 更新规则 ID：%s\n' "$updated_ids"
         [[ -n "$deleted_ids" ]] && printf '* 删除规则 ID：%s\n' "$deleted_ids"
     else
-        {
-            printf '同步完成：新增 %s / 更新 %s' "$added" "$updated"
-            [[ "$deleted" -gt 0 ]] && printf ' / 删除 %s' "$deleted"
-            [[ "$disabled" -gt 0 ]] && printf ' / 停用 %s' "$disabled"
-            printf ' | 保存 %s 条，启用 %s 条' "$saved_code_count" "$saved_enabled_count"
-        } | while IFS= read -r line; do print_ok "$line"; done
+        sync_summary="同步完成：新增 ${added} / 更新 ${updated}"
+        [[ "$deleted" -gt 0 ]] && sync_summary="${sync_summary} / 删除 ${deleted}"
+        [[ "$disabled" -gt 0 ]] && sync_summary="${sync_summary} / 停用 ${disabled}"
+        sync_summary="${sync_summary} | 保存 ${saved_code_count} 条，启用 ${saved_enabled_count} 条"
+        print_ok "$sync_summary"
         [[ "$failed" -gt 0 ]] && print_error "失败规则：${failed}"
         [[ "$kept" -gt 0 ]] && print_warn "保留未在接入码中的本地规则：${kept} 条"
     fi
