@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-SCRIPT_VERSION="1.3.17"
+SCRIPT_VERSION="1.3.18"
 APP_NAME="ix-transit-fabric"
 IXTF_PROJECT_REPO="ike-sh/ix-transit-fabric"
 
@@ -4068,39 +4068,36 @@ status_easytier_detailed() {
     esac
     printf '本机 EasyTier 虚拟 IP：%s\n' "$ip_status"
 
-    case "${ROLE:-}" in
-        nat-transit|nat-ingress)
-            set +e
-            check_listener_present
-            rc=$?
-            set -e
-            case "$rc" in
-                0) listener_status="已监听" ;;
-                2) listener_status="无法检查（ss 命令不可用）" ;;
-                *) listener_status="未监听" ;;
-            esac
-            printf 'EasyTier listener：%s\n' "$listener_status"
-            ;;
-        nat-ingress|nat-transit)
-            if [[ -n "${ET_PEERS:-}" ]]; then
-                peer_status="存在"
-                printf 'EasyTier peer 配置：存在\n'
-                printf 'peers:\n'
-                while IFS= read -r peer; do
-                    [[ -n "$peer" ]] || continue
-                    printf '  %s\n' "$peer"
-                done <<<"${ET_PEERS// /$'\n'}"
-            else
-                peer_status="不存在"
-                printf 'EasyTier peer 配置：不存在\n'
-            fi
-            if [[ "${FORWARD_ENABLED:-true}" == "true" ]]; then
-                printf '业务转发：已配置\n'
-            else
-                printf '业务转发：未配置\n'
-            fi
-            ;;
-    esac
+    if profile_uses_easytier_listener; then
+        set +e
+        check_listener_present
+        rc=$?
+        set -e
+        case "$rc" in
+            0) listener_status="已监听" ;;
+            2) listener_status="无法检查（ss 命令不可用）" ;;
+            *) listener_status="未监听" ;;
+        esac
+        printf 'EasyTier listener：%s\n' "$listener_status"
+    else
+        if [[ -n "${ET_PEERS:-}" ]]; then
+            peer_status="存在"
+            printf 'EasyTier peer 配置：存在\n'
+            printf 'peers:\n'
+            while IFS= read -r peer; do
+                [[ -n "$peer" ]] || continue
+                printf '  %s\n' "$peer"
+            done <<<"${ET_PEERS// /$'\n'}"
+        else
+            peer_status="不存在"
+            printf 'EasyTier peer 配置：不存在\n'
+        fi
+        if [[ "${FORWARD_ENABLED:-true}" == "true" ]]; then
+            printf '业务转发：已配置\n'
+        else
+            printf '业务转发：未配置\n'
+        fi
+    fi
 
     if [[ "$active" == "activating" ]]; then
         active_since="$(systemctl show "$service_name" -p ActiveEnterTimestamp --value 2>/dev/null || true)"

@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.3.18
+
+### Fixed
+
+- `status_easytier_detailed`：修复重复 `case` 死分支（`nat-transit|nat-ingress)` 后又一个同集合 `nat-ingress|nat-transit)` 永不可达）。此前 `nat-ingress` 线路被误走 listener 检查（恒显示「listener：未监听」）且从不展示 peer 配置/业务转发，并导致 activating 就绪判断中 `peer_status` 永不置位而误报告警。现改用统一判据 `profile_uses_easytier_listener` 区分 listener / peer 展示，与 `render_easytier_args` 一致。
+
 ## 1.3.17
 
 ### Removed
