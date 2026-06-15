@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.3.15
+
+### Added
+
+- `ET_MTU` / `ix set-easytier-mtu`：EasyTier TUN MTU 配置（CLI、高级维护菜单、接入码同步）。
+- 公网入口导入接入码时交互询问 MTU（`prompt_mtu_on_ingress_import`）。
+- NAT IX 高级创建线路时可选手动设置 MTU。
+
+### Fixed
+
+- `print_config_summary` 不可达分支与冗余 elif/else 清理。
+- 接入码重导入时 MTU 被误清空（保留本地值除非接入码显式指定）。
+- 删除死代码：`save_env`、`import_code`、`post_install_summary`。
+- `fail_need_tty` 示例路径更新（移除已删除的 `examples/legacy/`）。
+
 ## 1.2.9
 
 ### Fixed
