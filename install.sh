@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-SCRIPT_VERSION="1.3.16"
+SCRIPT_VERSION="1.3.17"
 APP_NAME="ix-transit-fabric"
 IXTF_PROJECT_REPO="ike-sh/ix-transit-fabric"
 
@@ -49,7 +49,6 @@ LANDING_CODE_FILE="${CONFIG_DIR}/landing-code.txt"
 DEFAULT_GITHUB_MIRRORS="https://gh.ddlc.top/,https://gh-proxy.com/,https://ghproxy.net/,https://gh.llkk.cc/"
 GITHUB_REPO="EasyTier/EasyTier"
 AUTO_INSTALL_EASYTIER="false"
-INSTALL_ENV_FILE_PATH=""
 CODE_ARG=""
 CODE_FILE_ARG=""
 
@@ -394,7 +393,7 @@ is_interactive_input() {
 
 fail_need_tty() {
     local cmd="${1:-add-nat-listener-profile}"
-    local example="bash install.sh add-nat-listener-profile --env-file examples/nat-ix-listener.env"
+    local example=""
     case "$cmd" in
         add-nat-ingress-from-listener-code)
             example="bash install.sh add-nat-ingress-from-listener-code --code-file /root/nat-ix.code"
@@ -409,8 +408,10 @@ fail_need_tty() {
     log_error "当前命令需要交互式终端 TTY。"
     log_info "请先进入交互式 SSH："
     printf '       ssh -tt root@SERVER\n' >&2
-    log_info "或使用非交互 env 文件方式："
-    printf '       %s\n' "$example" >&2
+    if [[ -n "$example" ]]; then
+        log_info "或使用以下非交互方式："
+        printf '       %s\n' "$example" >&2
+    fi
     exit 1
 }
 
@@ -578,14 +579,6 @@ backup_binary() {
     cp -a -- "$path" "$target"
     chmod 700 "$target" 2>/dev/null || true
     log_debug "已备份旧版本：${target}"
-}
-
-backup_and_remove_file() {
-    local path="$1"
-    [[ -e "$path" ]] || return 0
-    backup_file "$path"
-    rm -f -- "$path"
-    log_ok "已删除：${path}"
 }
 
 trim_space() {
@@ -1104,12 +1097,6 @@ validate_port() {
     (( port >= 1 && port <= 65535 ))
 }
 
-ports_equal() {
-    validate_port "${1:-}" || return 1
-    validate_port "${2:-}" || return 1
-    (( 10#$1 == 10#$2 ))
-}
-
 validate_network_name() {
     local value="$1"
     [[ "$value" =~ ^[A-Za-z0-9._-]{1,64}$ ]]
@@ -1146,13 +1133,6 @@ validate_ipv4_cidr() {
     (( 10#$prefix >= 0 && 10#$prefix <= 32 ))
 }
 
-ipv4_to_int() {
-    local ip="$1" a b c d
-    validate_ipv4 "$ip" || return 1
-    IFS=. read -r a b c d <<<"$ip"
-    printf '%s\n' $(( (10#$a << 24) + (10#$b << 16) + (10#$c << 8) + 10#$d ))
-}
-
 cidr_network24() {
     local cidr="$1" ip a b c d
     validate_ipv4_cidr "$cidr" || return 1
@@ -1182,13 +1162,6 @@ cidr_from_subnet_host() {
     prefix="$(cidr_prefix "$subnet")" || return 1
     ip="$(ip_from_cidr_host "$subnet" "$host")" || return 1
     printf '%s/%s\n' "$ip" "$prefix"
-}
-
-same_ipv4_subnet24() {
-    local a="$1" b="$2" an bn
-    an="$(cidr_network24 "$a")" || return 1
-    bn="$(cidr_network24 "$b")" || return 1
-    [[ "$an" == "$bn" ]]
 }
 
 is_reserved_private_subnet() {
@@ -1223,28 +1196,6 @@ generate_et_subnet() {
         tries=$((tries + 1))
     done
     printf '10.%s.%s.0/24\n' "$((64 + ($$ % 64)))" "$((($(date +%s) + $$) % 255))"
-}
-
-generate_landing_et_ip() {
-    local subnet="${1:-}"
-    [[ -n "$subnet" ]] || subnet="$(generate_et_subnet)"
-    cidr_from_subnet_host "$subnet" 2
-}
-
-generate_ingress_et_ip() {
-    local subnet="${1:-}"
-    [[ -n "$subnet" ]] || subnet="$(generate_et_subnet)"
-    cidr_from_subnet_host "$subnet" 1
-}
-
-validate_et_cidr_pair() {
-    local landing_cidr="$1" ingress_cidr="$2" landing_ip ingress_ip
-    validate_ipv4_cidr "$landing_cidr" || return 1
-    validate_ipv4_cidr "$ingress_cidr" || return 1
-    same_ipv4_subnet24 "$landing_cidr" "$ingress_cidr" || return 1
-    landing_ip="${landing_cidr%/*}"
-    ingress_ip="${ingress_cidr%/*}"
-    [[ "$landing_ip" != "$ingress_ip" ]]
 }
 
 validate_host() {
@@ -1284,25 +1235,6 @@ detect_public_ipv4() {
     return 1
 }
 
-detect_public_host() {
-    local value detected
-    value="$(trim_space "${IXTF_PUBLIC_IP:-}")"
-    if validate_ipv4 "$value"; then
-        printf '%s\n' "$value"
-        return 0
-    fi
-    value="$(trim_space "${IXTF_INGRESS_PUBLIC_HOST:-}")"
-    if validate_host "$value"; then
-        printf '%s\n' "$value"
-        return 0
-    fi
-    if detected="$(detect_public_ipv4)"; then
-        printf '%s\n' "$detected"
-        return 0
-    fi
-    return 1
-}
-
 detect_env_ingress_public_host() {
     local value
     value="$(trim_space "${IXTF_PUBLIC_IP:-}")"
@@ -1316,15 +1248,6 @@ detect_env_ingress_public_host() {
         return 0
     fi
     return 1
-}
-
-suggest_ingress_public_host() {
-    local detected
-    if detected="$(detect_public_host)"; then
-        printf '%s\n' "$detected"
-        return 0
-    fi
-    printf 'localhost\n'
 }
 
 random_hex() {
@@ -1878,24 +1801,6 @@ random_port() {
 is_port_reserved() {
     case "$1" in
         22|25|53|80|110|143|443|465|587|993|995|3306|5432|6379|8080|8443|3389|5900|11211|27017|9200|9300|51820|11010|11011|11012)
-            return 0
-            ;;
-        *)
-            return 1
-            ;;
-    esac
-}
-
-is_easytier_common_port() {
-    case "$1" in
-        11010|11011|11012) return 0 ;;
-        *) return 1 ;;
-    esac
-}
-
-is_common_system_port() {
-    case "$1" in
-        22|25|53|80|110|143|443|465|587|993|995|3306|5432|6379|8080|8443|3389|5900|11211|27017|9200|9300|51820)
             return 0
             ;;
         *)
@@ -2482,31 +2387,6 @@ prompt_validated() {
     done
 }
 
-prompt_secret() {
-    local first second
-
-    require_tty
-    while true; do
-        printf '请输入 EasyTier 网络密钥（不会显示）：' >&2
-        IFS= read -r -s first || return 1
-        printf '\n' >&2
-        printf '请再次输入 EasyTier 网络密钥：' >&2
-        IFS= read -r -s second || return 1
-        printf '\n' >&2
-
-        if [[ "$first" != "$second" ]]; then
-            log_warn "两次输入的网络密钥不一致。"
-            continue
-        fi
-        if ! validate_secret "$first"; then
-            log_warn "网络密钥至少 12 位，且只能包含字母、数字和 . _ ~ : @ % + = , / -。"
-            continue
-        fi
-        printf '%s\n' "$first"
-        return 0
-    done
-}
-
 prompt_secret_default() {
     local generated="$1"
     local custom first second
@@ -2610,152 +2490,6 @@ prompt_listener_port() {
     done
 }
 
-prompt_optional_port() {
-    local label="$1"
-    local value
-
-    require_tty
-    while true; do
-        printf '%s：' "$label" >&2
-        IFS= read -r value || return 1
-        if [[ -z "$value" ]]; then
-            printf '\n'
-            return 0
-        fi
-        if validate_port "$value"; then
-            printf '%s\n' "$value"
-            return 0
-        fi
-        log_warn "端口必须是 1-65535 之间的整数；留空表示跳过。"
-    done
-}
-
-warn_if_remote_port_looks_like_tunnel_port() {
-    local remote_port="$1"
-    local listener_port="${2:-}"
-    local cnix_entry_port="${3:-}"
-    local local_port="${4:-}"
-    local needs_confirm="false"
-
-    if [[ -n "$listener_port" ]] && ports_equal "$remote_port" "$listener_port"; then
-        cat >&2 <<EOF
-[WARN] 你输入的是 EasyTier listener 端口，不是业务端口。
-[WARN] REMOTE_PORT 是香港业务服务端口，例如 Xray/sing-box/Web 监听端口。
-[WARN] 它不是 EasyTier listener 端口，也不是 CNIX 面板入口端口。
-EOF
-        needs_confirm="true"
-    fi
-
-    if [[ -n "$cnix_entry_port" ]] && ports_equal "$remote_port" "$cnix_entry_port"; then
-        cat >&2 <<EOF
-[WARN] 你输入的是 CNIX 商家入口端口，不是落地机业务端口。
-[WARN] REMOTE_PORT 是香港业务服务端口，例如 Xray/sing-box/Web 监听端口。
-[WARN] 它不是 EasyTier listener 端口，也不是 CNIX 面板入口端口。
-EOF
-        needs_confirm="true"
-    fi
-
-    if is_easytier_common_port "$remote_port"; then
-        cat >&2 <<EOF
-[WARN] 这个端口是 EasyTier 常见端口，请确认它确实是落地机业务服务端口。
-EOF
-        needs_confirm="true"
-    fi
-
-    if [[ -n "$local_port" ]] && ports_equal "$remote_port" "$local_port"; then
-        cat >&2 <<EOF
-[WARN] REMOTE_PORT 与入口机 LOCAL_PORT 相同。
-[WARN] 这有时是刻意配置，但请确认 REMOTE_PORT 确实是香港业务服务端口。
-EOF
-    fi
-
-    if is_common_system_port "$remote_port"; then
-        cat >&2 <<EOF
-[WARN] REMOTE_PORT 是常见系统/服务端口，请确认香港业务服务确实监听在该端口。
-EOF
-    fi
-
-    [[ "$needs_confirm" == "true" ]]
-}
-
-print_remote_port_context() {
-    local landing_et_ip="${1:-LANDING_ET_IP}"
-    local listener_port="${2:-LISTENER_PORT}"
-    cat >&2 <<EOF
-REMOTE_PORT 是落地机业务服务端口。
-它只用于入口机通过 EasyTier 虚拟 IP 访问：
-${landing_et_ip}:REMOTE_PORT
-
-CNIX 面板出口端口应该填写：
-${listener_port}
-
-不要把 REMOTE_PORT 填到 CNIX 面板出口。
-EOF
-}
-
-print_four_port_reminder() {
-    cat >&2 <<EOF
-四端口提醒：
-- LOCAL_PORT：客户端连接公网入口 VPS 的端口。
-- CNIX_ENTRY_PORT：CNIX 商家入口端口。
-- LISTENER_PORT：落地机 EasyTier listener，填写到 CNIX 面板出口。
-- REMOTE_PORT：落地业务服务端口，不是 CNIX 面板出口。
-
-EOF
-}
-
-print_remote_port_short_hint() {
-    printf 'REMOTE_PORT 是业务服务端口，不是 CNIX 面板出口端口。\n' >&2
-}
-
-validate_remote_port_with_context() {
-    local remote_port="$1"
-    local listener_port="${2:-}"
-    local cnix_entry_port="${3:-}"
-    local local_port="${4:-}"
-    local answer
-
-    validate_port "$remote_port" || return 1
-    if warn_if_remote_port_looks_like_tunnel_port "$remote_port" "$listener_port" "$cnix_entry_port" "$local_port"; then
-        answer="$(prompt_yes_no "是否确认继续使用这个 REMOTE_PORT" "false")" || return 1
-        [[ "$answer" == "true" ]] || return 2
-    fi
-    return 0
-}
-
-prompt_remote_port_with_context() {
-    local label="$1"
-    local default="${2:-}"
-    local listener_port="${3:-}"
-    local cnix_entry_port="${4:-}"
-    local local_port="${5:-}"
-    local value rc
-
-    require_tty
-    while true; do
-        if [[ -n "$default" ]]; then
-            printf '%s（默认 %s）：' "$label" "$default" >&2
-        else
-            printf '%s：' "$label" >&2
-        fi
-        IFS= read -r value || return 1
-        value="${value:-$default}"
-        if [[ -z "$value" ]]; then
-            return 3
-        fi
-
-        set +e
-        validate_remote_port_with_context "$value" "$listener_port" "$cnix_entry_port" "$local_port"
-        rc=$?
-        set -e
-        case "$rc" in
-            0) printf '%s\n' "$value"; return 0 ;;
-            1) log_warn "REMOTE_PORT 必须是 1-65535 之间的整数。" ;;
-            2) log_warn "已取消使用该 REMOTE_PORT，请重新输入。" ;;
-        esac
-    done
-}
-
 prompt_listener_proto() {
     local label="$1"
     local default="${2:-both}"
@@ -2816,23 +2550,6 @@ EOF
             *) ;;
         esac
         log_warn "请选择 1-8。"
-    done
-}
-
-prompt_entry_proto() {
-    local label="$1"
-    local default="${2:-both}"
-    local value normalized
-
-    require_tty
-    while true; do
-        printf '%s（默认 %s）：' "$label" "$(proto_display "$default")" >&2
-        IFS= read -r value || return 1
-        if normalized="$(normalize_entry_proto "$value" "$default")"; then
-            printf '%s\n' "$normalized"
-            return 0
-        fi
-        log_warn "CNIX 入口协议支持 tcp、udp、tcp+udp、both、ws、wss、quic、wg 或 all。直接回车默认 TCP/UDP；如果 CNIX 只开单协议，请按实际协议输入。"
     done
 }
 
@@ -2979,7 +2696,8 @@ prompt_mtu_on_ingress_import() {
             ET_MTU="$code_mtu"
             return 0
         fi
-    elif [[ -n "$current_mtu" ]]; then
+    fi
+    if [[ -n "$current_mtu" ]]; then
         if [[ "$(prompt_yes_no "是否保留当前线路 MTU（${current_mtu}）" "true")" == "true" ]]; then
             ET_MTU="$current_mtu"
             return 0
@@ -3378,6 +3096,7 @@ save_profile_env() {
         printf 'UPDATED_AT=%s\n' "$UPDATED_AT"
         [[ -n "${LANDING_PUBLIC_HOST:-}" ]] && printf 'LANDING_PUBLIC_HOST=%s\n' "$(quote_env_value "$LANDING_PUBLIC_HOST")"
         [[ -n "${EASYTIER_VERSION:-}" ]] && printf 'EASYTIER_VERSION=%s\n' "$(quote_env_value "$EASYTIER_VERSION")"
+        [[ -n "${LANDING_EASYTIER_VERSION:-}" ]] && printf 'LANDING_EASYTIER_VERSION=%s\n' "$(quote_env_value "$LANDING_EASYTIER_VERSION")"
         [[ -n "${REMARK:-}" ]] && printf 'REMARK=%s\n' "$(quote_env_value "$REMARK")"
         case "$ROLE" in
             nat-ingress)
@@ -3674,44 +3393,6 @@ render_mtu_arg() {
     else
         log_warn "当前 easytier-core 未发现 --mtu，已跳过 ET_MTU=${ET_MTU}。"
     fi
-}
-
-validate_easytier_args_static() {
-    local rendered="$1"
-    case "${ROLE:-}" in
-        nat-ingress)
-            if [[ "${NAT_DIRECTION:-ingress-listener}" == "nat-listener" ]]; then
-                [[ -n "${ET_PEERS:-}" ]] || return 1
-            else
-                [[ -n "${ET_LISTENERS:-}" ]] || return 1
-            fi
-            ;;
-        nat-transit)
-            if [[ "${NAT_DIRECTION:-ingress-listener}" == "nat-listener" ]]; then
-                [[ -n "${ET_LISTENERS:-}" ]] || return 1
-            else
-                [[ -n "${ET_PEERS:-}" ]] || return 1
-            fi
-            ;;
-        *) return 1 ;;
-    esac
-    [[ "$rendered" != *"--private-mode --"* ]] || return 1
-    [[ "$rendered" != *"--private-mode"$'\n'* ]] || return 1
-    if [[ "$rendered" == *"--private-mode"* && "$rendered" != *"--private-mode true"* && "$rendered" != *"--private-mode=true"* ]]; then
-        return 1
-    fi
-    [[ "$rendered" != *"${ET_NETWORK_SECRET:-}"* ]]
-}
-
-load_install_env_file() {
-    local expected_role="$1"
-    [[ -n "$INSTALL_ENV_FILE_PATH" ]] || return 1
-    load_env_from_path "$INSTALL_ENV_FILE_PATH" || die_user "无法读取 env 文件：${INSTALL_ENV_FILE_PATH}"
-    require_config_var ROLE
-    [[ "$ROLE" == "$expected_role" ]] || die_user "env 文件中的 ROLE=${ROLE}，但当前命令需要 ROLE=${expected_role}。"
-    validate_easytier_args
-    log_ok "已加载非交互 env 文件：${INSTALL_ENV_FILE_PATH}"
-    return 0
 }
 
 render_easytier_args() {
@@ -4155,49 +3836,6 @@ remove_ix_cli_shortcut() {
     log_debug "已删除 ix / IX 快捷命令与安装脚本副本（若存在）。"
 }
 
-render_systemd_service() {
-    validate_easytier_args
-    local rendered_args
-    rendered_args="$(render_easytier_args)"
-    validate_easytier_args_static "$rendered_args" || die_user "EasyTier 参数静态校验失败：不能生成裸 --private-mode，且不能输出网络密钥明文。"
-    render_easytier_wrapper
-
-    local nft_bin tmp
-    tmp="$(make_tmp_file "ix-transit-fabric.service")"
-
-    {
-        printf '[Unit]\n'
-        printf 'Description=ix-transit-fabric EasyTier node\n'
-        printf 'After=network-online.target\n'
-        printf 'Wants=network-online.target\n\n'
-        printf '[Service]\n'
-        printf 'Type=simple\n'
-        printf 'EnvironmentFile=%s\n' "$ENV_FILE"
-        printf 'ExecStartPre=/usr/bin/test -r %s\n' "$ENV_FILE"
-        printf 'ExecStartPre=/usr/bin/test -x %s\n' "$WRAPPER_FILE"
-        printf "ExecStartPre=/bin/sh -c 'test -x %s || command -v easytier-core >/dev/null 2>&1'\n" "$EASYTIER_TARGET"
-        if [[ ( "${ROLE:-}" == "nat-ingress" || "${ROLE:-}" == "nat-transit" ) && "${FORWARD_ENABLED:-true}" == "true" ]]; then
-            nft_bin="$(command -v nft 2>/dev/null || true)"
-            [[ -n "$nft_bin" ]] || nft_bin="/usr/sbin/nft"
-            printf 'ExecStartPre=/usr/bin/test -f %s\n' "$NFT_FILE"
-            printf 'ExecStartPre=%s -c -f %s\n' "$nft_bin" "$NFT_FILE"
-            printf 'ExecStartPre=-%s delete table ip %s\n' "$nft_bin" "$NFT_TABLE"
-            printf 'ExecStartPre=%s -f %s\n' "$nft_bin" "$NFT_FILE"
-        fi
-        printf 'ExecStart=%s\n' "$WRAPPER_FILE"
-        printf 'Restart=on-failure\n'
-        printf 'RestartSec=3\n'
-        printf 'StartLimitIntervalSec=60\n'
-        printf 'StartLimitBurst=5\n'
-        printf 'User=root\n'
-        printf 'LimitNOFILE=1048576\n\n'
-        printf '[Install]\n'
-        printf 'WantedBy=multi-user.target\n'
-    } >"$tmp"
-
-    install_if_changed "$tmp" "$SYSTEMD_SERVICE" 0644 "systemd 服务"
-	}
-
 render_profile_systemd_template() {
     local tmp
     tmp="$(make_tmp_file "ix-transit-fabric.profile-service")"
@@ -4228,28 +3866,6 @@ render_profile_service_files() {
     render_easytier_wrapper
     render_profile_systemd_template
     _IXTF_PROFILE_SERVICE_FILES_READY="true"
-}
-
-restart_easytier() {
-    local rc
-    ensure_systemctl
-    systemctl daemon-reload
-    systemctl enable "$SERVICE_NAME" >/dev/null
-    set +e
-    systemctl restart "$SERVICE_NAME" >/dev/null 2>&1
-    rc=$?
-    set -e
-    if [[ "$rc" -ne 0 ]]; then
-        log_warn "systemctl restart ${SERVICE_NAME} 返回非 0（${rc}），继续执行健康检查。"
-    fi
-    sleep 3
-    if health_check_easytier; then
-        log_ok "EasyTier 服务健康检查通过。"
-    else
-        log_warn "EasyTier 服务已提交启动，但健康检查未通过。"
-        log_warn "请运行：bash install.sh logs"
-        analyze_recent_easytier_logs
-    fi
 }
 
 status_easytier() {
@@ -4346,43 +3962,6 @@ analyze_recent_easytier_logs() {
     if grep -Eqi 'Address in use|failed to listen' <<<"$logs_text"; then
         log_warn "检测到 listener 端口被占用或监听失败。请更换 EasyTier listener 端口，不要直接杀业务进程。"
     fi
-}
-
-health_check_easytier() {
-    local active rc proc_ok="false" ip_ok="false" role_ok="false"
-    if command_exists systemctl; then
-        active="$(systemctl is-active "$SERVICE_NAME" 2>/dev/null || true)"
-        [[ "$active" == "active" || "$active" == "activating" ]] || return 1
-    fi
-
-    if check_easytier_process; then
-        proc_ok="true"
-    fi
-
-    set +e
-    assess_et_ip_health
-    rc=$?
-    set -e
-    [[ "$rc" -eq 0 || "$rc" -eq 2 || "$rc" -eq 3 ]] && ip_ok="true"
-
-    if profile_uses_easytier_listener; then
-            set +e
-            check_listener_present
-            rc=$?
-            set -e
-            [[ "$rc" -eq 0 || "$rc" -eq 2 ]] && role_ok="true"
-    else
-        case "${ROLE:-}" in
-            nat-ingress|nat-transit)
-            [[ -n "${ET_PEERS:-}" ]] && role_ok="true"
-            ;;
-            *)
-                role_ok="false"
-                ;;
-        esac
-    fi
-
-    [[ "$proc_ok" == "true" && "$ip_ok" == "true" && "$role_ok" == "true" ]]
 }
 
 ensure_listener_port_available_before_start() {
@@ -5371,41 +4950,6 @@ profile_rule_path_display() {
     esac
 }
 
-render_nft_file() {
-    local output="$1" dport target daddr post ip port
-    local table_name="$2"
-    [[ "${FORWARD_ENABLED:-true}" == "true" ]] || die_user "业务转发未配置，不能生成 nftables 规则。请运行 configure-forward。"
-    dport="$(profile_nft_dport)" || die_user "Profile 缺少 nftables 接收端口。"
-    target="$(profile_nft_target)" || die_user "Profile 缺少 nftables 转发目标。"
-    daddr="$(profile_nft_daddr_match || true)"
-    post="$(profile_nft_postrouting_ip_port)" || die_user "Profile 缺少 nftables SNAT 目标。"
-    ip="${post%:*}"
-    port="${post##*:}"
-
-    {
-        printf 'table ip %s {\n' "$table_name"
-        printf '    chain prerouting {\n'
-        printf '        type nat hook prerouting priority dstnat; policy accept;\n'
-        if [[ "$FORWARD_PROTO" == "tcp" || "$FORWARD_PROTO" == "both" ]]; then
-            printf '        %stcp dport %s dnat to %s\n' "$daddr" "$dport" "$target"
-        fi
-        if [[ "$FORWARD_PROTO" == "udp" || "$FORWARD_PROTO" == "both" ]]; then
-            printf '        %sudp dport %s dnat to %s\n' "$daddr" "$dport" "$target"
-        fi
-        printf '    }\n\n'
-        printf '    chain postrouting {\n'
-        printf '        type nat hook postrouting priority srcnat; policy accept;\n'
-        if [[ "$FORWARD_PROTO" == "tcp" || "$FORWARD_PROTO" == "both" ]]; then
-            printf '        ip daddr %s tcp dport %s masquerade\n' "$ip" "$port"
-        fi
-        if [[ "$FORWARD_PROTO" == "udp" || "$FORWARD_PROTO" == "both" ]]; then
-            printf '        ip daddr %s udp dport %s masquerade\n' "$ip" "$port"
-        fi
-        printf '    }\n'
-        printf '}\n'
-    } >"$output"
-}
-
 validate_profile_config() {
     local profile_id="${1:-${PROFILE_ID:-}}"
     validate_profile_id "$profile_id" || die_user "PROFILE_ID 格式不正确：${profile_id}"
@@ -5738,51 +5282,6 @@ restore_nft_backup() {
     return 1
 }
 
-apply_nft() {
-    install_nftables
-    install -d -m 0755 "$NFT_DIR"
-
-    local check_tmp actual_tmp check_table backup_path
-    check_tmp="$(make_tmp_file "ix-transit-fabric.nft-check")"
-    actual_tmp="$(make_tmp_file "ix-transit-fabric.nft")"
-    check_table="$NFT_TABLE"
-    if nft list table ip "$NFT_TABLE" >/dev/null 2>&1; then
-        check_table="${NFT_TABLE}_check_$$"
-    fi
-
-    render_nft_file "$check_tmp" "$check_table"
-    nft -c -f "$check_tmp"
-    rm -f -- "$check_tmp"
-
-    render_nft_file "$actual_tmp" "$NFT_TABLE"
-    backup_file "$NFT_FILE"
-    install -m 0644 "$actual_tmp" "$NFT_FILE"
-    rm -f -- "$actual_tmp"
-
-    backup_path="$(backup_current_nft_table)"
-    nft delete table ip "$NFT_TABLE" >/dev/null 2>&1 || true
-    if nft -f "$NFT_FILE"; then
-        log_ok "已应用 nftables 项目表：table ip ${NFT_TABLE}"
-        return 0
-    fi
-
-    log_error "应用 nftables 项目表失败，正在尝试回滚。"
-    if ! restore_nft_backup "$backup_path"; then
-        log_error "nftables 回滚失败，备份路径：${backup_path}"
-    fi
-    return 1
-}
-
-remove_nft() {
-    if command_exists nft; then
-        nft delete table ip "$NFT_TABLE" >/dev/null 2>&1 || true
-        log_ok "已删除 nftables 项目表（如果存在）：table ip ${NFT_TABLE}"
-    else
-        log_warn "未找到 nft 命令，跳过运行时表删除。"
-    fi
-    backup_and_remove_file "$NFT_FILE"
-}
-
 delete_nft_runtime_and_file() {
     if command_exists nft; then
         nft delete table ip "$NFT_TABLE" >/dev/null 2>&1 || true
@@ -5915,6 +5414,7 @@ render_nat_code_json() {
         printf '"landing_port":%s,' "$LANDING_PORT"
         printf '"forward_proto":"%s",' "${FORWARD_PROTO:-both}"
         [[ -n "${ET_MTU:-}" ]] && printf '"mtu":%s,' "$ET_MTU"
+        printf '%s' "$(code_et_ver="${EASYTIER_VERSION:-$(get_easytier_version "$(detect_easytier_binary 2>/dev/null || true)" 2>/dev/null || true)}"; [[ -n "$code_et_ver" && "$code_et_ver" != "未知" ]] && printf '"easytier_version":"%s",' "$(json_escape "$code_et_ver")")"
         printf '"rules":%s,' "$rules_json"
         printf '"rules_b64":"%s",' "$rules_b64"
         printf '"created_at":"%s"' "$created_at"
@@ -5954,13 +5454,6 @@ render_nat_code_json() {
 
 generate_nat_code() {
     render_nat_code_json | base64url_encode | sed 's/^/IXTF1:/'
-}
-
-save_landing_code_file() {
-    local code="$1"
-    ensure_config_dir
-    printf '%s\n' "$code" >"$LANDING_CODE_FILE"
-    chmod 600 "$LANDING_CODE_FILE"
 }
 
 format_rules_for_code_summary() {
@@ -6147,21 +5640,6 @@ read_access_code_from_tty() {
     done
 }
 
-read_code_from_args_or_prompt() {
-    local code
-    if [[ -n "$CODE_ARG" ]]; then
-        extract_landing_code "$CODE_ARG" || die_user "未识别到有效 IXTF1 接入码，请重新粘贴。"
-        return 0
-    fi
-    if [[ -n "$CODE_FILE_ARG" ]]; then
-        [[ -r "$CODE_FILE_ARG" ]] || die_user "无法读取接入码文件：${CODE_FILE_ARG}"
-        code="$(cat "$CODE_FILE_ARG")"
-        extract_landing_code "$code" || die_user "未识别到有效 IXTF1 接入码，请重新粘贴。"
-        return 0
-    fi
-    read_access_code_from_tty "请粘贴落地机接入码（IXTF1:...）："
-}
-
 read_nat_code_from_args_or_prompt() {
     local code
     if [[ -n "$CODE_ARG" ]]; then
@@ -6264,6 +5742,7 @@ parse_nat_code() {
     CODE_LANDING_PORT="$(json_get_number "$json" "landing_port")"
     CODE_FORWARD_PROTO="$(json_get_string "$json" "forward_proto")"
     CODE_ET_MTU="$(json_get_number "$json" "mtu")"
+    CODE_EASYTIER_VERSION="$(json_get_string "$json" "easytier_version")"
     rules_b64="$(json_get_string "$json" "rules_b64")"
     CODE_RULES_B64="$rules_b64"
 
@@ -6716,14 +6195,6 @@ bash install.sh verify-nft-profiles
 EOF
 }
 
-profile_has_code_rule_id() {
-    local want="$1" line rule_id
-    while IFS=$'\t' read -r rule_id _ _ _ _ _ _ _ || [[ -n "${rule_id:-}" ]]; do
-        [[ "${rule_id:-}" == "$want" ]] && return 0
-    done <<<"${CODE_RULES_TSV:-}"
-    return 1
-}
-
 verify_nat_transit_rule_consistency() {
     local profile_id="$1" rule_id nat_port issues=() enabled_count=0 nft_text
     local saved_rule_id="${RULE_ID:-}" saved_note="${RULE_NOTE:-}" saved_enabled="${RULE_ENABLED:-}" saved_client="${CLIENT_PORT:-}" saved_nat_public="${NAT_PUBLIC_PORT:-}"
@@ -7118,20 +6589,6 @@ show_easytier_command() {
     fi
 }
 
-status_brief() {
-    status_easytier
-    if [[ "${ROLE:-}" == "nat-ingress" || "${ROLE:-}" == "nat-transit" ]]; then
-        if [[ "${FORWARD_ENABLED:-true}" == "true" ]]; then
-            status_nft
-            if command_exists sysctl; then
-                printf 'IPv4 转发：%s\n' "$(sysctl -n net.ipv4.ip_forward 2>/dev/null || printf '未知')"
-            fi
-        else
-            printf '业务转发：未配置\n'
-        fi
-    fi
-}
-
 collect_profile_identity() {
     local role_prefix="$1" default_id
     default_id="$(generate_profile_id "$role_prefix")"
@@ -7197,6 +6654,7 @@ add_nat_listener_profile() {
     render_profile_service_files
     apply_nft_all
     start_profile "$PROFILE_ID"
+    wait_for_et_ip "$PROFILE_ID" || true
     print_nat_listener_created_summary "$PROFILE_ID"
 }
 
@@ -7504,7 +6962,7 @@ add_nat_ingress_from_listener_code() {
     local profile_id code detected_public env_public advanced existing_profile_id first_rule_id first_note first_enabled first_nat_public first_transit first_landing_host first_landing_port first_proto
     local code_network_name code_network_secret code_profile_id code_profile_name code_ingress_et_ip code_ingress_et_cidr
     local code_nat_public_host code_nat_public_ports code_nat_public_port_mode code_nat_listener_proto code_nat_listener_protos code_nat_listener_port
-    local code_nat_et_ip code_nat_et_cidr code_transit_port code_landing_host code_landing_port code_forward_proto code_rules_tsv code_rules_b64 code_rule_count code_code_schema
+    local code_nat_et_ip code_nat_et_cidr code_transit_port code_landing_host code_landing_port code_forward_proto code_et_mtu code_easytier_version code_rules_tsv code_rules_b64 code_rule_count code_code_schema
     require_root "$@"
     run_profile_install_preflight nat-ingress
     require_tty add-nat-ingress-from-listener-code
@@ -7513,6 +6971,8 @@ add_nat_ingress_from_listener_code() {
     code="$(read_nat_code_from_args_or_prompt)" || die_user "未读取到 NAT-IX 推荐模式接入码。"
     parse_nat_code "$code"
     [[ "${CODE_NAT_DIRECTION:-}" == "nat-listener" ]] || die_user "这是旧模式接入码，请选择兼容旧模式导入，或重新在 NAT IX 机器生成推荐模式接入码。"
+    code_easytier_version="${CODE_EASYTIER_VERSION:-}"
+    check_easytier_version_compat "$code_easytier_version"
     code_network_name="$CODE_NETWORK_NAME"
     code_network_secret="$CODE_NETWORK_SECRET"
     code_profile_id="$CODE_PROFILE_ID"
@@ -7628,6 +7088,7 @@ add_nat_ingress_from_listener_code() {
     ET_EXPLICIT_ONLY="true"
     IXTF_EXPLICIT_ONLY="true"
     prompt_mtu_on_ingress_import "${CODE_ET_MTU:-}" "${ET_MTU:-}"
+    LANDING_EASYTIER_VERSION="${code_easytier_version:-${LANDING_EASYTIER_VERSION:-}}"
     FORWARD_ENABLED="true"
 
     sync_nat_listener_code_rules_to_ingress_profile "$PROFILE_ID"
@@ -7645,6 +7106,7 @@ add_nat_ingress_from_listener_code() {
     fi
     print_step "重启 EasyTier"
     restart_profile "$PROFILE_ID" || log_warn "EasyTier 重启未完成，运行 ix restart-profile ${PROFILE_ID}"
+    wait_for_et_ip "$PROFILE_ID" || true
     if ! verify_nat_ingress_import_consistency "$PROFILE_ID" "${IXTF_LAST_SYNC_SAVED_RULE_COUNT:-0}"; then
         return 1
     fi
@@ -7713,19 +7175,6 @@ forward_display() {
         *) printf 'n/a\n'; return 0 ;;
     esac
     if [[ "$enabled" != "true" ]]; then
-        printf 'off\n'
-    elif [[ "$forward" == "true" ]]; then
-        printf 'active\n'
-    else
-        printf 'standby\n'
-    fi
-}
-
-panel_forward_display() {
-    local role="${1:-}" enabled="${2:-true}" forward="${3:-true}"
-    if [[ "$role" != "nat-ingress" ]]; then
-        printf 'n/a\n'
-    elif [[ "$enabled" != "true" ]]; then
         printf 'off\n'
     elif [[ "$forward" == "true" ]]; then
         printf 'active\n'
@@ -8969,18 +8418,6 @@ profile_service_status() {
         return 0
     fi
     systemctl is-active "$service" 2>/dev/null || true
-}
-
-nft_profile_rule_present() {
-    local profile_id="$1" output expected actual missing
-    profile_needs_nft_forward || return 3
-    output="$(nft_table_text 2>/dev/null || true)"
-    [[ -n "$output" ]] || return 2
-    expected="$(profile_expected_nft_rules)"
-    [[ -n "$expected" ]] || return 2
-    actual="$(nft_dnat_rules_from_text "$output")"
-    missing="$(comm -23 <(printf '%s\n' "$expected" | awk 'NF' | sort -u) <(printf '%s\n' "$actual" | awk 'NF' | sort -u) || true)"
-    [[ -z "$missing" ]]
 }
 
 nft_profile_rule_label() {
@@ -11886,29 +11323,6 @@ primary_backup_summary() {
     done < <(profile_groups)
 }
 
-group_abnormal() {
-    local group="$1" id primary_count=0 backup_count=0 forwarding_count=0 profile_count=0 down_count=0 status abnormal=1
-    for id in $(profile_ids); do
-        load_profile "$id" >/dev/null 2>&1 || continue
-        [[ "${LINE_GROUP:-}" == "$group" ]] || continue
-        profile_count=$((profile_count + 1))
-        [[ "${LINE_ROLE:-standalone}" == "primary" ]] && primary_count=$((primary_count + 1))
-        [[ "${LINE_ROLE:-standalone}" == "backup" ]] && backup_count=$((backup_count + 1))
-        [[ "${ROLE:-}" == "nat-ingress" && "${ENABLED:-true}" == "true" && "${FORWARD_ENABLED:-true}" == "true" ]] && forwarding_count=$((forwarding_count + 1))
-        status="${HEALTH_STATUS:-unknown}"
-        [[ "$status" == "down" ]] && down_count=$((down_count + 1))
-        if [[ "${LINE_ROLE:-standalone}" == "primary" && ( "$status" == "down" || "$status" == "warning" ) ]]; then
-            abnormal=0
-        fi
-        if [[ "${LINE_ROLE:-standalone}" == "backup" && "$status" == "down" ]]; then
-            abnormal=0
-        fi
-    done
-    [[ "$primary_count" -eq 1 && "$backup_count" -gt 0 && "$forwarding_count" -eq 1 ]] || abnormal=0
-    [[ "$profile_count" -gt 0 && "$down_count" -eq "$profile_count" ]] && abnormal=0
-    return "$abnormal"
-}
-
 print_group_advice() {
     local group="$1" id primary_count=0 backup_count=0 forwarding_count=0 profile_count=0 down_count=0 status backup_id
     for id in $(profile_ids); do
@@ -14243,11 +13657,13 @@ doctor_profile() {
             fi
             check_business_core || true
             ;;
-        nat-ingress|nat-transit)
-            printf '\nNAT-IX 检查：\n'
-            run_line_health_check "$profile_id" false || true
-            ;;
     esac
+
+    printf '\nNAT-IX 健康检查：\n'
+    run_line_health_check "$profile_id" false || true
+    printf '\n端口映射：\n'
+    show_port_map "$profile_id" || true
+    printf '\n提示：Profile 模式使用 systemd 实例 %s。\n' "$service"
 }
 
 status_all() {
@@ -14540,12 +13956,7 @@ EOF
 doctor() {
     local et_path et_version active ip_forward rc service_type active_since ts now age nc_cmd
     if [[ -d "$PROFILES_DIR" && "$(profile_count)" != "0" ]]; then
-        local profile_id
-        profile_id="$(resolve_profile_id "${1:-}")"
-        run_line_health_check "$profile_id" false
-        printf '\n端口映射：\n'
-        show_port_map "$profile_id" || true
-        printf '\n提示：Profile 模式使用 systemd 实例 %s。\n' "$(profile_service_name "$profile_id")"
+        doctor_profile "${1:-}"
         return 0
     fi
     printf 'ix-transit-fabric 诊断\n'
@@ -15863,12 +15274,6 @@ main() {
         case "$arg" in
             --auto-install-easytier)
                 AUTO_INSTALL_EASYTIER="true"
-                shift
-                ;;
-            --env-file)
-                shift
-                [[ $# -gt 0 ]] || die_user "--env-file 后面必须跟 env 文件路径。"
-                INSTALL_ENV_FILE_PATH="$1"
                 shift
                 ;;
             --code)

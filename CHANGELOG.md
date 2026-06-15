@@ -1,5 +1,24 @@
 # Changelog
 
+## 1.3.17
+
+### Removed
+
+- 弃用并移除 `--env-file` 非交互安装入口：此前该 flag 被 `main()` 解析存入 `INSTALL_ENV_FILE_PATH` 但从未被任何创建流程消费（文档化路径实为失效）。一并删除 `load_install_env_file`、`fail_need_tty` 中误导的 env 文件示例，以及 `examples/nat-ix-listener.env` / `examples/public-ingress.env` 模板。
+- 清理 35 个无调用方的死函数与级联孤立函数（旧单实例 nft/systemd 渲染、旧健康检查、旧 REMOTE_PORT/CNIX 端口提示子系统、若干工具函数等）。
+
+### Added
+
+- 接入码携带 NAT 侧 `easytier_version`；公网入口导入时通过 `check_easytier_version_compat` 校验双端 EasyTier 版本并可选更新，且持久化 `LANDING_EASYTIER_VERSION` 供 `doctor` 复检（旧代码已声明但从未接入）。
+- NAT IX 建线 / 公网入口导入重启后调用 `wait_for_et_ip` 等待 ET_IP 就绪。
+- `doctor [线路ID]` 改用完整的 `doctor_profile` 诊断（配置摘要 + systemd/EasyTier 详情 + 健康检查 + 端口映射）。
+
+### Fixed
+
+- `doctor_profile` 内部不可达的 `nat-ingress|nat-transit` case 分支（已被前两个分支覆盖）。
+- `prompt_mtu_on_ingress_import`：拒绝接入码 MTU 后仍会询问是否保留当前线路 MTU，避免落入默认清空。
+- `add_nat_ingress_from_listener_code`：`code_et_mtu` 补充 `local` 声明，避免泄漏为全局变量。
+
 ## 1.3.16
 
 ### Changed

@@ -4,8 +4,6 @@
 
 正式示例：
 
-- `nat-ix-listener.env`：NAT IX 机器侧中转线路。
-- `public-ingress.env`：公网入口机侧入口线路。
 - `multi-rules.md`：多转发规则和多端口转发示例。
 - `operations.md`：创建、导入、查看和清理的常用操作。
 - `diagnostics.md`：健康检查、延迟诊断和流量统计。
