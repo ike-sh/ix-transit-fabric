@@ -253,6 +253,7 @@ ix upgrade-script
 | `IXTF_GITHUB_MIRRORS` | GitHub 下载镜像前缀（国内网络） |
 | `IXTF_COLOR=never` / `NO_COLOR=1` | 禁用彩色输出 |
 | `IXTF_DEBUG=true` | 详细调试输出 |
+| `ET_MTU` | 线路 profile 中设置 EasyTier TUN MTU（576-9000）；也可 `ix set-easytier-mtu` |
 
 ---
 

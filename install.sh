@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-SCRIPT_VERSION="1.3.12"
+SCRIPT_VERSION="1.3.15"
 APP_NAME="ix-transit-fabric"
 IXTF_PROJECT_REPO="ike-sh/ix-transit-fabric"
 
@@ -304,6 +304,7 @@ ix-transit-fabric - NAT-IX + EasyTier + nftables 中转线路管理脚本
 	  bash install.sh show-rule 线路ID 规则ID
 	  bash install.sh apply-rules [线路ID]
 	  bash install.sh set-easytier-protocol [线路ID]
+	  bash install.sh set-easytier-mtu [线路ID]
 	  bash install.sh nat-guide [线路ID]
 	  bash install.sh check-port [--all|线路ID]
 	  bash install.sh check-business [--all|线路ID]
@@ -393,10 +394,10 @@ is_interactive_input() {
 
 fail_need_tty() {
     local cmd="${1:-add-nat-listener-profile}"
-    local example="bash install.sh add-nat-listener-profile --env-file examples/legacy/profile-landing.env"
+    local example="bash install.sh add-nat-listener-profile --env-file examples/nat-ix-listener.env"
     case "$cmd" in
         add-nat-ingress-from-listener-code)
-            example="bash install.sh add-nat-ingress-from-listener-code --env-file examples/legacy/profile-ingress.env"
+            example="bash install.sh add-nat-ingress-from-listener-code --code-file /root/nat-ix.code"
             ;;
         add-nat-ingress-from-listener-code-from-code)
             example="bash install.sh add-nat-ingress-from-listener-code-from-code --code-file /root/landing.code"
@@ -930,8 +931,7 @@ mode_nat_ingress="nat-ingress"
 preflight_mode_label() {
     case "${1:-all}" in
         nat-ingress|ingress) printf '公网入口线路\n' ;;
-        nat-transit) printf 'NAT IX 中转线路\n' ;;
-        landing|nat-transit) printf 'NAT IX 中转线路\n' ;;
+        nat-transit|landing) printf 'NAT IX 中转线路\n' ;;
         all) printf '完整环境\n' ;;
         *) printf '%s\n' "${1:-完整环境}" ;;
     esac
@@ -2918,6 +2918,76 @@ assign_auto_profile_identity() {
     ENABLED="true"
 }
 
+validate_mtu() {
+    [[ "${1:-}" =~ ^[0-9]+$ ]] || return 1
+    (( "$1" >= 576 && "$1" <= 9000 ))
+}
+
+easytier_mtu_display() {
+    if [[ -n "${ET_MTU:-}" ]]; then
+        printf '%s' "$ET_MTU"
+        return 0
+    fi
+    printf '默认（EasyTier 自动，加密约 1360 / 未加密约 1380）'
+}
+
+easytier_supports_mtu() {
+    local et_path help_text
+    et_path="$(detect_easytier_binary 2>/dev/null || true)"
+    [[ -n "$et_path" ]] || return 0
+    help_text="$("$et_path" --help 2>&1 || true)"
+    grep -q -- '--mtu' <<<"$help_text"
+}
+
+prompt_mtu_optional() {
+    local value
+    require_tty
+    if [[ "$(prompt_yes_no "是否自定义 EasyTier TUN MTU（默认由 EasyTier 自动）" "false")" != "true" ]]; then
+        ET_MTU=""
+        return 0
+    fi
+    while true; do
+        printf '请输入 MTU（576-9000，NAT/IX 多层封装建议 1280-1420）：' >&2
+        IFS= read -r value || return 1
+        value="$(trim_space "$value")"
+        if [[ -z "$value" ]]; then
+            ET_MTU=""
+            return 0
+        fi
+        if validate_mtu "$value"; then
+            ET_MTU="$value"
+            return 0
+        fi
+        log_warn "MTU 必须是 576-9000 之间的整数。"
+    done
+}
+
+prompt_mtu_on_ingress_import() {
+    local code_mtu="${1:-}" current_mtu="${2:-}"
+    require_tty
+    printf '\nEasyTier TUN MTU：\n' >&2
+    if [[ -n "$code_mtu" ]]; then
+        printf '  接入码指定：%s\n' "$code_mtu" >&2
+    else
+        printf '  接入码：未指定（EasyTier 默认，加密约 1360 / 未加密约 1380）\n' >&2
+    fi
+    if [[ -n "$current_mtu" ]]; then
+        printf '  当前线路：%s\n' "$current_mtu" >&2
+    fi
+    if [[ -n "$code_mtu" ]]; then
+        if [[ "$(prompt_yes_no "是否使用接入码中的 MTU（${code_mtu}）" "true")" == "true" ]]; then
+            ET_MTU="$code_mtu"
+            return 0
+        fi
+    elif [[ -n "$current_mtu" ]]; then
+        if [[ "$(prompt_yes_no "是否保留当前线路 MTU（${current_mtu}）" "true")" == "true" ]]; then
+            ET_MTU="$current_mtu"
+            return 0
+        fi
+    fi
+    prompt_mtu_optional
+}
+
 prompt_virtual_transit_port() {
     local default_port="${1:-}" answer
     if [[ -z "$default_port" ]]; then
@@ -3018,7 +3088,7 @@ clear_config_vars() {
     local key
     for key in PROFILE_ID PROFILE_NAME ENABLED LANDING_PUBLIC_HOST EASYTIER_VERSION CREATED_AT UPDATED_AT REMARK \
         LINE_GROUP LINE_ROLE LINE_PRIORITY HEALTH_CHECK_ENABLED HEALTH_STATUS LAST_HEALTH_CHECK_AT LAST_HEALTH_REASON LAST_SWITCH_AT SWITCH_NOTE \
-        ROLE NAT_DIRECTION ET_NETWORK_NAME ET_NETWORK_SECRET ET_HOSTNAME ET_IPV4 ET_SUBNET \
+        ROLE NAT_DIRECTION ET_NETWORK_NAME ET_NETWORK_SECRET ET_HOSTNAME ET_IPV4 ET_SUBNET ET_MTU \
         ET_LISTENER_PROTO ET_LISTENER_PORT ET_LISTENERS ET_MAPPED_LISTENERS ET_PEERS ET_NO_LISTENER \
         LISTENER_PROTOS LISTENER_PORT CNIX_ENTRY_PROTOS \
         ET_PRIVATE_MODE ET_EXPLICIT_ONLY IXTF_EXPLICIT_ONLY CNIX_ENTRY_PROTO CNIX_ENTRY_HOST CNIX_ENTRY_PORT \
@@ -3034,7 +3104,7 @@ clear_config_vars() {
         CODE_INGRESS_HOSTNAME CODE_INGRESS_PUBLIC_HOST CODE_INGRESS_ET_IP CODE_INGRESS_ET_CIDR \
         CODE_INGRESS_LISTENER_PROTO CODE_INGRESS_LISTENER_PROTOS CODE_INGRESS_LISTENER_PORT \
         CODE_NAT_DIRECTION CODE_NAT_PUBLIC_HOST CODE_NAT_PUBLIC_PORTS CODE_NAT_PUBLIC_PORT_SPEC CODE_NAT_PUBLIC_PORT_MODE CODE_NAT_LISTENER_PROTO CODE_NAT_LISTENER_PROTOS CODE_NAT_LISTENER_PORT \
-        CODE_NAT_ET_IP CODE_NAT_ET_CIDR CODE_TRANSIT_PORT CODE_LOCAL_PORT CODE_FORWARD_PROTO \
+        CODE_NAT_ET_IP CODE_NAT_ET_CIDR CODE_TRANSIT_PORT CODE_LOCAL_PORT CODE_FORWARD_PROTO CODE_ET_MTU \
         CODE_LANDING_HOST CODE_LANDING_PORT CODE_RULES_TSV CODE_RULE_COUNT CODE_RULES_B64 CODE_RULES_COMPAT_NAT_PORT CODE_CODE_SCHEMA; do
         unset "$key" 2>/dev/null || true
     done
@@ -3061,7 +3131,7 @@ load_env_from_path() {
         case "$key" in
             PROFILE_ID|PROFILE_NAME|ENABLED|LANDING_PUBLIC_HOST|EASYTIER_VERSION|CREATED_AT|UPDATED_AT|REMARK|\
             LINE_GROUP|LINE_ROLE|LINE_PRIORITY|HEALTH_CHECK_ENABLED|HEALTH_STATUS|LAST_HEALTH_CHECK_AT|LAST_HEALTH_REASON|LAST_SWITCH_AT|SWITCH_NOTE|\
-            ROLE|NAT_DIRECTION|ET_NETWORK_NAME|ET_NETWORK_SECRET|ET_HOSTNAME|ET_IPV4|ET_SUBNET|\
+            ROLE|NAT_DIRECTION|ET_NETWORK_NAME|ET_NETWORK_SECRET|ET_HOSTNAME|ET_IPV4|ET_SUBNET|ET_MTU|\
             ET_LISTENER_PROTO|ET_LISTENER_PORT|ET_LISTENERS|ET_MAPPED_LISTENERS|ET_PEERS|\
             LISTENER_PROTOS|LISTENER_PORT|CNIX_ENTRY_PROTOS|\
             ET_NO_LISTENER|ET_PRIVATE_MODE|ET_EXPLICIT_ONLY|IXTF_EXPLICIT_ONLY|CNIX_ENTRY_PROTO|CNIX_ENTRY_HOST|\
@@ -3303,6 +3373,7 @@ save_profile_env() {
         printf 'ET_PRIVATE_MODE=true\n'
         printf 'ET_EXPLICIT_ONLY=true\n'
         printf 'IXTF_EXPLICIT_ONLY=true\n'
+        [[ -n "${ET_MTU:-}" ]] && printf 'ET_MTU=%s\n' "$ET_MTU"
         printf 'CREATED_AT=%s\n' "$CREATED_AT"
         printf 'UPDATED_AT=%s\n' "$UPDATED_AT"
         [[ -n "${LANDING_PUBLIC_HOST:-}" ]] && printf 'LANDING_PUBLIC_HOST=%s\n' "$(quote_env_value "$LANDING_PUBLIC_HOST")"
@@ -3437,62 +3508,6 @@ save_profile_code_file() {
     path="$(profile_code_path "$profile_id")"
     printf '%s\n' "$code" >"$path"
     chmod 600 "$path"
-}
-
-save_env() {
-    ensure_config_dir
-    local tmp
-    tmp="$(make_tmp_file "ix-transit-fabric.env")"
-    chmod 600 "$tmp"
-
-    {
-        printf '# Managed by ix-transit-fabric. Do not share this file.\n'
-        printf 'ROLE=%s\n' "$ROLE"
-        printf 'ET_NETWORK_NAME=%s\n' "$ET_NETWORK_NAME"
-        printf 'ET_NETWORK_SECRET=%s\n' "$ET_NETWORK_SECRET"
-        printf 'ET_HOSTNAME=%s\n' "$ET_HOSTNAME"
-        printf 'ET_IPV4=%s\n' "$ET_IPV4"
-        [[ -n "${ET_SUBNET:-}" ]] && printf 'ET_SUBNET=%s\n' "$ET_SUBNET"
-        printf 'ET_PRIVATE_MODE=true\n'
-        printf 'ET_EXPLICIT_ONLY=true\n'
-        printf 'IXTF_EXPLICIT_ONLY=true\n'
-
-        if [[ "$ROLE" == "nat-transit" ]]; then
-            printf 'LISTENER_PROTOS=%s\n' "$(quote_env_value "$(normalize_listener_protos "${ET_LISTENER_PROTO:-both}" "both" 2>/dev/null || printf '%s' "${ET_LISTENER_PROTO:-both}")")"
-            printf 'LISTENER_PORT=%s\n' "$ET_LISTENER_PORT"
-            printf 'ET_LISTENER_PROTO=%s\n' "$ET_LISTENER_PROTO"
-            printf 'ET_LISTENER_PORT=%s\n' "$ET_LISTENER_PORT"
-            printf 'ET_LISTENERS=%s\n' "$(quote_env_value "$ET_LISTENERS")"
-            [[ -n "${SERVICE_PORT:-}" ]] && printf 'SERVICE_PORT=%s\n' "$SERVICE_PORT"
-            [[ -n "${SERVICE_PORT:-}" ]] && printf 'REMOTE_PORT=%s\n' "$SERVICE_PORT"
-        fi
-
-        if [[ "$ROLE" == "nat-ingress" ]]; then
-            printf 'ET_PEERS=%s\n' "$(quote_env_value "$ET_PEERS")"
-            printf 'ET_NO_LISTENER=%s\n' "${ET_NO_LISTENER:-true}"
-            printf 'CNIX_ENTRY_PROTO=%s\n' "$CNIX_ENTRY_PROTO"
-            printf 'CNIX_ENTRY_HOST=%s\n' "$CNIX_ENTRY_HOST"
-            printf 'CNIX_ENTRY_PORT=%s\n' "$CNIX_ENTRY_PORT"
-            [[ -n "${CODE_LISTENER_PORT:-}" ]] && printf 'CODE_LISTENER_PORT=%s\n' "$CODE_LISTENER_PORT"
-            [[ -n "${CODE_TUNNEL_PROTOS:-}" ]] && printf 'CODE_TUNNEL_PROTOS=%s\n' "$(quote_env_value "$CODE_TUNNEL_PROTOS")"
-            [[ -n "${CODE_LANDING_ET_CIDR:-}" ]] && printf 'CODE_LANDING_ET_CIDR=%s\n' "$CODE_LANDING_ET_CIDR"
-            [[ -n "${CODE_SUGGESTED_INGRESS_ET_IP:-}" ]] && printf 'CODE_SUGGESTED_INGRESS_ET_IP=%s\n' "$CODE_SUGGESTED_INGRESS_ET_IP"
-            [[ -n "${CODE_SUGGESTED_INGRESS_ET_CIDR:-}" ]] && printf 'CODE_SUGGESTED_INGRESS_ET_CIDR=%s\n' "$CODE_SUGGESTED_INGRESS_ET_CIDR"
-            printf 'FORWARD_ENABLED=%s\n' "${FORWARD_ENABLED:-true}"
-            [[ -n "${LOCAL_PORT:-}" ]] && printf 'LOCAL_PORT=%s\n' "$LOCAL_PORT"
-            [[ -n "${LANDING_ET_IP:-}" ]] && printf 'LANDING_ET_IP=%s\n' "$LANDING_ET_IP"
-            [[ -n "${REMOTE_PORT:-}" ]] && printf 'REMOTE_PORT=%s\n' "$REMOTE_PORT"
-            [[ -n "${FORWARD_PROTO:-}" ]] && printf 'FORWARD_PROTO=%s\n' "$FORWARD_PROTO"
-            [[ -n "${LANDING_EASYTIER_VERSION:-}" ]] && printf 'LANDING_EASYTIER_VERSION=%s\n' "$(quote_env_value "$LANDING_EASYTIER_VERSION")"
-            [[ -n "${CODE_EASYTIER_VERSION:-}" ]] && printf 'CODE_EASYTIER_VERSION=%s\n' "$(quote_env_value "$CODE_EASYTIER_VERSION")"
-        fi
-    } >"$tmp"
-
-    backup_file "$ENV_FILE"
-    mv -f -- "$tmp" "$ENV_FILE"
-    chmod 600 "$ENV_FILE"
-    chmod 700 "$CONFIG_DIR"
-    log_ok "已写入配置：${ENV_FILE}"
 }
 
 require_config_var() {
@@ -3651,6 +3666,16 @@ render_explicit_only_arg() {
     fi
 }
 
+render_mtu_arg() {
+    [[ -n "${ET_MTU:-}" ]] || return 0
+    validate_mtu "$ET_MTU" || die_user "ET_MTU 无效：${ET_MTU}（有效范围 576-9000）。"
+    if easytier_supports_mtu; then
+        printf ' --mtu %q' "$ET_MTU"
+    else
+        log_warn "当前 easytier-core 未发现 --mtu，已跳过 ET_MTU=${ET_MTU}。"
+    fi
+}
+
 validate_easytier_args_static() {
     local rendered="$1"
     case "${ROLE:-}" in
@@ -3700,6 +3725,7 @@ render_easytier_args() {
     printf ' --ipv4 %q' "$ET_IPV4"
     render_private_mode_arg
     render_explicit_only_arg
+    render_mtu_arg
 
     if profile_uses_easytier_listener; then
         [[ -n "${ET_LISTENERS:-}" ]] || die_user "landing 必须至少有一个 listener。"
@@ -3866,6 +3892,14 @@ fi
 if [[ "\${ET_EXPLICIT_ONLY:-\${IXTF_EXPLICIT_ONLY:-true}}" == "true" ]]; then
     if "\$EASYTIER_BIN" --help 2>&1 | grep -q -- '--explicit-only'; then
         args+=(--explicit-only true)
+    fi
+fi
+
+if [[ -n "\${ET_MTU:-}" ]]; then
+    if "\$EASYTIER_BIN" --help 2>&1 | grep -q -- '--mtu'; then
+        args+=(--mtu "\$ET_MTU")
+    else
+        echo "ix-transit-fabric: easytier-core 未声明支持 --mtu，已跳过 ET_MTU=\${ET_MTU}" >&2
     fi
 fi
 
@@ -5880,6 +5914,7 @@ render_nat_code_json() {
         printf '"landing_host":"%s",' "$(json_escape "$LANDING_HOST")"
         printf '"landing_port":%s,' "$LANDING_PORT"
         printf '"forward_proto":"%s",' "${FORWARD_PROTO:-both}"
+        [[ -n "${ET_MTU:-}" ]] && printf '"mtu":%s,' "$ET_MTU"
         printf '"rules":%s,' "$rules_json"
         printf '"rules_b64":"%s",' "$rules_b64"
         printf '"created_at":"%s"' "$created_at"
@@ -6142,10 +6177,6 @@ read_nat_code_from_args_or_prompt() {
     read_access_code_from_tty "请粘贴 NAT-IX 接入码（IXTF1:...）："
 }
 
-import_code() {
-    legacy_panel_removed
-}
-
 validate_code_rules_tsv() {
     local line rule_id note enabled nat_public_port transit_port landing_host landing_port forward_proto extra count=0 normalized="" compat="false"
     while IFS= read -r line || [[ -n "$line" ]]; do
@@ -6232,6 +6263,7 @@ parse_nat_code() {
     CODE_LANDING_HOST="$(json_get_string "$json" "landing_host")"
     CODE_LANDING_PORT="$(json_get_number "$json" "landing_port")"
     CODE_FORWARD_PROTO="$(json_get_string "$json" "forward_proto")"
+    CODE_ET_MTU="$(json_get_number "$json" "mtu")"
     rules_b64="$(json_get_string "$json" "rules_b64")"
     CODE_RULES_B64="$rules_b64"
 
@@ -6271,6 +6303,11 @@ parse_nat_code() {
         fi
     fi
     CODE_FORWARD_PROTO="$(normalize_forward_proto "${CODE_FORWARD_PROTO:-both}" "both")" || die_user "接入码中的 forward_proto 不正确。"
+    if [[ -n "${CODE_ET_MTU:-}" && "$CODE_ET_MTU" != "0" ]]; then
+        validate_mtu "$CODE_ET_MTU" || die_user "接入码中的 mtu 不正确（有效范围 576-9000）。"
+    else
+        CODE_ET_MTU=""
+    fi
     if [[ -n "$rules_b64" ]]; then
         CODE_RULES_TSV="$(base64url_decode "$rules_b64")" || die_user "接入码 rules_b64 解码失败。"
     else
@@ -6384,6 +6421,7 @@ collect_nat_listener_inputs() {
         TRANSIT_PORT="$(prompt_virtual_transit_port "$default_transit_port")" || return 1
         NAT_LISTENER_PROTO="$(prompt_easytier_protocol_choice 1)" || return 1
         FORWARD_PROTO="$(prompt_forward_proto "请选择转发协议（tcp / udp / both / tcp/udp）" "both")" || return 1
+        prompt_mtu_optional || return 1
     else
         assign_auto_profile_identity "nat-listener"
         ET_NETWORK_NAME="$default_network"
@@ -6443,6 +6481,7 @@ print_config_summary() {
     printf '* 节点名称：%s\n' "${ET_HOSTNAME:-}"
     printf '* 本机虚拟 IP：%s\n' "${ET_IPV4:-}"
     printf '* 组网协议：%s\n' "$(profile_easytier_proto_display)"
+    printf '* TUN MTU：%s\n' "$(easytier_mtu_display)"
 
     case "${ROLE:-}" in
         nat-ingress|nat-transit)
@@ -6455,8 +6494,6 @@ print_config_summary() {
             printf '* 当前机器角色：%s\n' "$(nat_ix_machine_role_label)"
             if [[ "${NAT_DIRECTION:-ingress-listener}" == "nat-listener" ]]; then
                 printf '* 商家入口：%s:%s\n' "${NAT_PUBLIC_HOST:-}" "${NAT_PUBLIC_PORTS:-${NAT_LISTENER_PORT:-}}"
-            elif [[ "${ROLE:-}" == "nat-ingress" ]]; then
-                printf '* 公网入口监听：%s:%s\n' "${INGRESS_PUBLIC_HOST:-}" "${INGRESS_LISTENER_PORT:-}"
             else
                 printf '* 公网入口监听：%s:%s\n' "${INGRESS_PUBLIC_HOST:-}" "${INGRESS_LISTENER_PORT:-}"
             fi
@@ -6464,27 +6501,6 @@ print_config_summary() {
             printf '* NAT IX 虚拟 IP：%s\n' "${NAT_ET_IP:-}"
             printf '\n转发规则：\n'
             format_rules_for_show_config "$profile_id"
-            ;;
-        nat-transit)
-            normalize_profile_compat_vars
-            printf '\n落地机：\n'
-            if [[ -n "${ET_LISTENERS:-}" || ( -n "${ET_LISTENER_PROTO:-}" && -n "${ET_LISTENER_PORT:-}" ) ]]; then
-                print_easytier_listeners
-            else
-                printf '[WARN] 线路缺少 listener 端口，请检查配置文件。\n'
-            fi
-            [[ -n "${REMOTE_PORT:-${SERVICE_PORT:-}}" ]] && printf '* 业务端口：%s\n' "${REMOTE_PORT:-${SERVICE_PORT:-}}"
-            ;;
-        nat-ingress)
-            printf '\n旧版入口：\n'
-            printf '* CNIX 面板入口：%s://%s:%s\n' "$(proto_display_user "${CNIX_ENTRY_PROTO:-tcp}")" "${CNIX_ENTRY_HOST:-}" "${CNIX_ENTRY_PORT:-}"
-            if [[ "${FORWARD_ENABLED:-true}" == "true" ]]; then
-                printf '* 客户端入口端口：%s\n' "${LOCAL_PORT:-}"
-                printf '* 落地目标：%s:%s\n' "${LANDING_ET_IP:-}" "${REMOTE_PORT:-}"
-                printf '* 转发协议：%s\n' "$(proto_display_user "${FORWARD_PROTO:-both}")"
-            else
-                printf '* 业务转发：未配置\n'
-            fi
             ;;
     esac
     return 0
@@ -7097,14 +7113,14 @@ show_easytier_command() {
     printf 'profile: %s\n' "${PROFILE_ID:-default}"
     if profile_uses_easytier_listener; then
         print_easytier_listeners
-    elif [[ "${ROLE:-}" == "nat-ingress" || "${ROLE:-}" == "nat-ingress" || "${ROLE:-}" == "nat-transit" ]]; then
+    elif [[ "${ROLE:-}" == "nat-ingress" || "${ROLE:-}" == "nat-transit" ]]; then
         print_easytier_peers
     fi
 }
 
 status_brief() {
     status_easytier
-    if [[ "${ROLE:-}" == "nat-ingress" || "${ROLE:-}" == "nat-ingress" || "${ROLE:-}" == "nat-transit" ]]; then
+    if [[ "${ROLE:-}" == "nat-ingress" || "${ROLE:-}" == "nat-transit" ]]; then
         if [[ "${FORWARD_ENABLED:-true}" == "true" ]]; then
             status_nft
             if command_exists sysctl; then
@@ -7112,87 +7128,6 @@ status_brief() {
             fi
         else
             printf '业务转发：未配置\n'
-        fi
-    fi
-}
-
-post_install_summary() {
-    local role="$1" listener_state listener_note listener_port listener_proto
-    normalize_profile_compat_vars
-    listener_port="${LISTENER_PORT:-${ET_LISTENER_PORT:-}}"
-    listener_proto="${ET_LISTENER_PROTO:-${LISTENER_PROTOS:-}}"
-    printf '\n配置摘要：\n'
-    print_config_summary loaded || true
-    printf '\nNAT IX 填写指引：\n'
-    nat_guide || true
-    printf '\n简短状态：\n'
-    status_brief || true
-
-    if [[ "$ROLE" == "nat-transit" ]]; then
-        listener_note="如 listener 未监听，请先运行 bash install.sh logs 或 bash install.sh doctor。"
-        if command_exists ss && check_listener_present >/dev/null 2>&1; then
-            listener_note="EasyTier listener 已检测到监听，即使 systemd 暂时显示 activating，也可以继续填写 CNIX 面板；随后运行 logs 确认。"
-        fi
-        cat <<EOF
-
-【CNIX 面板出口填写】
-出口 IP：落地 VPS 公网 IP
-出口端口：$(c_cyan "${listener_port:-LISTENER_PORT}")
-出口协议：$(proto_display "$listener_proto")
-
-重要：
-这个端口是 EasyTier listener，等价于 WG ListenPort。
-不要填写 Remnawave / VLESS / Xray / sing-box 的业务端口。
-EOF
-        if [[ -n "${SERVICE_PORT:-}" ]]; then
-            cat <<EOF
-
-【业务端口】
-REMOTE_PORT：$(c_cyan "$SERVICE_PORT")
-这是落地机业务服务端口，只在 EasyTier 虚拟网内访问。
-它不是 CNIX 面板出口端口。
-EOF
-        fi
-        cat <<EOF
-
-下一步：
-  1. 在 CNIX 面板出口填写上面的 EasyTier listener 端口。
-  2. 复制接入码到入口机。
-  3. 入口机选择“粘贴接入码组网”。
-
-${listener_note}
-EOF
-    else
-        if [[ "${FORWARD_ENABLED:-true}" == "true" ]]; then
-            cat <<EOF
-
-【客户端填写】
-地址：入口 VPS 公网 IP
-端口：$(c_cyan "${LOCAL_PORT:-LOCAL_PORT}")
-
-【CNIX 面板入口】
-$(c_cyan "${CNIX_ENTRY_HOST}:${CNIX_ENTRY_PORT}")
-
-【CNIX 面板出口】
-落地 VPS 公网 IP:$(c_cyan "${CODE_LISTENER_PORT:-LISTENER_PORT}")
-
-【入口机 nftables 转发目标】
-$(c_cyan "${LANDING_ET_IP}:${REMOTE_PORT}")
-
-下一步：
-  1. 确认 CNIX 面板入口 IP / 端口 / 协议正确。
-  2. 入口 VPS 安全组放行 LOCAL_PORT。
-  3. 运行：bash install.sh doctor
-  4. 运行：bash install.sh self-check
-  5. 客户端连接：入口 VPS 公网 IP:${LOCAL_PORT}
-EOF
-        else
-            cat <<EOF
-
-下一步：
-  1. 先运行：bash install.sh doctor，确认 EasyTier 互通。
-  2. 再运行：bash install.sh configure-forward，配置业务转发。
-EOF
         fi
     fi
 }
@@ -7596,6 +7531,7 @@ add_nat_ingress_from_listener_code() {
     code_landing_host="$CODE_LANDING_HOST"
     code_landing_port="$CODE_LANDING_PORT"
     code_forward_proto="$CODE_FORWARD_PROTO"
+    code_et_mtu="$CODE_ET_MTU"
     code_rules_tsv="$CODE_RULES_TSV"
     code_rules_b64="$CODE_RULES_B64"
     code_rule_count="$CODE_RULE_COUNT"
@@ -7630,6 +7566,7 @@ add_nat_ingress_from_listener_code() {
     CODE_LANDING_HOST="$code_landing_host"
     CODE_LANDING_PORT="$code_landing_port"
     CODE_FORWARD_PROTO="$code_forward_proto"
+    CODE_ET_MTU="$code_et_mtu"
     CODE_RULES_TSV="$code_rules_tsv"
     CODE_RULES_B64="$code_rules_b64"
     CODE_RULE_COUNT="$code_rule_count"
@@ -7690,6 +7627,7 @@ add_nat_ingress_from_listener_code() {
     ET_PRIVATE_MODE="true"
     ET_EXPLICIT_ONLY="true"
     IXTF_EXPLICIT_ONLY="true"
+    prompt_mtu_on_ingress_import "${CODE_ET_MTU:-}" "${ET_MTU:-}"
     FORWARD_ENABLED="true"
 
     sync_nat_listener_code_rules_to_ingress_profile "$PROFILE_ID"
@@ -8890,6 +8828,45 @@ set_easytier_protocol() {
     printf 'EasyTier 组网协议已更新：%s\n' "$(proto_display "$proto")"
     printf '如果该协议需要公网入口机和 NAT IX 双端一致，请刷新接入码并在对端重新导入。\n'
     printf '如果 EasyTier 当前版本不支持该协议，请查看 journalctl 日志中的启动失败原因。\n'
+}
+
+set_easytier_mtu() {
+    require_root "$@"
+    require_tty set-easytier-mtu
+    local profile_id
+    profile_id="$(resolve_profile_id "${1:-}")"
+    load_profile_or_die "$profile_id"
+    case "${ROLE:-}" in
+        nat-ingress|nat-transit) ;;
+        *) die_user "set-easytier-mtu 仅支持 NAT-IX 线路。" ;;
+    esac
+    printf '当前 MTU：%s\n' "$(easytier_mtu_display)"
+    if [[ "$(prompt_yes_no "是否修改 MTU 配置" "true")" != "true" ]]; then
+        return 0
+    fi
+    if [[ "$(prompt_yes_no "是否恢复 EasyTier 默认 MTU" "false")" == "true" ]]; then
+        ET_MTU=""
+    else
+        ET_MTU="$(prompt_validated "请输入 MTU（576-9000，NAT/IX 建议 1280-1420）" "${ET_MTU:-1280}" validate_mtu "MTU 必须是 576-9000 之间的整数。")" || return 1
+    fi
+    validate_profile_config "$profile_id"
+    save_profile_env "$profile_id"
+    render_profile_service_files
+    restart_profile "$profile_id"
+    if [[ -n "${ET_MTU:-}" ]]; then
+        printf 'EasyTier MTU 已更新：%s\n' "$ET_MTU"
+    else
+        printf 'EasyTier MTU 已恢复为 EasyTier 默认值。\n'
+    fi
+    printf 'NAT IX 与公网入口机 MTU 应保持一致；变更后请刷新接入码并在对端重新导入，或在对端执行 ix set-easytier-mtu。\n'
+}
+
+set_easytier_mtu_from_menu() {
+    local profile_id
+    if ! profile_id="$(prompt_profile_id_for_menu set-easytier-mtu)"; then
+        return 0
+    fi
+    set_easytier_mtu "$profile_id"
 }
 
 status_profile() {
@@ -15434,6 +15411,7 @@ run_advanced_menu_action() {
         10) cleanup_state ;;
         11) show_monitor_menu ;;
         12) upgrade_script ;;
+        13) set_easytier_mtu_from_menu ;;
         0) return 10 ;;
         *) log_warn "未知选项，请重新选择。"; return 0 ;;
     esac
@@ -15458,6 +15436,7 @@ ix-transit-fabric 高级维护
  10) 清理历史与运行状态
  11) 监控 / 通知 / DDNS
  12) 升级管理脚本（main 最新）
+ 13) 设置 EasyTier MTU
   0) 返回主菜单
 MENU
         printf '请选择：' >&2
@@ -16003,6 +15982,9 @@ main() {
             ;;
         set-easytier-protocol)
             set_easytier_protocol "${args[1]:-}"
+            ;;
+        set-easytier-mtu)
+            set_easytier_mtu "${args[1]:-}"
             ;;
         status-profile)
             status_profile "${args[1]:-}"
