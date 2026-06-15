@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-SCRIPT_VERSION="1.3.15"
+SCRIPT_VERSION="1.3.16"
 APP_NAME="ix-transit-fabric"
 IXTF_PROJECT_REPO="ike-sh/ix-transit-fabric"
 
@@ -376,7 +376,7 @@ ix-transit-fabric - NAT-IX + EasyTier + nftables 中转线路管理脚本
 	  - 转发规则管理支持规则备注、商家入口端口、虚拟网中转端口、rules 数组、code_schema=4、rule-main。
 	  - EasyTier 组网协议支持 WebSocket、WebSocket TLS、QUIC、WireGuard 和 ALL。
 	  - latency-report / nat-latency / latency-all 提供 NAT-IX 分段延迟诊断。
-	  - purge 会删除配置、线路、接入码、state、notify.env、history 和备份，执行前必须确认。
+	  - purge 会删除配置、线路、接入码、state、notify.env、history、备份及本地 install.sh，执行前必须确认。
 USAGE
 }
 
@@ -15313,11 +15313,23 @@ safe_remove_project_dir() {
     esac
 }
 
+purge_remove_install_script_file() {
+    local path="$1"
+    [[ -n "$path" ]] || return 0
+    [[ -f "$path" ]] || return 0
+    case "$path" in
+        /dev/fd/*|/proc/*) return 0 ;;
+    esac
+    grep -q 'ix-transit-fabric' "$path" 2>/dev/null || return 0
+    rm -f -- "$path"
+    log_ok "已删除安装脚本：${path}"
+}
+
 purge() {
     require_root "$@"
     require_tty
 
-    local confirm answer remove_et remove_script script_path
+    local confirm answer remove_et script_path cwd_install removed_script_paths=""
     cat >&2 <<'EOF'
 完全清理将删除：
 * systemd 服务
@@ -15329,6 +15341,7 @@ purge() {
 * nftables 项目表
 * sysctl 文件
 * 备份目录
+* 本地 install.sh 安装脚本（当前执行路径及工作目录下的副本）
 
 EOF
     printf '请输入 DELETE 继续：' >&2
@@ -15348,11 +15361,23 @@ EOF
     if [[ "$script_path" != /* ]]; then
         script_path="$(pwd -P)/$script_path"
     fi
-    cat >&2 <<EOF
-${script_path} 是用户手动下载或执行的安装脚本，不属于 systemd 服务或项目运行文件。
-完全清理默认不会删除你手动下载的 install.sh，除非你确认删除。
-EOF
-    remove_script="$(prompt_yes_no "是否删除当前安装脚本 ${script_path}" "false")" || remove_script="false"
+    if command_exists readlink; then
+        script_path="$(readlink -f "$script_path" 2>/dev/null || printf '%s' "$script_path")"
+    fi
+    cwd_install="$(pwd -P)/install.sh"
+    if [[ -f "$cwd_install" ]]; then
+        purge_remove_install_script_file "$cwd_install"
+        removed_script_paths="${cwd_install}"
+    fi
+    if [[ -f "$script_path" && "$script_path" != "$cwd_install" ]]; then
+        case "$script_path" in
+            "${LIBEXEC_DIR}"/*) ;;
+            *)
+                purge_remove_install_script_file "$script_path"
+                removed_script_paths="${removed_script_paths}${removed_script_paths:+, }${script_path}"
+                ;;
+        esac
+    fi
 
     IXTF_SKIP_EASYTIER_DELETE_PROMPT=1 uninstall
     if [[ "$remove_et" == "true" ]]; then
@@ -15373,13 +15398,8 @@ EOF
     if command_exists systemctl; then
         systemctl daemon-reload
     fi
-    if [[ "$remove_script" == "true" ]]; then
-        if [[ -f "$script_path" && "$script_path" != /dev/fd/* && "$script_path" != /proc/* ]]; then
-            rm -f -- "$script_path"
-            log_ok "已删除当前安装脚本：${script_path}"
-        else
-            log_info "当前脚本不是普通文件，跳过自删除。"
-        fi
+    if [[ -z "$removed_script_paths" ]]; then
+        log_info "未发现可删除的本地 install.sh（可能不在当前目录，或文件已不存在）。"
     fi
 
     cat <<EOF
@@ -15390,7 +15410,7 @@ EOF
   已删除 nftables 文件：${NFT_FILE}
   已删除 sysctl 文件：${SYSCTL_FILE}
   easytier-core：$([[ "$remove_et" == "true" ]] && printf '已删除' || printf '已保留')
-  install.sh：$([[ "$remove_script" == "true" ]] && printf '已按确认处理' || printf '已保留')
+  install.sh：${removed_script_paths:-已尝试清理（无额外本地副本）}
 EOF
 }
 

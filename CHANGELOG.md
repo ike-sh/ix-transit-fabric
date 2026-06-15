@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.3.16
+
+### Changed
+
+- `purge` 完全清理现默认一并删除本地 `install.sh`（当前执行路径 + 工作目录副本），不再二次确认；删除前校验文件含 `ix-transit-fabric` 标识。
+
 ## 1.3.15
 
 ### Added
