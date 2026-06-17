@@ -10,7 +10,7 @@
 **不负责**：安装代理内核（Xray / sing-box 等）、接管全局防火墙、自动切线、自动修复配置。
 
 ---
-
+沪日IX免实名 AFF: https://cloud.nbdnet.com?ref=mjj02
 ## 架构
 
 ```text
