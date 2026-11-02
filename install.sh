@@ -9512,21 +9512,37 @@ print_nat_ingress_nat_peer_health() {
         nat_port="$(rule_nat_public_port_value 2>/dev/null || true)"
         [[ -n "$nat_port" ]] || continue
         total=$((total + 1))
-        if [[ -n "$nc_cmd" && "${NAT_LISTENER_PROTO:-both}" != "udp" ]]; then
-            if "$nc_cmd" -vz -w 3 "$host" "$nat_port" >/dev/null 2>&1; then
-                reachable=$((reachable + 1))
-                printf '* [%s] 商家入口 %s:%s：可达\n' "$rule_id" "$host" "$nat_port"
-            else
-                bad=$((bad + 1))
-                printf '* [%s] 商家入口 %s:%s：不可达\n' "$rule_id" "$host" "$nat_port"
-            fi
-        elif et_peer_contains_port "$nat_port"; then
-            reachable=$((reachable + 1))
-            printf '* [%s] 商家入口 %s:%s：已配置 peer\n' "$rule_id" "$host" "$nat_port"
-        else
-            bad=$((bad + 1))
-            printf '* [%s] 商家入口 %s:%s：EasyTier peer 未包含该端口\n' "$rule_id" "$host" "$nat_port"
-        fi
+        # TCP probes are meaningful only for TCP-based EasyTier transports.
+        # UDP, QUIC and WireGuard listeners intentionally do not accept TCP;
+        # probing them with nc would incorrectly report a healthy peer as down.
+        case "${NAT_LISTENER_PROTO:-both}" in
+            udp|quic|wg)
+                if et_peer_contains_port "$nat_port"; then
+                    reachable=$((reachable + 1))
+                    printf '* [%s] 商家入口 %s:%s：已配置 %s peer（不执行 TCP 探测）\n' "$rule_id" "$host" "$nat_port" "${NAT_LISTENER_PROTO}"
+                else
+                    bad=$((bad + 1))
+                    printf '* [%s] 商家入口 %s:%s：EasyTier peer 未包含该端口\n' "$rule_id" "$host" "$nat_port"
+                fi
+                ;;
+            *)
+                if [[ -n "$nc_cmd" ]]; then
+                    if "$nc_cmd" -vz -w 3 "$host" "$nat_port" >/dev/null 2>&1; then
+                        reachable=$((reachable + 1))
+                        printf '* [%s] 商家入口 %s:%s：TCP 可达\n' "$rule_id" "$host" "$nat_port"
+                    else
+                        bad=$((bad + 1))
+                        printf '* [%s] 商家入口 %s:%s：TCP 不可达\n' "$rule_id" "$host" "$nat_port"
+                    fi
+                elif et_peer_contains_port "$nat_port"; then
+                    reachable=$((reachable + 1))
+                    printf '* [%s] 商家入口 %s:%s：已配置 peer（缺少 TCP 探测工具）\n' "$rule_id" "$host" "$nat_port"
+                else
+                    bad=$((bad + 1))
+                    printf '* [%s] 商家入口 %s:%s：EasyTier peer 未包含该端口\n' "$rule_id" "$host" "$nat_port"
+                fi
+                ;;
+        esac
     done
     if [[ "$total" -eq 0 ]]; then
         printf '* 商家 NAT/IX 入口：无启用规则\n'
